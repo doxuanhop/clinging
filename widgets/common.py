@@ -16,9 +16,16 @@ import os
 
 
 def _qta():
-    """Lazy import qtawesome - chỉ import khi QApplication đã tồn tại."""
-    import qtawesome
-    return qtawesome
+    """Lazy import bo ve glyph cuc bo - chi nap khi QApplication da ton tai.
+
+    Goi la `_qta` vi ~60 noi dung trong UI goi thang no qua
+    `_qta().icon("fa6s.x", color=...)`; doi ten thi phai cham vao het cac noi
+    do ma khong thu duoc gi. `widgets/fontawesome.py` cung mot API `icon()`
+    nhu qtawesome nhung khong keo theo `qtpy`/`QtOpenGL` (~1,1 s boot va
+    ~32 MB private tren may cau hinh thap).
+    """
+    from widgets import fontawesome
+    return fontawesome
 
 
 def add_shadow(widget, blur=24, color=QColor(0, 0, 0, 160), offset=(0, 6)):
@@ -33,9 +40,9 @@ def add_shadow(widget, blur=24, color=QColor(0, 0, 0, 160), offset=(0, 6)):
 def icon_pixmap(icon_name, size=24, color=None):
     """Pixmap Font Awesome.
 
-    qtawesome voi mau mac dinh (khong truyen `color`) tra ve pixmap khong co
-    pixel khong trong nao - tuc la in ra o trong. Vi the mau phai duoc nuong
-    trong code, du khi khong goi ra mau cu the.
+    Mot icon khong duoc truyen `color` se in ra o trong (qtawesome tra ve
+    pixmap khong co pixel khong trong nao khi dung mau mac dinh), nen mau phai
+    duoc nuong trong code, du khi khong goi ra mau cu the.
     """
     return _qta().icon(icon_name, color=color or icon_color()).pixmap(size, size)
 

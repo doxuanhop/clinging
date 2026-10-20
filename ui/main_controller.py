@@ -21,9 +21,9 @@ def _make_app_icon():
 
 
 def _icon(name, color="#9A9DAA"):
-    """Helper tạo icon qua qta."""
-    import qtawesome as qta
-    return qta.icon(name, color=color)
+    """Helper tạo icon — đi qua seam chung để chỉ có một bộ vẽ glyph."""
+    from widgets.common import _qta
+    return _qta().icon(name, color=color)
 
 
 class ControllerTitleBar(QWidget):

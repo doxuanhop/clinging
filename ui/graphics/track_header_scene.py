@@ -6,7 +6,7 @@ Hiển thị: tên track, icon loại (Font Awesome), nút Lock/Visible/Mute.
 Không cuộn ngang — chỉ cuộn dọc đồng bộ với Timeline View.
 """
 
-from PySide6.QtCore import Qt, QRectF, Signal, QSize
+from PySide6.QtCore import Qt, QRectF, Signal
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QFont, QPixmap, QImage
 )
@@ -40,15 +40,10 @@ ICON_LOCK_ON = "fa6s.lock"
 ICON_LOCK_OFF = "fa6s.lock-open"
 
 
-def _qta():
-    """Lazy import qtawesome."""
-    import qtawesome
-    return qtawesome
-
-
 def _icon_pixmap(icon_name: str, size: int = 16, color: str = "#AAAAAA") -> QPixmap:
-    """Tạo QPixmap từ Font Awesome icon name."""
-    return _qta().icon(icon_name, color=color).pixmap(QSize(size, size))
+    """Tạo pixmap Font Awesome — đi qua seam icon chung của app."""
+    from widgets.common import icon_pixmap
+    return icon_pixmap(icon_name, size, color)
 
 
 class TrackHeaderItem(QGraphicsRectItem):

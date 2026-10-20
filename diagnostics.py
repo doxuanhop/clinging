@@ -4,7 +4,7 @@ Kiểm tra bundle đóng gói: chạy MỌI mảnh mà app cần lúc chạy, ng
 file exe đã đóng gói.
 
 Lý do tồn tại: exe GUI windowed không in ra stdout, nên "app mở được cửa sổ"
-không chứng minh được là src.asr, styles/*.qss, qtawesome, cv2 hay PySide6
+không chứng minh được là src.asr, styles/*.qss, font icon, cv2 hay PySide6
 QtMultimedia có thật trong bundle hay không. Chạy:
 
     Clinging.exe --selftest <duong-dan-bao-cao>
@@ -72,24 +72,49 @@ def _icon_ok():
     return "%s (%d bytes)" % (path.name, os.path.getsize(str(path)))
 
 
-def _qtawesome_ok():
+def _font_icon_ok():
     """Font icon phai ve duoc pixel that, ngay trong bundle nay.
 
-    isNull() khong du: qtawesome tra ve QIcon khong null nhung pixmap rong
-    khi khong nuong mau, va ban exe thieu .ttf/charmap cung chi bieu hien
-    bang cac o trong. Do bang chinh helper cua UI de khong co duong tat.
+    isNull() khong du: mot QIcon khong null van co the in ra o trong, va ban exe
+    thieu .ttf/charmap cung chi bieu hien bang cac o trang. Do bang chinh helper
+    cua UI de khong co duong tat, va dem ALPHA chu khong dem mau (o trong cua
+    pixmap ARGB32_Premultiplied co blue = 0 nen dem mau may man cung du qua).
+
+    Tu khi `widgets/fontawesome.py` thay qtawesome, dong nay con la noi bat
+    hai loi hoi quy khac: (1) ai do goi lai `import qtawesome` trong bundle, va
+    (2) bo ve im lang tra ve o trang cho mot ten glyph khong ton tai — ca hai
+    deu khong lam do pixel, nen phai kiem tra truc tiep.
     """
-    from widgets.common import font_icon
+    import sys
+    import widgets.common as common
+    import widgets.fontawesome as fontawesome
+    if common._qta() is not fontawesome:
+        raise RuntimeError("widgets.common._qta() khong con tro bo ve glyph cuc bo")
+    if "qtawesome" in sys.modules and getattr(sys, "frozen", False):
+        raise RuntimeError("bundle dong goi van nap qtawesome (~0,6 s boot thua)")
+
     total = 0
     for name in ("fa6s.film", "fa6s.xmark", "fa6s.wand-magic-sparkles"):
-        image = font_icon(name, "#40E0D0").pixmap(16, 16).toImage()
+        image = common.font_icon(name, "#40E0D0").pixmap(16, 16).toImage()
         pixels = image.width() * image.height()
-        solid = sum(1 for y in range(image.height())
-                    for x in range(image.width()) if image.pixel(x, y) & 0xFF)
+        solid = sum(1 for y in range(image.height()) for x in range(image.width())
+                    if (image.pixel(x, y) >> 24) & 0xFF)
         if solid < max(1, int(0.02 * pixels)):
             raise RuntimeError("%s chi ve %d/%d pixel" % (name, solid, pixels))
         total += solid
-    return "3 font icon, %d pixel khong trong" % total
+
+    # Ten la phai chore, khong duoc ve o trang: day la phan chung cua chinh
+    # dong do — neu ai thay glyph_for bang `.get(name, "")` thi ba do o tren
+    # van xanh, chi co phep thu nay do duoc.
+    for bogus in ("fa6s.khong-ton-tai-xyz", "fa6b.paintbrush"):
+        try:
+            fontawesome.glyph_for(bogus)
+        except ValueError:
+            continue
+        raise RuntimeError("ten glyph roi %r khong bi bo ve tu choi" % bogus)
+
+    return "%d glyph, 3 font icon ve %d pixel khong trong (nguon %s)" % (
+        len(fontawesome.names()), total, fontawesome._TTF)
 
 
 def _asr_ok():
@@ -429,6 +454,50 @@ def _project_launch_ok():
             os.remove(path)
     return ("parser doi duoc .clinq that/gia/khong co, --project thang, "
             "2 diem vao MainController con nguyen")
+
+
+def _recent_readonly_ok():
+    """Mo app khong duoc phep ghi danh sach du an gan day cua nguoi dung.
+
+    `HomePage._load_recent_projects()` tung ket thuc bang
+    `save_recent_projects(valid_projects)`, tuc la duong DOC ghi file, va tinh
+    xoa moi muc ma `os.path.exists()` tra False ngay luc do — cam o roi chua
+    cam, doi ten thu muc, hay mo app "chi de xem" la mat mai muc trong MRU.
+    Bundle khong con nguon .py de doc, nen gate lay `co_names` cua chinh ham
+    trong process nay; chieu nguoc lai cung phai do: bon hanh dong tao/nhap/
+    doi ten/xoa van phai ghi, neu khong thi "khong ghi khi doc" chi la vi da
+    xoa luon duong ghi.
+
+    `scratch/recent_projects_safety_probe.py` la bang chung hanh vi day du
+    (boot that trong APPDATA tam, so md5 tung byte, kem phep phan chung dung
+    lai hanh vi cu). Dong nay chi gi cho khong bi tai lap.
+    """
+    import ui.home_page as hp
+
+    def writes_recent(fn):
+        return "save_recent_projects" in fn.__code__.co_names
+
+    # Tu thu detector: mot ban "doc-roi-ghi" dich tai luc chay phai bi bat.
+    # Khong co buoc nay thi co_names co the trung mot cach viet khac va dong
+    # gate xanh ngay ca khi loi con nguyen.
+    rival_ns = {"load_recent_projects": hp.load_recent_projects,
+                "save_recent_projects": hp.save_recent_projects, "os": os}
+    exec("def rival(self):\n"
+         "    recent = load_recent_projects()\n"
+         "    save_recent_projects([p for p in recent if os.path.exists(p)])\n",
+         rival_ns)
+    if not writes_recent(rival_ns["rival"]):
+        raise RuntimeError("detector khong bat duoc cach viet cu -> gate vo nghia")
+
+    if writes_recent(hp.HomePage._load_recent_projects):
+        raise RuntimeError("_load_recent_projects van ghi recent_projects.json "
+                           "khi mo app")
+    missing = [name for name in ("_on_template_clicked", "_on_import_project",
+                                 "_on_rename_project", "_on_delete_project")
+               if not writes_recent(getattr(hp.HomePage, name))]
+    if missing:
+        raise RuntimeError("hanh dong khong con ghi MRU: %s" % ", ".join(missing))
+    return ("duong doc khong ghi, 4 hanh dong van ghi; detector bat duoc cach viet cu")
 
 
 # Hai cach tu viet phep tinh moc thoi gian cua clip that su tung ton tai song
@@ -839,7 +908,7 @@ def run_selftest(argv=None):
     report = _report_path(argv)
     col = Collector()
 
-    # QIcon/qtawesome nap font qua QGuiApplication, nen phai co app that —
+    # QIcon/bo ve glyph nap font qua QGuiApplication, nen phai co app that —
     # dung cai app ma exe nay van tao ra khi mo binh thuong.
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])  # noqa: F841
@@ -855,7 +924,7 @@ def run_selftest(argv=None):
     col.check("bundle dong goi", frozen)
     col.check("styles/*.qss + theme", _styles_ok)
     col.check("icon ung dung", _icon_ok)
-    col.check("qtawesome", _qtawesome_ok)
+    col.check("font icon", _font_icon_ok)
     col.check("src.asr (Auto Captions)", _asr_ok)
     col.check("cv2/numpy/psutil/pydub", _media_libs_ok)
     col.check("PySide6 modules", _qt_modules_ok)
@@ -872,6 +941,7 @@ def run_selftest(argv=None):
     col.check("lop phu recap: vien/REC/kinh mo + luu vao file", _recap_overlay_ok)
     col.check("8 kieu karaoke: quet theo tu + luu vao file", _karaoke_ok)
     col.check("mo du an tu file .clinq", _project_launch_ok)
+    col.check("doc MRU khong ghi du lieu nguoi dung", _recent_readonly_ok)
     col.check("giai ma tuan tu + cache dia", _decode_cache_ok)
     col.check("xem truoc = xuat: moc thoi gian cuc bo dung mot ham", _local_time_ok)
     col.check("trich xuat anh thumbnail", _thumbnail_export_ok)
@@ -2125,7 +2195,7 @@ def audit_chrome(label, root):
 def alpha_signature(button, size=24):
     """Chữ ký raster của icon đang gắn trên nút: số pixel đặc + tổng alpha.
 
-    isNull() không chứng minh icon hiện ra (qtawesome không màu cho pixmap rỗng
+    isNull() không chứng minh icon hiện ra (icon không màu cho pixmap rỗng
     vẫn not-null), và tên icon thì đổi được mà không đổi hình. Đây là pixel thật.
     """
     from PySide6.QtGui import QImage

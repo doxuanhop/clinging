@@ -23,15 +23,25 @@ import datetime
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import winreg
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-VERSION = "1.0.0"
+# Doc version tu clinging.iss thay vi ghi chu so: installed_app_probe.py tung
+# cai lai dung "ClingingSetup-1.0.0.exe" duoc hardcode va lam moi lan verify
+# kiem tra ban cu, xanh van in ra ALL PASS.
+_iss = open(os.path.join(REPO, "packaging", "clinging.iss"),
+            encoding="utf-8").read()
+_match = re.search(r'#define\s+MyAppVersion\s+"([^"]+)"', _iss)
+if not _match:
+    raise SystemExit("Khong doc duoc MyAppVersion trong clinging.iss")
+VERSION = _match.group(1)
 MSI = os.path.join(REPO, "build", "installer", "ClingingSetup-%s.msi" % VERSION)
 TARGET = os.path.join(REPO, "build", "msitest")
+DIST = os.path.join(REPO, "dist", "Clinging")
 WORK = os.path.join(REPO, "scratch")
 SNAPSHOT = os.path.join(WORK, "msi_machine_state.json")
 LOG = os.path.join(WORK, "msiexec.log")
@@ -230,7 +240,26 @@ def main():
     exe = os.path.join(TARGET, "Clinging.exe")
     check("Clinging.exe nam trong thu muc test", os.path.isfile(exe), exe)
     n = count_files(TARGET) if os.path.isdir(TARGET) else 0
-    check("du 404 file cua bundle duoc giai", n >= 400, "%d file" % n)
+    # Moc so sanh lay tu chinh `dist\Clinging` ma `heat dir()` dong goi, KHONG
+    # ghi chu so trong probe. Rang buoc cu "n >= 360" (sau khi qtawesome bi cat,
+    # bundle 404 -> 362 file) la mot gate vo nghia: ban CO qtawesome 404 file
+    # cung xanh, nen no khong the phat hien rac quay lai. Bang so do = doan
+    # "MSI giai het tung component"; cai "khong con qtawesome" la cua gate
+    # nguoc ben duoi, khong phai cua con so nay.
+    dist_n = count_files(DIST) if os.path.isdir(DIST) else 0
+    check("cay MSI giai DUNG SO file cua bundle trong dist",
+          n == dist_n, "msi=%d dist=%d" % (n, dist_n))
+    # Gate so sanh co the xanh rong: dist mat thi 0 == 0. Nhay du 300 ngan
+    # cach do, gia tri that van in ra khi FAIL.
+    check("dist dung lam moc so sanh co payload that",
+          dist_n >= 300, "%d file" % dist_n)
+    check("ban MSI cung KHONG co qtawesome",
+          not os.path.isdir(os.path.join(TARGET, "_internal", "qtawesome")),
+          os.path.join(TARGET, "_internal", "qtawesome"))
+    check("ban MSI co font + charmap FA6 local",
+          os.path.isfile(os.path.join(
+              TARGET, "_internal", "assets", "icons",
+              "fontawesome6-solid-6.7.2.ttf")), True)
     check("ffmpeg + ffprobe di kem", all(os.path.isfile(p) for p in (
         os.path.join(TARGET, "_internal", "tools", "ffmpeg.exe"),
         os.path.join(TARGET, "_internal", "tools", "ffprobe.exe"))),
@@ -270,7 +299,7 @@ def main():
         note("ARP key", key)
         note("ARP DisplayName / version",
              (arp[key]["display"], arp[key]["version"]))
-        check("ARP DisplayVersion la 1.0.0", arp[key]["version"] == VERSION,
+        check("ARP DisplayVersion la " + VERSION, arp[key]["version"] == VERSION,
               arp[key]["version"])
         est = reg_read(ARP_BASE + "\\" + key, "EstimatedSize")
         check("ARP EstimatedSize khop payload (>400 MB)",

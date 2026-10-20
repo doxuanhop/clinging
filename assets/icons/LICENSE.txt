@@ -1,0 +1,39 @@
+Font Awesome 6 Free — Solid
+===========================
+
+Files in this folder, shipped with Clinging and used by widgets/fontawesome.py:
+
+  fontawesome6-solid-6.7.2.ttf            md5 07312c769a05b2c17133da1a09db4ccf
+  fontawesome6-solid-charmap.json         1402 glyph names -> code points
+
+Provenance
+----------
+
+Both files are extracted verbatim from the `qtawesome` 1.4.2 Python package
+(qtawesome/fonts/fontawesome6-solid-*.ttf and its Free6Solid charmap), by
+scratch/make_icon_assets.py, which also verifies that what lands on disk reads
+back identical to what qtawesome held in memory. The TTF itself is unmodified
+Font Awesome Free 6.7.2.
+
+They are local copies for one reason: importing qtawesome costs ~0.6 s and
+~29 MB of private RAM at startup (measured by
+scratch/boot_low_spec_probe.py), because it drags in qtpy and PySide6.QtOpenGL.
+Drawing the glyphs is done directly with QPainter/QFontDatabase instead; the
+rendering is pixel-identical to qtawesome (scratch/icon_parity_probe.py).
+
+License
+-------
+
+Font Awesome Free 6.7.2 by @fontawesome — https://fontawesome.com
+
+  * Font software (the .ttf): SIL Open Font License 1.1
+    https://scripts.sil.org/OFL
+  * Artwork / glyphs: CC BY 4.0
+    https://creativecommons.org/licenses/by/4.0/
+  * Icons in this file come from the Free set only; the charmap names that
+    belong to Font Awesome Pro are not present and raise ValueError.
+
+Attribution required by CC BY 4.0: Font Awesome Free 6.7.2 by @fontawesome,
+licensed under CC BY 4.0 (icons) and SIL OFL 1.1 (font software). The full
+OFL text is distributed with Font Awesome upstream and is reproduced in the
+font's own license name table.

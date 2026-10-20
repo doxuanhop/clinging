@@ -1103,7 +1103,7 @@ class HomePage(QWidget):
         self._cover_queue = []
 
         recent = load_recent_projects()
-        valid_projects = [p for p in recent if os.path.exists(p)]
+        valid_projects = [p for p in recent if isinstance(p, str) and os.path.exists(p)]
         # Thu tu hien thi khong duoc nguoc lai file MRU:ghi van theo valid_projects.
         shown = self._sorted_recent(valid_projects)
         columns = self.RECENT_COLUMNS[self._recent_view]
@@ -1122,7 +1122,11 @@ class HomePage(QWidget):
         else:
             self.empty_state.show()
 
-        save_recent_projects(valid_projects[:10])
+        # Day la duong DOC: no khong duoc ghi file nguoi dung. Tu truoc, dong
+        # `save_recent_projects(valid_projects)` o day moi lan mo app da ghi lai
+        # MRU va tinh xoa moi du an dang khong thay duoc duong dan (o roi chua
+        # cam, thu muc vua doi ten) — mot lan "chi xem" mat mai danh sach.
+        # Ghi van thuoc ve nhung hanh dong that su: tao/nhap/doi ten/xoa du an.
         self._schedule_cover_load()
 
     def _schedule_cover_load(self):

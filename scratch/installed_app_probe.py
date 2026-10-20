@@ -53,8 +53,10 @@ Chay:  python scratch/installed_app_probe.py
 """
 
 import glob
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -69,7 +71,25 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INSTALLER = os.path.join(ROOT, "build", "installer", "ClingingSetup-1.0.0.exe")
+def _app_version():
+    """MyAppVersion trong clinging.iss la nguon duy nhat, dung nhu make_msi.py.
+
+    Before this, INSTALLER was the literal "ClingingSetup-1.0.0.exe". Every run
+    of this probe then re-installed the PREVIOUS build over whatever had just
+    been shipped, and the app under test was silently the old bundle (2026-10-20:
+    the qtawesome removal looked installed, then this probe put qtawesome back
+    and the selftest row renamed itself to "qtawesome" again).
+    """
+    text = open(os.path.join(ROOT, "packaging", "clinging.iss"),
+                encoding="utf-8").read()
+    match = re.search(r'#define\s+MyAppVersion\s+"([^"]+)"', text)
+    if not match:
+        raise SystemExit("Khong doc duoc MyAppVersion trong clinging.iss")
+    return match.group(1)
+
+
+INSTALLER = os.path.join(ROOT, "build", "installer",
+                         "ClingingSetup-%s.exe" % _app_version())
 LOCAL = os.environ.get("LOCALAPPDATA", "")
 DEST = os.path.join(LOCAL, "Programs", "Clinging")
 DEST_EXE = os.path.join(DEST, "Clinging.exe")
@@ -453,11 +473,31 @@ def main():
     entries = [row for row in uninstall_entries()
                if (row["display"] or "").strip().lower() == "clinging"]
     check("co entry Add/Remove Programs", len(entries) >= 1, True)
-    if entries:
-        note("registry uninstall", entries[0])
-        check("InstallLocation trung noi dung",
-              os.path.normpath(entries[0]["location"]).lower(),
-              os.path.normpath(DEST).lower())
+    # May nay CAI HAI thu muc cung ten "Clinging" (Inno o Programs\Clinging va
+    # MSI o Programs\ClingingMSI), nen entries[0] theo thu tu registry khong
+    # phai ban Inno. Phai chon dung entry tro ve DEST; neu Inno mat entry thi
+    # do la FAIL that, khong phai do thu tu duong dan.
+    dest_norm = os.path.normpath(DEST).lower()
+    own = [row for row in entries
+           if os.path.normpath(row["location"] or "").lower() == dest_norm]
+    check("co entry ARP tro dung vao thu muc Inno", len(own), 1)
+    if own:
+        note("registry uninstall (entry Inno)", own[0])
+    for row in entries:
+        note("entry ARP cung ten", "%s -> %s" % (row["key"], row["location"]))
+
+    # Duong dan trung khong chung minh noi dung trung: lan cai 2026-10-20 13:15
+    # de lai Clinging.exe cua ban cu (6.880.111 byte, _internal qtawesome) ben
+    # trong khi _internal cua ban moi nam o cho khac. Set-diff theo ten duong
+    # dan khong phat hien ra dieu do; sha256 thi co.
+    dist_exe = os.path.join(ROOT, "dist", "Clinging", "Clinging.exe")
+
+    def sha256_16(path):
+        with open(path, "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()[:16]
+
+    check("exe da cai TRUNG VOI exe trong dist theo byte",
+          sha256_16(DEST_EXE), sha256_16(dist_exe))
 
     report_path = os.path.join(ROOT, "scratch", "installed_selftest.json")
     run = subprocess.run([DEST_EXE, "--selftest", report_path], timeout=300)
@@ -471,17 +511,29 @@ def main():
         note("  " + row["name"], row["detail"][:100])
 
     # Font icon cua bundle da cai: "isNull False" khong chung minh duoc no
-    # hien len, nen doc dung dong qtawesome trong bao cao cua chinh exe.
-    qt_row = next(r for r in report["checks"] if r["name"] == "qtawesome")
+    # hien len, nen doc dung dong "font icon" trong bao cao cua chinh exe.
+    qt_rows = [r for r in report["checks"] if r["name"] == "font icon"]
+    check("bundle da cai co dong selftest 'font icon'", len(qt_rows), 1)
+    if not qt_rows:
+        names = [r["name"] for r in report["checks"]]
+        note("ten cac dong selftest", names)
+        return 1
+    qt_row = qt_rows[0]
     check("exe da cai: font icon ve duoc pixel that",
           bool(qt_row["ok"]) and "pixel" in str(qt_row["detail"]), True)
     font_dir = os.path.join(os.path.dirname(DEST_EXE), "_internal",
-                            "qtawesome", "fonts")
+                            "assets", "icons")
     fa6 = [f for f in os.listdir(font_dir)
            if f.startswith("fontawesome6-solid")] if os.path.isdir(font_dir) else []
     check("bundle da cai chon font + charmap FA6 solid",
           any(f.endswith(".ttf") for f in fa6)
           and any(f.endswith(".json") for f in fa6), True)
+    check("bundle da cai kem ghi chu phep Font Awesome",
+          os.path.isfile(os.path.join(font_dir, "LICENSE.txt")), True)
+    # qtawesome phai that su rung khoi bundle, neu khong thi 0,6 s boot va
+    # ~29 MB private quay lai ma khong ai nhin thay.
+    qta_dir = os.path.join(os.path.dirname(DEST_EXE), "_internal", "qtawesome")
+    check("bundle da cai KHONG con qtawesome", os.path.isdir(qta_dir), False)
 
     # Bang cong easing phai chay trong chinh bundle da cai — dong selftest do
     # noi suy that, nen no that bai neu PyInstaller khong kep theo module moi.

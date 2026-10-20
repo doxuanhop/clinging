@@ -3,6 +3,31 @@
 Giao diện desktop được dựng lại theo đúng bố cục trong ảnh chụp màn hình
 bạn cung cấp, viết bằng **PySide6** (Qt for Python).
 
+## 0. Tài liệu hiện hành
+
+Các mục 3–6 bên dưới mô tả thời kỳ dựng skeleton UI và **đã cũ**: ứng dụng hiện
+chạy engine video thật (giải mã tuần tự, xuất MP4 qua ffmpeg, ASR, chuyển cảnh,
+layer âm thanh từng clip). Tài liệu đang đúng:
+
+- `AGENTS.md` — hợp đồng làm việc trong repo: ràng buộc, lệnh, bẫy của máy build.
+- `docs/verification-gates.md` — thế nào là "xong": gate trên đường production,
+  phản chứng, ảnh chứng minh, đọc rc thật.
+- `docs/glyph-icons.md` — bộ vẽ icon Font Awesome cục bộ (đã thay qtawesome) và
+  các cổng đi kèm.
+- `docs/release-1.0.1.md` — bản cài đặt, SHA-256, trạng thái artifact so với nguồn.
+- `docs/import_project.md` — định dạng file dự án `.clinq` và đường nhập dự án.
+
+Chạy thử:
+
+```bash
+python main.py                                  # mo app
+python main.py --selftest --report st.json      # 28 dong cong, xem key "failed"
+python scratch/icon_name_audit.py               # ten glyph dung trong UI
+```
+
+Cần `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được vì vượt 100 MB/file
+của GitHub); bản cài đặt đã kèm sẵn.
+
 ## 1. Cài đặt & chạy
 
 ```bash

@@ -17,6 +17,22 @@ Kiểm tra sau khi tải:
 certutil -hashfile ClingingSetup-1.0.1.exe SHA256
 ```
 
+**Bảng trên là hai file ĐANG nằm trên GitHub Release v1.0.1**, dựng sáng
+2026-10-20, bundle còn qtawesome. Chiều cùng ngày, nguồn bỏ qtawesome khỏi bundle
+(`docs/glyph-icons.md`) và `dist\Clinging` + hai installer được dựng lại lúc 13:08;
+cặp local mang **đúng tên đó nhưng byte khác**:
+
+| File local (`build\installer\`) | Kích thước | SHA-256 |
+| --- | --- | --- |
+| `ClingingSetup-1.0.1.exe` | 141.088.365 B | `ec3c3716e37b2cf410e35a31ba6bc3482e79b2c2c934be1acf88d6fceca888aa` |
+| `ClingingSetup-1.0.1.msi` | 160.634.393 B | `ab5cc8000a684bd93b303138abadbed7f5ea85a2c7ed581267e36eb9bf0c503f` |
+
+Hai bản local này **chưa** được đẩy lên Release, và vẫn chậm nguồn đúng một sửa đổi
+(kiểm tra tên glyph sớm, `widgets/fontawesome.py:191` — chỉ ảnh hưởng đường báo lỗi,
+không đổi pixel). Quy tắc: không sửa bảng trên khi asset chưa thực sự thay lên
+GitHub, và không tin tên file — cùng tên `1.0.1` là hai payload khác nhau, chỉ
+SHA-256 phân biệt được.
+
 Hai file là **hai cách đóng gói của cùng một ứng dụng**, không phải hai phiên bản
 khác nhau. Chọn một:
 
