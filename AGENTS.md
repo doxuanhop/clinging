@@ -16,7 +16,9 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
 - Máy này có hai bản cài song song: Inno ở `%LOCALAPPDATA%\Programs\Clinging`,
   MSI ở `%LOCALAPPDATA%\Programs\ClingingMSI`. Bản cài sau chiếm shortcut Desktop
   và phần mở rộng `.clinq`. Dữ liệu người dùng: `%APPDATA%\Roaming\Clinging`.
-- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.1`. Clone mới muốn
+- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.2` (hai asset
+  `.exe` + `.msi`). Release `v1.0.1` vẫn tồn tại nhưng là bundle còn qtawesome.
+  Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
 
@@ -33,6 +35,11 @@ python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi
 python scratch/user_data_snapshot.py capture scratch/_snap_before.json  # truoc khi do
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json   # sau khi do
 python scratch/user_data_snapshot.py diff scratch/_snap_before.json scratch/_snap_after.json
+python scratch/release_meta.py build/installer/ClingingSetup-<ver>.msi build/installer/ClingingSetup-<ver>.exe
+python scratch/msi_payload_check.py             # payload MSI == cay dist, khong can cai
+python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver>" \
+    --body-file docs/release-<ver>.md build/installer/ClingingSetup-<ver>.exe \
+    build/installer/ClingingSetup-<ver>.msi
 ```
 
 ## Ràng buộc thường trực (nguyên văn từ chủ repo)
