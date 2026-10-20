@@ -34,8 +34,10 @@ from core.time_mapper import TimePixelMapper
 from core.snap_engine import SnapEngine
 from core.commands import (
     UndoStack, MoveClipCommand, ResizeClipCommand,
-    AddClipCommand, RemoveClipCommand, SplitClipCommand, DuplicateClipCommand
+    AddClipCommand, RemoveClipCommand, SplitClipCommand, DuplicateClipCommand,
+    PasteClipsCommand
 )
+from core.clip_clipboard import ClipClipboard
 
 from ui.graphics.timeline_scene import TimelineScene
 from ui.graphics.timeline_view import TimelineView
@@ -369,6 +371,8 @@ class TimelinePanel(QWidget):
         self.mapper = TimePixelMapper()
         self.snap = SnapEngine(self.mapper)
         self.undo_stack = UndoStack()
+        # Clipboard clip trong RAM, sống đúng một phiên editor.
+        self.clipboard = ClipClipboard()
 
         # ── Layout ──
         outer = QVBoxLayout(self)
@@ -774,7 +778,6 @@ class TimelinePanel(QWidget):
 
     def add_resource(self, name: str, kind: str = "video"):
         """API ngoài: thêm resource vào timeline (từ Library double-click, etc.)."""
-        import os
         detected_kind = identify_media_kind(name)
         final_kind = detected_kind if detected_kind != "video" else kind
         # name đã là full path từ library, truyền đúng cho drop handler
@@ -825,15 +828,9 @@ class TimelinePanel(QWidget):
                 return duration
         import subprocess
         import json as _json
+        from core.media_locator import locate
 
-        # Tìm file thực tế
-        actual_path = file_path
-        if not os.path.exists(file_path):
-            basename = os.path.basename(file_path)
-            for root, dirs, files in os.walk("."):
-                if basename in files:
-                    actual_path = os.path.join(root, basename)
-                    break
+        actual_path = locate(file_path) or file_path
 
         if not os.path.exists(actual_path):
             return 5.0
@@ -941,6 +938,28 @@ class TimelinePanel(QWidget):
     def _on_duplicate_clip(self, clip_id: str):
         """Nhân bản clip."""
         self.undo_stack.push(DuplicateClipCommand(self.model, clip_id))
+
+    # ── Clipboard (Ctrl+C / Ctrl+V) ─────────────────────────────
+
+    def _on_copy_selected(self):
+        """Copy các clip đang chọn vào clipboard trong bộ nhớ.
+
+        Trả về số clip đã copy để caller bật thông báo; selection rỗng thì
+        clipboard giữ nguyên (không xóa nội dung lần copy trước).
+        """
+        ids = list(self.model.selected_clip_ids)
+        if not ids:
+            return 0
+        return self.clipboard.copy_from(self.model, ids)
+
+    def _on_paste_selected(self):
+        """Dán cả nhóm clipboard tại playhead — một bước undo."""
+        if self.clipboard.is_empty:
+            return 0
+        self.undo_stack.push(
+            PasteClipsCommand(self.model, self.clipboard.entries(),
+                              self.model.playhead))
+        return self.clipboard.entry_count
 
     # ── Selection ───────────────────────────────────────────────
 

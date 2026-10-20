@@ -389,11 +389,10 @@ class SystemMonitorWidget(QFrame):
 
         layout.addWidget(info_frame)
 
-        # Hàng trống khi chưa đo xong, chứ không giữ số liệu mồi.
-        if system_stats.psutil_or_none() is None:
-            for item in (self.cpu_widget, self.ram_widget, self.storage_widget):
-                item.hide()
-
+        # psutil va WMI nam trong luc mo app: import psutil do duoc 0,102 s
+        # cum trong `main._boot()` (cProfile, cung lane), con
+        # Win32_VideoController spawn mot tien trinh. Ca hai doi den sau khi
+        # cua so da ve — so lieu den muon 250 ms, khong doi noi den.
         self._timer = QTimer(self)
         self._timer.setInterval(self.POLL_MS)
         self._timer.timeout.connect(self._update_stats)
@@ -404,6 +403,13 @@ class SystemMonitorWidget(QFrame):
         self._gpu_timer.setInterval(self.GPU_POLL_MS)
         self._gpu_timer.timeout.connect(self._probe_gpu)
 
+        QTimer.singleShot(self.FIRST_POLL_MS, self._begin_measurement)
+
+    def _begin_measurement(self):
+        """Do lan dau sau khi cua so da ve; thieu psutil thi an dong do."""
+        if system_stats.psutil_or_none() is None:
+            for item in (self.cpu_widget, self.ram_widget, self.storage_widget):
+                item.hide()
         system_stats.prime_cpu()
         self._probe_gpu()
         QTimer.singleShot(self.FIRST_POLL_MS, self._first_update)

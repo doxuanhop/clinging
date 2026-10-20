@@ -456,6 +456,639 @@ def _project_launch_ok():
             "2 diem vao MainController con nguyen")
 
 
+def _save_atomic_ok():
+    """Mot dong --selftest: lan ghi du an hong khong duoc pha ban dang co.
+
+    `save_project_to_file` tung mo `open(path, "w")`, va phep mo cat ngat file
+    that ngay tuc thi: moi loi sau do (payload serialize hong, dia day, process
+    bi giet giua chung) de lai mot file ma `json.load` bo duoc nua. Autosay goi
+    lai ham nay theo chu ky nen loi hiem thanh mat bai. Cua nay do bon bat
+    buoc: ghi hong thi file van la ban cu tron ven, ban cu duoc quay vao
+    RECOVERY_DIR va chi giu RECOVERY_KEEP ban, khong de lai `.tmp`, va ten file
+    tuong doi (khong co thu muc) van luu duoc.
+    """
+    import shutil
+    import tempfile
+    from PySide6.QtGui import QColor, QImage
+    from core import project_storage
+    from core.timeline_model import TimelineModel, TrackType
+
+    folder = os.path.join(tempfile.gettempdir(), "clinging_save_report")
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder, exist_ok=True)
+    seed = os.path.join(folder, "nen.png")
+    img = QImage(4, 4, QImage.Format.Format_RGB32)
+    img.fill(QColor("#202020"))
+    if not img.save(seed):
+        raise RuntimeError("khong tao duoc anh nen trong %s" % folder)
+
+    real_recovery = project_storage.RECOVERY_DIR
+    project_storage.RECOVERY_DIR = os.path.join(folder, "recovery")
+    path = os.path.join(folder, "gate.clinq")
+
+    def build(marker):
+        model = TimelineModel()
+        model.project_ratio = "16:9"
+        track = model.add_track(TrackType.IMAGE)
+        clip = model.add_clip(track.track_id, seed, "image", 0.0, 2.0,
+                              name="m" + marker)
+        if clip is None:
+            raise RuntimeError("add_clip tra None (track/media khong khop)")
+        return model
+
+    def read_bytes(target):
+        with open(target, "rb") as handle:
+            return handle.read()
+
+    def markers_of_copies():
+        if not os.path.isdir(project_storage.RECOVERY_DIR):
+            return []
+        out = []
+        for name in sorted(os.listdir(project_storage.RECOVERY_DIR)):
+            data = project_storage.load_project_from_file(
+                os.path.join(project_storage.RECOVERY_DIR, name))
+            out.append(data["timeline"]["tracks"][0]["clips"][0]["name"])
+        return out
+
+    try:
+        if not project_storage.save_project_to_file(build("1"), path):
+            raise RuntimeError("lan ghi dau tien tra False")
+        first_bytes = read_bytes(path)
+        if len(json.loads(first_bytes)) != 3:
+            raise RuntimeError("file dau khong phai JSON ba khoa")
+        if os.path.isdir(project_storage.RECOVERY_DIR) and \
+                os.listdir(project_storage.RECOVERY_DIR):
+            raise RuntimeError("lan ghi dau khong duoc tao ban recovery")
+
+        hong = project_storage.save_project_to_file(
+            build("2"), path, {"resolution": QColor(1, 2, 3)})
+        if hong:
+            raise RuntimeError("payload khong serialize duoc ma save tra True")
+        if read_bytes(path) != first_bytes:
+            raise RuntimeError("lan ghi hong da cham vao file that")
+        if not project_storage.load_project_from_file(path):
+            raise RuntimeError("file sau lan ghi hong khong doc lai duoc")
+
+        # Duong LOI cua hai ham nay cung phai song: ham in bang chu co dau tung
+        # raise UnicodeEncodeError tren console cp1252, loi doc bien thanh crash.
+        # Do bang cach doc mot file JSON bi cat doi.
+        dochi = os.path.join(folder, "cat_doi.clinq")
+        with open(dochi, "w", encoding="utf-8") as handle:
+            handle.write('{"project_meta": ')
+        if project_storage.load_project_from_file(dochi) is not None:
+            raise RuntimeError("file JSON cat doi phai tra None, khong mo")
+
+        for marker in ("2", "3", "4", "5", "6", "7", "8"):
+            if not project_storage.save_project_to_file(build(marker), path):
+                raise RuntimeError("save %s tra False" % marker)
+        # 7 lan de len quay ra 7 ban cu [m1..m7], prune con 5 ban gan nhat.
+        kept = markers_of_copies()
+        if kept != ["m3", "m4", "m5", "m6", "m7"]:
+            raise RuntimeError("recovery khong quay/prune dung: %s" % kept)
+
+        soc = [n for n in os.listdir(folder) if n.endswith(".tmp")]
+        if soc:
+            raise RuntimeError("con %d file .tmp sot lai: %s" % (len(soc), soc))
+
+        cwd = os.getcwd()
+        try:
+            os.chdir(folder)
+            if not project_storage.save_project_to_file(build("9"), "tuongdoi.clinq"):
+                raise RuntimeError("ten file tuong doi khong luu duoc")
+            if not os.path.isfile(os.path.join(folder, "tuongdoi.clinq")):
+                raise RuntimeError("luu tuong doi ra ngoai thu muc")
+        finally:
+            os.chdir(cwd)
+    finally:
+        project_storage.RECOVERY_DIR = real_recovery
+    return ("lan ghi hong gi duoc %d byte cu, 7 lan de len con %d ban recovery "
+            "dung chu [m3..m7], 0 file .tmp, duong dan tuong doi luu duoc"
+            % (len(first_bytes), project_storage.RECOVERY_KEEP))
+
+
+# Cach cu dinh vi file media lac cho: di bo thu muc hien hanh theo ten. Phai
+# giu lai mot ban dich tai luc chay de dong gate duoi day chung minh no do
+# duoc cach nay, khong chi thay moi la xanh.
+_WALK_CWD_RENDER = (
+    "def f(source_path):\n"
+    "    import os\n"
+    "    for root, dirs, files in os.walk('.'):\n"
+    "        if os.path.basename(source_path) in files:\n"
+    "            return os.path.join(root, os.path.basename(source_path))\n"
+    "    return None\n"
+)
+
+
+def _media_locator_ok():
+    """File media bi don di cho: preview va export phai cung MOT duong dan.
+
+    Preview tung tim lai file lac cho bang `os.walk(".")` o nam cho khac nhau
+    trong `ui/` va `core/`, con export (`core/frame_composer.py`) chi tin
+    `clip.source_path`. Thu muc hien hanh cua exe da cai khi mo tu Explorer la
+    `C:\\Windows\\System32`, nen phep di do thanh cong that tuy theo noi nguoi
+    dung bam mo: co clip sang tren timeline ma xuat ra lai trang lang. Tu khi
+    co `core/media_locator.py`, viec dinh vi chi dien ra MOT lan luc mo du an
+    (`restore_model_from_clinq` cho file .clinq, `restore_model` cho ban tam
+    autosave), pham vi la thu muc cua chinh file cong thu muc chua .clinq, co
+    chan kinh do (MAX_DEPTH/MAX_ENTRIES) de khong di bo ca o.
+    """
+    import shutil
+    import tempfile
+    from PySide6.QtGui import QColor, QImage
+    from core import media_locator, project_storage
+    from core.canvas_utils import get_media_dimensions
+    from core.frame_composer import FrameComposer
+    from core.media_locator import locate
+    from core.timeline_model import ClipModel, TimelineModel, TrackType
+    from ui.graphics.clip_item import MediaExtractionWorker
+    from ui.graphics_canvas_item import CanvasClipItem
+    from ui.main_window import MainWindow
+    from ui.timeline_panel import TimelinePanel
+
+    def walks_cwd(fn):
+        return "walk" in fn.__code__.co_names
+
+    def uses_locator(fn):
+        code = fn.__code__.co_names
+        return "locate" in code or "resolve_model" in code
+
+    # Tu thu detector: cach cu phai bi bat, neu khong dong gate chi la do
+    # "khong con tim thay" va van xanh khi loi quay lai.
+    rival = {}
+    exec(_WALK_CWD_RENDER, rival)
+    if not walks_cwd(rival["f"]) or uses_locator(rival["f"]):
+        raise RuntimeError("detector khong bat duoc os.walk('.') -> gate vo nghia")
+
+    seams = [
+        ("canvas_utils.get_media_dimensions", get_media_dimensions),
+        ("MainWindow._detect_media_aspect_ratio",
+         MainWindow._detect_media_aspect_ratio),
+        ("TimelinePanel._get_media_duration", TimelinePanel._get_media_duration),
+        ("CanvasClipItem._load_media_pixmap", CanvasClipItem._load_media_pixmap),
+        ("CanvasClipItem._extract_video_frame", CanvasClipItem._extract_video_frame),
+        ("MediaExtractionWorker.run", MediaExtractionWorker.run),
+        ("project_storage.restore_model_from_clinq",
+         project_storage.restore_model_from_clinq),
+        ("project_storage.restore_model", project_storage.restore_model),
+    ]
+    bad = [name for name, fn in seams if walks_cwd(fn) or not uses_locator(fn)]
+    if bad:
+        raise RuntimeError("chieu dinh vi khong di qua core.media_locator: %s"
+                           % ", ".join(bad))
+
+    GREEN = "#00ff00"
+    RED = "#ff0000"
+    folder = os.path.join(tempfile.gettempdir(), "clinging_locator_report")
+    shutil.rmtree(folder, ignore_errors=True)
+    proj = os.path.join(folder, "proj")
+    for rel in ("media/sub", "a1/a2/a3/a4", "b1/b2/b3/b4/b5"):
+        os.makedirs(os.path.join(proj, *rel.split("/")), exist_ok=True)
+
+    def solid(color, *parts):
+        path = os.path.join(*parts)
+        img = QImage(8, 8, QImage.Format.Format_RGB32)
+        img.fill(QColor(color))
+        if not img.save(path):
+            raise RuntimeError("khong tao duoc %s" % path)
+        return path
+
+    moved = solid(GREEN, proj, "media", "clip.png")
+    deep4 = solid(GREEN, proj, "a1", "a2", "a3", "a4", "chan.png")
+    solid(GREEN, proj, "b1", "b2", "b3", "b4", "b5", "vuot.png")
+    # Bo cam cung ten trong thu muc hien hanh: cach cu lay no, cach moi phai
+    # bo qua. Mau DO khac mau XANH cua du an nen khung ve cung phan biet duoc.
+    decoy = solid(RED, folder, "clip.png")
+
+    gone = os.path.join(proj, "khong_ton_tai.png")
+    cwd = os.getcwd()
+    try:
+        os.chdir(folder)
+        if locate(moved) != moved:
+            raise RuntimeError("file con nguyen cho bi dao vi")
+        if locate(decoy, (proj,)) != decoy:
+            raise RuntimeError("locate khong tra dung file dang con")
+        found = locate(os.path.join(proj, "clip.png"), (proj,))
+        if found != moved:
+            raise RuntimeError("don file mot cap ma khong tim lai duoc: %s" % found)
+        if locate(os.path.join(proj, "chan.png"), (proj,)) != deep4:
+            raise RuntimeError("file trong gioi han sau %d cap ma khong tim thay"
+                               % media_locator.MAX_DEPTH)
+        if locate(os.path.join(proj, "vuot.png"), (proj,)) is not None:
+            raise RuntimeError("chan kinh sau bi nong: file o cap %d van duoc tim"
+                               % (media_locator.MAX_DEPTH + 1))
+        if locate(gone, (proj,)) is not None:
+            raise RuntimeError("file khong co that ma locate tra duong dan")
+        if locate("", (proj,)) is not None:
+            raise RuntimeError("duong dan rong phai tra None")
+
+        # Duong that cua nguoi dung: luu .clinq, don file, mo lai.
+        model = TimelineModel()
+        model.project_ratio = "16:9"
+        track = model.add_track(TrackType.IMAGE)
+        clip = model.add_clip(track.track_id, moved, "image", 0.0, 2.0,
+                              name="lac-cho")
+        if clip is None:
+            raise RuntimeError("add_clip tra None (track/media khong khop)")
+        clinq = os.path.join(proj, "gate.clinq")
+        if not project_storage.save_project_to_file(model, clinq):
+            raise RuntimeError("khong luu duoc gate.clinq")
+        relocated = os.path.join(proj, "media", "sub", "clip.png")
+        os.replace(moved, relocated)
+        if os.path.exists(moved):
+            raise RuntimeError("don file that khong dien ra")
+        data = project_storage.load_project_from_file(clinq)
+        if not data:
+            raise RuntimeError("load_project_from_file tra rong")
+        fresh = TimelineModel()
+        project_storage.restore_model_from_clinq(fresh, data, media_roots=[proj])
+        restored = [c for t in fresh.tracks for c in t.clips]
+        if len(restored) != 1:
+            raise RuntimeError("mo du an ra %d clip, mong 1" % len(restored))
+        got = restored[0].source_path
+        if got != relocated:
+            raise RuntimeError("mo du an khong dinh vi lai file lac cho: %s" % got)
+        if not os.path.exists(got):
+            raise RuntimeError("duong dan sau restore khong ton tai: %s" % got)
+
+        # Xuat ra: FrameComposer chi tin source_path, nen no phai ve duoc file
+        # ma restore vua tim thay — mau xanh cua clip, khong phai den trung nom.
+        composer = FrameComposer(fresh, 1920, 1080)
+        try:
+            frame = composer.render_frame(0.5)
+        finally:
+            composer.close()
+        centre = QColor(frame.pixel(frame.width() // 2, frame.height() // 2))
+        if centre.red() > 120 or centre.green() < 150:
+            raise RuntimeError("xuat ra khong ve file da dinh vi: mau tam %s"
+                               % centre.name())
+
+        # Preview dung chung duong dan nay de do kho media.
+        if get_media_dimensions(got, "image") != (8.0, 8.0):
+            raise RuntimeError("get_media_dimensions doc sai file da dinh vi")
+
+        # resolve_model: clip tim duoc thi ghi lai duong dan, clip vang mat
+        # thi GIU NGUYEN duong dan cu va nam trong `missing` de caller bao.
+        mixed = TimelineModel()
+        mixed.project_ratio = "16:9"
+        lane = mixed.add_track(TrackType.IMAGE)
+        for path, dur in ((os.path.join(proj, "chan.png"), 1.0),
+                          (gone, 1.0), (relocated, 1.0)):
+            lane.clips.append(ClipModel(clip_id="c" + path[-8:-4],
+                                        start_time=0.0, duration=dur,
+                                        source_path=path, media_type="image",
+                                        name=os.path.basename(path),
+                                        track_id=lane.track_id))
+        resolved, missing = media_locator.resolve_model(mixed, (proj,))
+        if len(resolved) != 1 or len(missing) != 1:
+            raise RuntimeError("resolve_model dem sai: resolved=%d missing=%d"
+                               % (len(resolved), len(missing)))
+        if lane.clips[0].source_path != deep4:
+            raise RuntimeError("resolve_model khong ghi lai duong dan: %s"
+                               % lane.clips[0].source_path)
+        if lane.clips[1].source_path != gone:
+            raise RuntimeError("file vang mat bi doi duong dan khi khong tim thay")
+        if missing != [gone]:
+            raise RuntimeError("missing khong dung duong dan cu: %s" % missing)
+    finally:
+        os.chdir(cwd)
+    return ("8 seam di qua core.media_locator, detector bat duoc cach cu, "
+            "don 1 cap + sau %d cap tim thay, sau %d cap bo, %d cam trong cwd "
+            "khong bi dung, .clinq mo lai ra file moi va FrameComposer ve mau %s"
+            % (media_locator.MAX_DEPTH, media_locator.MAX_DEPTH + 1, 1, GREEN))
+
+
+def _clipboard_copy_paste_ok():
+    """Nhom B: Ctrl+C / Ctrl+V phai snapshot dung, dan ra id moi giu nguyen
+    font/hinh hoc, giu bo cuc tuong doi khi dan nhieu clip, va la dung MOT buoc
+    undo per lenh dan.
+
+    Cam fixture nguoi dung: moi clip dung tai cho bang add_clip('') tren track
+    TEXT cua mot TimelineModel moi trong thu muc tam.
+    """
+    import os
+    import shutil
+    import tempfile
+
+    from core import commands as core_commands
+    from core.clip_clipboard import ClipClipboard
+    from core.timeline_model import TimelineModel, TrackType
+    from ui.main_window import MainWindow
+    from ui.timeline_panel import TimelinePanel
+
+    # (1) Seam cau truc: panel va lenh phai di qua helper that, khong dan thu cong.
+    # Lambda cua bindings nam ma hoa trong co_consts cua _install_editor_shortcuts,
+    # nen ten thuoc tinh (`_on_copy_selected`) roi vao co_names cua chinh no, khong
+    # phai cua ham bao. Vi vay phai duyet co_consts de quy thi moi noi duoc ca hai.
+    def walk_names(fn):
+        seen = set()
+        stack = [fn.__code__]
+        while stack:
+            code = stack.pop()
+            seen.update(code.co_names)
+            for const in code.co_consts:
+                if hasattr(const, "co_names") and const not in seen:
+                    stack.append(const)
+        return seen
+
+    seams = (
+        ("TimelinePanel._on_copy_selected",
+         TimelinePanel._on_copy_selected, "copy_from"),
+        ("TimelinePanel._on_paste_selected",
+         TimelinePanel._on_paste_selected, "PasteClipsCommand"),
+        ("core.PasteClipsCommand.execute",
+         core_commands.PasteClipsCommand.execute, "place_clip"),
+        ("MainWindow._install_editor_shortcuts",
+         MainWindow._install_editor_shortcuts, "_on_copy_selected"),
+        ("MainWindow._install_editor_shortcuts",
+         MainWindow._install_editor_shortcuts, "_on_paste_selected"),
+    )
+    missing = sorted({name for name, fn, helper in seams
+                      if helper not in walk_names(fn)})
+    if missing:
+        raise RuntimeError("seam clipboard thieu: %s" % ", ".join(missing))
+
+    # Detector phai bat duoc mot lenh dan "gia" khong goi place_clip, neu khong
+    # thi dong gate nay chi xanh vi chua co cai de do.
+    ns = {}
+    exec(compile("class FakePaste:\n"
+                 "    def execute(self):\n"
+                 "        self.x = 1\n", "<mau>", "exec"), ns)
+    if "place_clip" in walk_names(ns["FakePaste"].execute):
+        raise RuntimeError("detector khong phan biet duoc lenh dan that va gia")
+
+    folder = tempfile.mkdtemp(prefix="clinging_clipboard_")
+    cwd = os.getcwd()
+    os.chdir(folder)
+    try:
+        model = TimelineModel()
+        track = model.add_track(TrackType.TEXT)
+        a = model.add_clip(track.track_id, "", "text", 0.0, 2.0, "A")
+        b = model.add_clip(track.track_id, "", "text", 3.0, 2.0, "B")
+        a.font_size = 57.0
+        a.text_effect = "karaoke"
+        a.transform.x = 123.0
+        known = {a.clip_id, b.clip_id}
+        before = sum(len(t.clips) for t in model.tracks)
+
+        stack = core_commands.UndoStack()
+        cb = ClipClipboard()
+        model.select_clips([a.clip_id, b.clip_id])
+        copied = cb.copy_from(model, model.selected_clip_ids)
+        if copied != 2:
+            raise RuntimeError("copy khong lay du 2 clip dang chon (duoc %d)"
+                               % copied)
+        if cb.is_empty:
+            raise RuntimeError("clipboard bao trong sau khi copy 2 clip")
+
+        anchor = 10.0
+        cmd1 = core_commands.PasteClipsCommand(model, cb.entries(), anchor)
+        stack.push(cmd1)
+        pasted = [c for cid in cmd1._pasted_ids
+                  if (c := model.get_clip(cid)) is not None]
+        if len(pasted) != 2:
+            raise RuntimeError("paste khong ra 2 clip (duoc %d)" % len(pasted))
+        if {c.clip_id for c in pasted} & known:
+            raise RuntimeError("ban dan trung id voi clip goc")
+        pa = next((c for c in pasted if abs(c.font_size - 57.0) < 0.001), None)
+        if (pa is None or pa.text_effect != "karaoke"
+                or abs(pa.transform.x - 123.0) > 0.001):
+            raise RuntimeError("ban dan khong giu nguyen font/hinh hoc clip goc")
+        starts = sorted(c.start_time for c in pasted)
+        if (abs(starts[0] - anchor) > 0.001
+                or abs(starts[1] - (anchor + 3.0)) > 0.001):
+            raise RuntimeError("le bo cuc tuong doi khi dan nhieu clip: %s"
+                               % starts)
+        if sum(len(t.clips) for t in model.tracks) != before + 2:
+            raise RuntimeError("paste thu nhat khong tang dung 2 clip")
+
+        # Paste lan hai cung anchor -> clip trung choang nen phai nhay layer
+        # (danh duong _create_collision_track cua place_clip), van du 2 clip.
+        cmd2 = core_commands.PasteClipsCommand(model, cb.entries(), anchor)
+        stack.push(cmd2)
+        mid = sum(len(t.clips) for t in model.tracks)
+        if mid != before + 4:
+            raise RuntimeError("paste va cham khong them dung 2 clip (%d)" % mid)
+
+        stack.undo()
+        stack.undo()
+        back = sum(len(t.clips) for t in model.tracks)
+        if back != before:
+            raise RuntimeError("undo hai lan paste khong tra ve %d clip (con %d)"
+                               % (before, back))
+
+        stack.redo()
+        stack.redo()
+        if sum(len(t.clips) for t in model.tracks) != before + 4:
+            raise RuntimeError("redo paste khong lam lai du 4 clip")
+        stack.undo()
+        stack.undo()
+    finally:
+        os.chdir(cwd)
+        shutil.rmtree(folder, ignore_errors=True)
+    return ("5 seam clipboard qua co_names, detector bat duoc lenh dan gia, "
+            "copy 2 clip, dan giu font_size=57/karaoke/x=123 + lech 3,0s, "
+            "dan lan 2 va cham nhay layer van +2, undo/redo khop so clip")
+
+
+def _undo_text_transform_ok():
+    """Nhom A3: doi chu / doi hinh hoc phai thanh MOT buoc UndoStack.
+
+    Chieu thu nhat cua ban cu: panel ghi thang vao clip_model nen Ctrl+Z bo qua
+    moi thao tac chu. Chieu thu hai cua ban lam qua tay: neu moi ky tu go la mot
+    lenh thi MAX_HISTORY = 100 bi dien sach chi vi mot doan chu. Ca hai chieu
+    deu do tai day, tren widget that cua panel.
+    """
+    import shutil
+    import tempfile
+    import types
+
+    from PySide6.QtWidgets import QWidget
+    from core import commands as core_commands
+    from core.timeline_model import TimelineModel, TrackType
+    from ui.graphics_canvas_item import CanvasClipItem, TextClipItem
+    from ui.main_window import MainWindow
+    from ui.properties_panel import ClipPropertiesWidget
+
+    TOL = 0.005
+
+    def routes_through(fn, helper):
+        """Handler phai goi helper va khong con cham thang vao clip_model."""
+        names = fn.__code__.co_names
+        return helper in names and "clip_model" not in names
+
+    HANDLERS = ("_on_font_changed", "_on_font_size_changed", "_on_bold_toggled",
+                "_on_italic_toggled", "_on_underline_toggled",
+                "_on_text_color_clicked", "_on_text_content_changed",
+                "_on_text_effect_changed", "_on_text_style_changed",
+                "_on_text_intensity_changed")
+    direct = [name for name in HANDLERS
+              if not routes_through(getattr(ClipPropertiesWidget, name),
+                                    "_push_text")]
+    if len(HANDLERS) != 10 or direct:
+        raise RuntimeError("handler chu khong di qua _push_text: %s"
+                           % ", ".join(direct))
+
+    # Detector phai bat duoc cach cu, neu khong thi no chi xanh vi code chua co
+    # handler nao duoc kiem tra that.
+    ns = {}
+    exec(compile("class R:\n"
+                 "    def _on_bold_toggled(self):\n"
+                 "        self.clip_model.font_bold = True\n",
+                 "<mau>", "exec"), ns)
+    if routes_through(ns["R"]._on_bold_toggled, "_push_text"):
+        raise RuntimeError("detector khong phan biet duoc ghi thang va ghi qua lenh")
+
+    seams = (
+        ("MainWindow._on_properties_changed_by_user",
+         MainWindow._on_properties_changed_by_user, "SetClipTransformCommand"),
+        ("MainWindow._on_canvas_edit_committed",
+         MainWindow._on_canvas_edit_committed, "SetClipTransformCommand"),
+        ("CanvasClipItem.mouseReleaseEvent",
+         CanvasClipItem.mouseReleaseEvent, "_commit_gesture"),
+        ("TextClipItem.mouseReleaseEvent",
+         TextClipItem.mouseReleaseEvent, "_commit_gesture"),
+        ("TextClipItem.focusOutEvent",
+         TextClipItem.focusOutEvent, "on_edit_commit"),
+        ("MainWindow._wire_events", MainWindow._wire_events, "_on_clip_updated"),
+        ("MainWindow._wire_events", MainWindow._wire_events, "_undo_step"),
+    )
+    missing = sorted({name for name, fn, helper in seams
+                      if helper not in fn.__code__.co_names})
+    if missing:
+        raise RuntimeError("seam undo thieu: %s" % ", ".join(missing))
+
+    folder = tempfile.mkdtemp(prefix="clinging_undo_")
+    cwd = os.getcwd()
+    os.chdir(folder)
+    host = None
+    try:
+        model = TimelineModel()
+        track = model.add_track(TrackType.TEXT)
+        clip = model.add_clip(track.track_id, "", "text", 0.0, 4.0, "Tieu de")
+        stack = core_commands.UndoStack()
+        host = QWidget()
+        host.setObjectName("MainWindow")
+        host.timeline_panel = types.SimpleNamespace(model=model, undo_stack=stack)
+        host.preview_panel = types.SimpleNamespace(
+            canvas=types.SimpleNamespace(_clip_items={}))
+        seen = []
+        host.properties_panel = types.SimpleNamespace(
+            current_editor=None, update_editor_values=seen.append)
+        # host dong vai MainWindow gia: _undo_step/_redo_step that goi
+        # self._sync_panel_after_history(), ma QWidget tran khong co. Bind body
+        # that cua MainWindow de Ctrl+Z van doc lai o nhap dung duong production.
+        host._sync_panel_after_history = (
+            lambda: MainWindow._sync_panel_after_history(host))
+        editor = ClipPropertiesWidget(clip, parent=host)
+        host.properties_panel.current_editor = editor
+
+        for text in ("T", "Ti", "Tieu de moi"):
+            editor.text_edit.setPlainText(text)
+        if stack.undo_count != 1:
+            raise RuntimeError("3 lan go chu tao %d buoc, phai la 1" % stack.undo_count)
+        if clip.name != "Tieu de moi":
+            raise RuntimeError("lenh chu khong ghi duoc vao model")
+        stack.undo()
+        if clip.name != "Tieu de":
+            raise RuntimeError("Ctrl+Z khong tra lai chu cu: %s" % clip.name)
+        stack.redo()
+        if clip.name != "Tieu de moi":
+            raise RuntimeError("Ctrl+Y khong lam lai duoc lenh chu")
+
+        was_bold = bool(clip.font_bold)
+        editor.btn_bold.click()
+        if stack.undo_count != 2 or clip.font_bold == was_bold:
+            raise RuntimeError("not chuot bold khong thanh mot buoc undo rieng")
+        stack.undo()
+        if bool(clip.font_bold) != was_bold or stack.undo_count != 1:
+            raise RuntimeError("Ctrl+Z khong hoan tac buoc bold ve gia tri cu")
+        stack.redo()
+
+        size_before = float(clip.font_size)
+        for size in (20.0, 26.0, 31.0):
+            editor.spin_font_size.setValue(size)
+        if stack.undo_count != 3:
+            raise RuntimeError("3 nac spin tao %d buoc, phai la 1" % stack.undo_count)
+        stack.undo()
+        if abs(clip.font_size - size_before) > TOL:
+            raise RuntimeError("hoan tac spin tra ve %s chu khong phai %s"
+                               % (clip.font_size, size_before))
+        stack.redo()
+        if abs(clip.font_size - 31.0) > TOL:
+            raise RuntimeError("Ctrl+Y khong lam lai duoc nac spin")
+
+        def funnel(scale_x, scale_y, rotation, opacity, x, y, name=None):
+            MainWindow._on_properties_changed_by_user(
+                host, clip.clip_id, name if name is not None else clip.name,
+                scale_x, scale_y, rotation, opacity, x, y)
+
+        press = core_commands.transform_snapshot(clip)
+        funnel(2.0, 1.0, 15.0, 0.5, 100.0, 200.0)
+        moved = core_commands.transform_snapshot(clip)
+        if stack.undo_count != 4:
+            raise RuntimeError("nhap so tren panel khong tao buoc undo")
+        if abs(moved["scale_x"] - 2.0) > TOL or abs(moved["rotation"] - 15.0) > TOL:
+            raise RuntimeError("lenh hinh hoc khong ghi du so vao model")
+
+        n = stack.undo_count
+        funnel(moved["scale_x"], moved["scale_y"], moved["rotation"],
+               moved["opacity"], moved["x"], moved["y"])
+        if stack.undo_count != n:
+            raise RuntimeError("go so khong doi gi van them mot buoc rong")
+
+        stack.undo()
+        restored = core_commands.transform_snapshot(clip)
+        if any(abs(restored[k] - press[k]) > TOL for k in press):
+            raise RuntimeError("Ctrl+Z hinh hoc sai: %s" % restored)
+
+        # Clip co keyframe: AutoKeyframeCommand da la lenh undo cua thao tac,
+        # them mot lenh hinh hoc nua buoc nguoi dung Ctrl+Z hai lan.
+        clip.add_keyframe("scale_x", 0.0, 1.0)
+        n = stack.undo_count
+        funnel(3.0, 1.0, 0.0, 1.0, 0.0, 0.0)
+        if stack.undo_count != n:
+            raise RuntimeError("clip co keyframe bi them lenh hinh hoc dup")
+        if abs(clip.transform.scale_x - 3.0) > TOL:
+            raise RuntimeError("duong keyframe khong con ghi duoc so nhu cu")
+
+        # keo neo tren Canvas: model da bi ghi truoc khi lenh chay, nen phai
+        # nhan `before` tu luc bam chuot.
+        clip.transform.x = 260.0
+        after = core_commands.transform_snapshot(clip)
+        before = dict(after)
+        before["x"] = 0.0
+        n = stack.undo_count
+        MainWindow._on_canvas_edit_committed(host, clip, "transform", after, before)
+        if stack.undo_count != n + 1:
+            raise RuntimeError("ket thuc keo tren Canvas khong tao buoc undo")
+        MainWindow._on_canvas_edit_committed(host, clip, "transform", after, after)
+        if stack.undo_count != n + 1:
+            raise RuntimeError("click khong keo tao buoc undo rong")
+        MainWindow._undo_step(host)
+        if abs(clip.transform.x) > TOL:
+            raise RuntimeError("hoan tac keo tra ve %s chu khong phai 0.0"
+                               % clip.transform.x)
+        if not seen or seen[-1].clip_id != clip.clip_id:
+            raise RuntimeError("Ctrl+Z khong doc lai o nhap tren panel")
+
+        MainWindow._on_canvas_edit_committed(host, clip, "text",
+                                            {"name": "Chu inline"})
+        if clip.name != "Chu inline":
+            raise RuntimeError("sua chu tren Canvas khong ghi vao model")
+        MainWindow._undo_step(host)
+        if clip.name == "Chu inline":
+            raise RuntimeError("Ctrl+Z khong hoan tac duoc chu sua tren Canvas")
+
+        return ("%d ky tu go = 1 buoc, %d nac spin = 1 buoc, %d seam struct + "
+                "2 duong keyframe/gesture da kiem"
+                % (3, 3, len(seams)))
+    finally:
+        os.chdir(cwd)
+        if host is not None:
+            host.deleteLater()
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def _recent_readonly_ok():
     """Mo app khong duoc phep ghi danh sach du an gan day cua nguoi dung.
 
@@ -941,6 +1574,11 @@ def run_selftest(argv=None):
     col.check("lop phu recap: vien/REC/kinh mo + luu vao file", _recap_overlay_ok)
     col.check("8 kieu karaoke: quet theo tu + luu vao file", _karaoke_ok)
     col.check("mo du an tu file .clinq", _project_launch_ok)
+    col.check("luu du an: ghi hong khong pha ban cu", _save_atomic_ok)
+    col.check("media lac cho: preview va export cung duong dan", _media_locator_ok)
+    col.check("undo cho chu + hinh hoc clip", _undo_text_transform_ok)
+    col.check("clipboard clip Ctrl+C/V", _clipboard_copy_paste_ok)
+    col.check("style chu: vien/bong/hop nen/can le", _text_styling_ok)
     col.check("doc MRU khong ghi du lieu nguoi dung", _recent_readonly_ok)
     col.check("giai ma tuan tu + cache dia", _decode_cache_ok)
     col.check("xem truoc = xuat: moc thoi gian cuc bo dung mot ham", _local_time_ok)
@@ -3021,6 +3659,203 @@ def _karaoke_ok():
                max(m["fill"] for m in leg.values())))
 
 
+def _text_styling_ok():
+    """Nhom C: style chu (vien / bong / hop nen / can le) phai do pixel THAT,
+    preview lan export di chung MOT seam ``text_style_of``, va tron ven qua file.
+
+    Cam fixture nguoi dung: moi clip dung tai cho bang ``add_clip('')`` tren
+    track TEXT cua mot ``TimelineModel`` moi trong thu muc tam. Font phai la
+    font THAT: headless khong font thi Qt ve moi ky tu hinh chu nhat, so net
+    chu thanh ra mau xanh gia.
+
+    Do sau (vong 16 huong cua vien, do lech bong, alpha hop nen, parity
+    preview=xuat tung pixel) nam trong scratch/text_styling_evidence.py cung
+    6 phan chung scratch/text_styling_counterfactual.py. O day chi dem nam
+    mat xich ma bundle dong goi co quyen lam dut.
+    """
+    import os
+    import shutil
+    import tempfile
+    import numpy as np
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from core import project_storage
+    from core.frame_composer import FrameComposer
+    from core.text_paint import (make_font, paint_animated_text, text_style_of,
+                                 _styling_active)
+    from core.timeline_model import TimelineModel, TrackType
+    from ui.graphics_canvas_item import TextClipItem
+
+    STYLING = ("text_outline_color", "text_outline_width", "text_shadow_color",
+               "text_shadow_dx", "text_shadow_dy", "text_shadow_blur",
+               "text_box_color", "text_box_alpha", "text_box_radius",
+               "text_box_padding", "text_align")
+    NUMERIC = ("text_outline_width", "text_shadow_dx", "text_shadow_dy",
+               "text_shadow_blur", "text_box_alpha", "text_box_radius",
+               "text_box_padding")
+
+    model = TimelineModel()
+    model.project_ratio = "16:9"
+    track = model.add_track(TrackType.TEXT)
+    clip = model.add_clip(track.track_id, "", "text", 0.0, 4.0, name="Xin chao")
+    if clip is None:
+        raise RuntimeError("add_clip text tra None (track TEXT khong nhan text?)")
+
+    # (1) text_style_of doc du 11 truong va chuan hoa so ve float (khong phai int).
+    d = text_style_of(clip)
+    absent = [k for k in STYLING if k not in d]
+    if absent:
+        raise RuntimeError("text_style_of thieu truong: %s" % ", ".join(absent))
+    clip.text_outline_width = 3  # int tinh co -> phai ra float
+    if not isinstance(text_style_of(clip)["text_outline_width"], float):
+        raise RuntimeError("text_style_of khong chuan hoa so ve float")
+    clip.text_outline_width = 0.0
+
+    # (2) Seam cau truc: CA preview (TextClipItem.paint) lan export
+    #     (FrameComposer._draw_text) phai goi dung text_style_of, neu khong thi
+    #     hai ben ve hai khac nhau va nguoi dung thay chu khong nhu luc xuat ra.
+    def walk_names(fn):
+        seen = set()
+        stack = [fn.__code__]
+        while stack:
+            code = stack.pop()
+            seen.update(code.co_names)
+            for const in code.co_consts:
+                if hasattr(const, "co_names") and const not in seen:
+                    stack.append(const)
+        return seen
+
+    seams = (("FrameComposer._draw_text", FrameComposer._draw_text, "text_style_of"),
+             ("TextClipItem.paint", TextClipItem.paint, "text_style_of"))
+    missing = sorted({name for name, fn, helper in seams
+                      if helper not in walk_names(fn)})
+    if missing:
+        raise RuntimeError("seam style chu thieu: %s" % ", ".join(missing))
+    ns = {}
+    exec(compile("class FakeDraw:\n"
+                 "    def _draw(self):\n"
+                 "        return 1\n", "<mau>", "exec"), ns)
+    if "text_style_of" in walk_names(ns["FakeDraw"]._draw):
+        raise RuntimeError("detector khong phan biet ham goi va khong goi seam")
+
+    W, H = 1000, 360
+    font = make_font("Arial", 56, True)
+    base = {"text_outline_color": "#FF2D2D", "text_outline_width": 0.0,
+            "text_shadow_color": "#2D6DFF", "text_shadow_dx": 0.0,
+            "text_shadow_dy": 0.0, "text_shadow_blur": 0.0,
+            "text_box_color": "#2DC86D", "text_box_alpha": 0.0,
+            "text_box_radius": 10.0, "text_box_padding": 16.0,
+            "text_align": "center"}
+
+    def px(img):
+        row = img.bytesPerLine() // 4
+        a = np.frombuffer(img.constBits(), np.uint8,
+                          count=row * 4 * img.height()).reshape(
+            img.height(), row, 4)[:, :img.width(), :3]
+        # ARGB32 little-endian la B,G,R,A - dao truoc khi so.
+        return a[:, :, ::-1].astype(np.int16)
+
+    def diff(a, b):
+        return int((np.abs(px(a) - px(b)).max(axis=2) > 24).sum())
+
+    def render(over=None, line="Xin chao"):
+        s = dict(base)
+        s.update(over or {})
+        img = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(QColor("#101014"))
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        paint_animated_text(p, line, font, "#FFFFFF", W, H, W / 2.0, H / 2.0,
+                            effect="none", p=1.0, intensity=1.0, style="none",
+                            t=0.0, styling=s)
+        p.end()
+        return img
+
+    plain = render()
+
+    # (3a) Vien / bong / bong mo / hop nen: moi cai PHAI lech chu thuong > 200 px.
+    cases = {"vien": {"text_outline_width": 4.0},
+             "bong": {"text_shadow_dx": 8.0, "text_shadow_dy": 8.0},
+             "bong_mo": {"text_shadow_dx": 4.0, "text_shadow_dy": 4.0,
+                         "text_shadow_blur": 6.0},
+             "hop": {"text_box_alpha": 0.55}}
+    weakest = None
+    for label, over in cases.items():
+        n = diff(render(over), plain)
+        if n < 200:
+            raise RuntimeError("%s ve giong chu thuong (%d px lech)" % (label, n))
+        if weakest is None or n < weakest[1]:
+            weakest = (label, n)
+
+    # (3b) Can le dich khoi chu: do tren khoi nhieu dong de dong ngan nam trong
+    #      box_w (box_w == line_w thi trai/phai giong het nhau, gate xanh gia).
+    tall = "WWW WWW WWW\nHi"
+    dl = diff(render({"text_align": "left"}, tall),
+              render({"text_align": "right"}, tall))
+    if dl < 100:
+        raise RuntimeError("can le khong dich vi tri chu (%d px lech trai/phai)" % dl)
+
+    # (3c) Chi bat can le KHONG duoc keo duong composite: phai van fast path.
+    if _styling_active({**base, "text_align": "left"}):
+        raise RuntimeError("align don thuan bi coi la can composite (ton kem may yeu)")
+
+    # (4) Export that: FrameComposer phai doc styling cua clip (hop nen bat/tat).
+    CW, CH = 1920, 1080
+
+    def frame():
+        composer = FrameComposer(model, CW, CH)
+        try:
+            return composer.render_frame(1.0).convertToFormat(
+                QImage.Format.Format_ARGB32_Premultiplied)
+        finally:
+            composer.close()
+
+    clip.text_box_color = "#2DC86D"
+    clip.text_box_alpha = 0.0
+    clip.text_box_padding = 40.0
+    off_img = frame()
+    clip.text_box_alpha = 0.7
+    on_img = frame()
+    ex = diff(on_img, off_img)
+    if ex < 200:
+        raise RuntimeError("export bo qua style chu hop nen (%d px lech)" % ex)
+    if not np.array_equal(px(on_img), px(frame())):
+        raise RuntimeError("export cung thoi diem cho hai khung khac nhau")
+
+    # (5) Ca nam truong song sot model -> .clinq -> model.
+    values = {"text_outline_width": 5.0, "text_outline_color": "#FFAA00",
+              "text_shadow_color": "#00FFAA", "text_shadow_dx": -7.0,
+              "text_shadow_dy": 9.0, "text_shadow_blur": 3.0,
+              "text_box_color": "#AA00FF", "text_box_alpha": 0.7,
+              "text_box_radius": 14.0, "text_box_padding": 22.0,
+              "text_align": "right"}
+    for k, v in values.items():
+        setattr(clip, k, v)
+    folder = tempfile.mkdtemp(prefix="clinging_style_")
+    cwd = os.getcwd()
+    os.chdir(folder)
+    try:
+        path = os.path.join(folder, "Kiem style.clinq")
+        if not project_storage.save_project_to_file(model, path):
+            raise RuntimeError("save_project_to_file that bai (payload style bi tu choi)")
+        data = project_storage.load_project_from_file(path)
+        if not data:
+            raise RuntimeError("load_project_from_file tra rong")
+        back = TimelineModel()
+        project_storage.restore_model_from_clinq(back, data)
+        got = back.active_visual_clips_at(0.5)[0]
+        lost = [k for k in STYLING if getattr(got, k) != getattr(clip, k)]
+        if lost:
+            raise RuntimeError("style chu mat khi quay qua file: %s" % ", ".join(lost))
+    finally:
+        os.chdir(cwd)
+        shutil.rmtree(folder, ignore_errors=True)
+
+    return ("11 truong song qua .clinq, preview+export cung seam text_style_of, "
+            "vien/bong/hop lech nhat %s=%d px, can le dich %d px, "
+            "export hop nen %d px, fast path giu khi chi doi le"
+            % (weakest[0], weakest[1], dl, ex))
+
+
 def _project_fixture():
     """Một file ``.clinq`` thật trong TEMP, đủ giá trị cụ thể để đối chiếu.
 
@@ -3306,6 +4141,8 @@ def run_startup_report(argv=None):
     # sau khi hang doi bia chay mot vai luot, va neu do o cuoi thi khong con phan
     # biet duoc "boot" voi "sau boot".
     cv2_at_window = "cv2" in sys.modules
+    editor_at_window = "ui.main_window" in sys.modules
+    psutil_at_window = "psutil" in sys.modules
     mark("cua so lo ra")
     settle_until = time.time() + 1.5
     while time.time() < settle_until:
@@ -3385,6 +4222,14 @@ def run_startup_report(argv=None):
         "dong_ho_phan_biet": (control["nang_s"] >= 0.05
                               and control["nhe_s"] <= 0.005),
         "boot_khong_cv2": not cv2_at_window,
+        # Trang Home khong can dung phim: `from ui.main_window import
+        # MainWindow` o dau ui/main_controller keo theo toan bo panel (ui.graphics
+        # 33,8 ms, timeline_panel 38,4 ms, PySide6.QtMultimedia 36,0 ms,
+        # QtNetwork 16,1 ms theo `-X importtime`), trong khi MainWindow chi duoc
+        # dung MOT lan trong MainController._init_editor. psutil cung vay:
+        # 102 ms cum trong luc mo app chi de do CPU/RAM sau khi cua so da ve.
+        "boot_khong_keo_trang_dung": not editor_at_window,
+        "boot_khong_psutil": not psutil_at_window,
         "bia_duoc_ve": covers == cards,
         "anh_chung_minh": os.path.isfile(shot),
     }

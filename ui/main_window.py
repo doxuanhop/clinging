@@ -216,8 +216,8 @@ class MainWindow(QWidget):
     def _wire_events(self):
         self.title_bar.save_btn.clicked.connect(self._on_save)
         self.title_bar.export_main.clicked.connect(self._on_export)
-        self.title_bar.undoRequested.connect(self.timeline_panel.undo_stack.undo)
-        self.title_bar.redoRequested.connect(self.timeline_panel.undo_stack.redo)
+        self.title_bar.undoRequested.connect(self._undo_step)
+        self.title_bar.redoRequested.connect(self._redo_step)
         self.title_bar.splitRequested.connect(self.timeline_panel._on_split_selected)
         self.title_bar.deleteRequested.connect(self.timeline_panel._on_delete_selected)
         self.title_bar.duplicateRequested.connect(self.timeline_panel._on_duplicate_selected)
@@ -290,6 +290,7 @@ class MainWindow(QWidget):
         self.timeline_panel.model.clipRemoved.connect(self._on_clip_removed)
         self.timeline_panel.model.clipMoved.connect(self._sync_canvas)
         self.timeline_panel.model.clipResized.connect(self._sync_canvas)
+        self.timeline_panel.model.clipUpdated.connect(self._on_clip_updated)
         self.timeline_panel.model.tracksReordered.connect(self._update_canvas_z_index)
 
         # Khi chọn clip trên Timeline → Hiển thị thuộc tính trên Properties Panel & Highlight trên Canvas
@@ -344,11 +345,17 @@ class MainWindow(QWidget):
         bindings = {
             "Ctrl+S": ("Lưu dự án", self._on_save),
             "Ctrl+E": ("Xuất video", self._on_export),
-            "Ctrl+Z": ("Hoàn tác", self.timeline_panel.undo_stack.undo),
-            "Ctrl+Shift+Z": ("Làm lại", self.timeline_panel.undo_stack.redo),
-            "Ctrl+Y": ("Làm lại", self.timeline_panel.undo_stack.redo),
+            "Ctrl+Z": ("Hoàn tác", self._undo_step),
+            "Ctrl+Shift+Z": ("Làm lại", self._redo_step),
+            "Ctrl+Y": ("Làm lại", self._redo_step),
             "Ctrl+D": ("Nhân bản clip đang chọn",
                        self.timeline_panel._on_duplicate_selected),
+            "Ctrl+C": ("Sao chép clip đang chọn",
+                       lambda: self._invoke_unless_editing(
+                           self.timeline_panel._on_copy_selected)),
+            "Ctrl+V": ("Dán clip tại đầu phát",
+                       lambda: self._invoke_unless_editing(
+                           self.timeline_panel._on_paste_selected)),
             "Delete": ("Xóa clip đang chọn",
                        lambda: self._invoke_unless_editing(self.timeline_panel._on_delete_selected)),
             "Backspace": ("Xóa clip đang chọn",
@@ -608,7 +615,8 @@ class MainWindow(QWidget):
         """Đồng bộ hóa canvas trình phát với timeline model."""
         self.preview_panel.canvas.sync_scene_from_model(
             self.timeline_panel.model,
-            self._on_canvas_item_transformed
+            self._on_canvas_item_transformed,
+            self._on_canvas_edit_committed
         )
         # Canvas dung ClipItem moi sau lan dong bo nay; decoder cua clip da
         # khoi model (mo du an khac, hoan tac xoa) van giu file mo va mot frame
@@ -722,13 +730,86 @@ class MainWindow(QWidget):
         """Khi người dùng kéo dãn co tỷ lệ bằng neo trên canvas → cập nhật Properties Panel."""
         self.properties_panel.update_editor_values(clip_model)
 
+    def _undo_step(self):
+        self.timeline_panel.undo_stack.undo()
+        self._sync_panel_after_history()
+
+    def _redo_step(self):
+        self.timeline_panel.undo_stack.redo()
+        self._sync_panel_after_history()
+
+    def _sync_panel_after_history(self):
+        editor = self.properties_panel.current_editor
+        if editor is None:
+            return
+        # Panel không tự đọc lại model khi lịch sử đổi: sau Ctrl+Z mà ô nhập vẫn
+        # giữ giá trị vừa hoàn tác thì cú gõ tiếp theo sẽ ghi nguyên số cũ. Chỉ
+        # làm ở đây, không làm lúc push, vì lúc đó con trỏ đang nằm trong chính
+        # ô nhập và setText sẽ nhảy caret về cuối.
+        clip = self.timeline_panel.model.get_clip(editor.clip_id)
+        if clip is not None:
+            self.properties_panel.update_editor_values(clip)
+
+    def _on_clip_updated(self, clip_id):
+        """Vẽ lại RIÊNG item của clip khi một lệnh sửa/hoàn tác phát clipUpdated.
+
+        Trước đây Ctrl+Z của lệnh chữ không hiện lên Canvas vì clipUpdated chỉ
+        có scene của timeline nghe. Không gọi _sync_canvas() ở đây: nó dựng lại
+        mọi item, mà dựng lại item đang có focus thì con trỏ gõ chữ bị mất.
+        """
+        item = self.preview_panel.canvas._clip_items.get(clip_id)
+        if item is None:
+            return
+        if hasattr(item, "refresh_style") and not item.hasFocus():
+            item.refresh_style()
+        item.sync_from_model()
+        item.update()
+
+    def _on_canvas_edit_committed(self, clip_model, kind, values, before=None):
+        """Mot gesture tren Canvas (keo neo, sua chu inline) = MOT lenh undo.
+
+        Item da ghi ket qua vao model trong luc keo nen lenh phai nhan `before`
+        tu luc bam chuot; neu khong thi Ctrl+Z tra lai dung gia tri vua keo.
+        """
+        model = self.timeline_panel.model
+        clip = model.get_clip(clip_model.clip_id)
+        if clip is None or not values:
+            return
+        stack = self.timeline_panel.undo_stack
+        if kind == "text":
+            from core.commands import SetClipTextCommand
+            stack.push(SetClipTextCommand(model, clip.clip_id, **values))
+            return
+        from core.commands import SetClipTransformCommand
+        if before is None:
+            return
+        if all(abs(float(before[key]) - float(value)) < 0.005
+               for key, value in values.items()):
+            return
+        stack.push(SetClipTransformCommand(model, clip.clip_id,
+                                           before=before, **values))
+
     def _on_properties_changed_by_user(self, clip_id, name, scale_x, scale_y, rotation, opacity, x, y):
         """Khi người dùng nhập số trên Properties Panel → cập nhật Model & đồng bộ Canvas."""
-        self.timeline_panel.model.update_clip_properties(
-            clip_id, name=name, scale_x=scale_x, scale_y=scale_y,
-            rotation=rotation, opacity=opacity, x=x, y=y
-        )
-        # Đồng bộ từ model sang item trên Canvas
+        model = self.timeline_panel.model
+        clip = model.get_clip(clip_id)
+        if clip is None:
+            return
+        requested = {"name": name, "scale_x": scale_x, "scale_y": scale_y,
+                     "rotation": rotation, "opacity": opacity, "x": x, "y": y}
+        if any(clip.keyframes.values()):
+            # Clip có keyframe: AutoKeyframeCommand đã là lệnh undo của thao tác
+            # này. Đẩy thêm một lệnh hình học lên đầu stack buộc người dùng
+            # Ctrl+Z hai lần cho một cú kéo spin.
+            model.update_clip_properties(clip_id, **requested)
+        else:
+            from core.commands import SetClipTransformCommand, transform_snapshot
+            current = transform_snapshot(clip)
+            changed = any(abs(current[key] - float(value)) >= 0.005
+                          for key, value in requested.items() if key != "name")
+            if changed or str(name) != str(clip.name):
+                self.timeline_panel.undo_stack.push(
+                    SetClipTransformCommand(model, clip_id, **requested))
         canvas_item = self.preview_panel.canvas._clip_items.get(clip_id)
         if canvas_item:
             canvas_item.sync_from_model()
@@ -1478,7 +1559,9 @@ class MainWindow(QWidget):
         if pm.project_path and os.path.exists(pm.project_path):
             project = load_project_from_file(pm.project_path)
             if project:
-                restore_model_from_clinq(self.timeline_panel.model, project)
+                restore_model_from_clinq(
+                    self.timeline_panel.model, project,
+                    media_roots=[os.path.dirname(pm.project_path)])
                 self.restore_library_from_project(project)
                 ratio = project.get("project_meta", {}).get("aspect_ratio", "16:9")
                 ratio_display = {
@@ -1573,17 +1656,15 @@ class MainWindow(QWidget):
         from PySide6.QtGui import QPixmap
         import os
         
+        from core.media_locator import locate
+
         width, height = 1920, 1080
-        
-        # Tìm file thực tế
-        actual_path = file_path
-        if not os.path.exists(file_path):
-            basename = os.path.basename(file_path)
-            for root, dirs, files in os.walk("."):
-                if basename in files:
-                    actual_path = os.path.join(root, basename)
-                    break
-        
+
+        # Duong dan da dinh vi luc mo du an; day chi con truong hop doi ten sau
+        # khi mo. Khong di bo thu muc hien hanh (cwd cua exe da cai co the la
+        # System32).
+        actual_path = locate(file_path) or file_path
+
         try:
             if item_type == "video" and os.path.exists(actual_path):
                 old_stderr = os.dup(2)

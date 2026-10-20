@@ -14,6 +14,7 @@ Pattern:
 """
 
 from abc import ABC, abstractmethod
+import time
 from typing import Optional
 from PySide6.QtCore import QObject, Signal
 
@@ -34,6 +35,18 @@ class Command(ABC):
     def description(self) -> str:
         """Mô tả ngắn hiển thị trong tooltip Undo/Redo."""
         return self.__class__.__name__
+
+    def merges_with(self, other: "Command") -> bool:
+        """Lệnh mới có phải là bước tiếp theo của lệnh đang nằm trên đỉnh?
+
+        Mặc định KHÔNG: mọi lệnh khác nhau (khác clip, khác thao tác) phải còn
+        là một bước Ctrl+Z riêng.
+        """
+        return False
+
+    def absorb(self, other: "Command"):
+        """Nạp kết quả của lệnh kế tiếp vào lệnh này, giữ nguyên điểm khởi đầu."""
+        return None
 
 
 # ── Undo Stack ──────────────────────────────────────────────────
@@ -97,14 +110,23 @@ class UndoStack(QObject):
         return len(self._undo_stack)
 
     def push(self, command: Command):
-        """Thực thi command và đẩy vào undo stack."""
-        command.execute()
-        self._undo_stack.append(command)
-        self._redo_stack.clear()        # Xóa redo khi có action mới
+        """Thực thi command và đẩy vào undo stack.
 
-        # Giới hạn lịch sử
-        if len(self._undo_stack) > self.MAX_HISTORY:
-            self._undo_stack.pop(0)
+        Hai lệnh kế tiếp nhau mà merges_with() cho là cùng một thao tác (gõ
+        từng ký tự, kéo từng nấc spin) thì LỆNH trên đỉnh nhận kết quả của lệnh
+        mới thay vì thành một bước thứ hai: MAX_HISTORY = 100 sẽ bị điền sạch
+        chỉ bởi một đoạn chữ, và Ctrl+Z phải xoá cả đoạn chứ không từng ký tự.
+        """
+        command.execute()
+        top = self._undo_stack[-1] if self._undo_stack else None
+        if top is not None and top.merges_with(command):
+            top.absorb(command)
+        else:
+            self._undo_stack.append(command)
+            # Giới hạn lịch sử
+            if len(self._undo_stack) > self.MAX_HISTORY:
+                self._undo_stack.pop(0)
+        self._redo_stack.clear()        # Xóa redo khi có action mới
 
         self._emit_state()
 
@@ -376,6 +398,42 @@ class DuplicateClipCommand(Command):
 
     def description(self) -> str:
         return "Nhân bản clip"
+
+
+class PasteClipsCommand(Command):
+    """Dán cả nhóm clip từ clipboard tại playhead — MỘT bước undo.
+
+    Bản dán clone từ snapshot nên id mới, giữ nguyên font/transform/keyframe/
+    effect như bản gốc. Offset tương đối giữ bố cục nhiều clip khi dán cùng lúc.
+    """
+
+    def __init__(self, model, entries, anchor_time: float):
+        self._model = model
+        self._entries = list(entries)
+        self._anchor = float(anchor_time)
+        self._pasted_ids: list[str] = []
+
+    def execute(self):
+        import copy
+        import uuid
+        self._pasted_ids = []
+        for entry in self._entries:
+            pasted = copy.deepcopy(entry.clip)
+            pasted.clip_id = str(uuid.uuid4())
+            placed = self._model.place_clip(
+                pasted, entry.source_track_id, self._anchor + entry.offset)
+            if placed is not None:
+                self._pasted_ids.append(placed.clip_id)
+        if self._pasted_ids:
+            self._model.select_clips(self._pasted_ids)
+
+    def undo(self):
+        for clip_id in reversed(self._pasted_ids):
+            self._model.remove_clip(clip_id)
+        self._pasted_ids = []
+
+    def description(self) -> str:
+        return "Dán %d clip" % len(self._pasted_ids)
 
 
 class AddTrackCommand(Command):
@@ -685,6 +743,200 @@ class SetClipAudioCommand(Command):
         if self._requested["audio_muted"] is not None:
             parts.append("tắt tiếng")
         return ("Đổi " + " + ".join(parts)) if parts else "Đổi audio clip"
+
+
+def transform_snapshot(clip) -> dict:
+    """Ảnh 6 số hình học của clip — định dạng mà SetClipTransformCommand hiểu."""
+    t = clip.transform
+    return {key: float(getattr(t, key))
+            for key in ("x", "y", "scale_x", "scale_y", "rotation", "opacity")}
+
+
+class SetClipTextCommand(Command):
+    """Đổi chữ của một clip: nội dung, font, cỡ, đậm/nghiên/gạch, màu, kiểu chạy.
+
+    Panel gõ chữ không còn ghi thẳng vào ``clip_model`` nữa: một lệnh chữ nằm
+    ngoài UndoStack nghĩa là Ctrl+Z của người dùng bỏ qua luôn thao tác mà họ
+    vừa làm nhiều nhất. Mười trường đi chung MỘT lệnh vì undo từng phần sẽ
+    khiến khối chữ nhảy kiểu giữa hai lần hoàn tác.
+    """
+
+    FIELDS = ("name", "font_family", "font_size", "font_bold", "font_italic",
+              "font_underline", "font_color", "text_effect",
+              "text_effect_intensity", "text_style",
+              "text_outline_color", "text_outline_width",
+              "text_shadow_color", "text_shadow_dx", "text_shadow_dy",
+              "text_shadow_blur", "text_box_color", "text_box_alpha",
+              "text_box_radius", "text_box_padding", "text_align")
+    BOOLS = ("font_bold", "font_italic", "font_underline")
+    NUMBERS = ("font_size", "text_effect_intensity",
+               "text_outline_width", "text_shadow_dx", "text_shadow_dy",
+               "text_shadow_blur", "text_box_alpha", "text_box_radius",
+               "text_box_padding")
+    # Ba trường này đổi liên tục từng nấc (gõ chữ, kéo spin) -> gộp một bước.
+    MERGES_WITH = ("name", "font_size", "text_effect_intensity",
+                   "text_outline_width", "text_shadow_dx", "text_shadow_dy",
+                   "text_shadow_blur", "text_box_alpha", "text_box_radius",
+                   "text_box_padding")
+    # Hai lần spin cách nhau lâu hơn mức này là hai thao tác riêng biệt.
+    MERGE_WINDOW_S = 0.75
+
+    def __init__(self, model, clip_id: str, **values):
+        self._model = model
+        self._clip_id = clip_id
+        self._requested = {key: self._cast(key, values[key])
+                           for key in self.FIELDS
+                           if values.get(key) is not None}
+        self._before: dict = {}
+        self._applied: dict = {}
+        self._at = time.monotonic()
+
+    @classmethod
+    def _cast(cls, key: str, value):
+        if key in cls.BOOLS:
+            return bool(value)
+        if key in cls.NUMBERS:
+            return float(value)
+        return str(value)
+
+    def _read(self) -> dict:
+        clip = self._model.get_clip(self._clip_id)
+        if clip is None:
+            return {}
+        return {key: self._cast(key, getattr(clip, key)) for key in self.FIELDS}
+
+    def _write(self, values: dict):
+        clip = self._model.get_clip(self._clip_id)
+        if clip is None:
+            return
+        for key, value in values.items():
+            setattr(clip, key, value)
+        self._model.clipUpdated.emit(self._clip_id)
+
+    def execute(self):
+        self._before = self._read()
+        if not self._before:
+            return
+        applied = dict(self._before)
+        applied.update(self._requested)
+        self._write(applied)
+        self._applied = {key: applied[key] for key in self._requested}
+
+    def undo(self):
+        if not self._before:
+            return
+        self._write(self._before)
+
+    def merges_with(self, other: "Command") -> bool:
+        if not isinstance(other, SetClipTextCommand):
+            return False
+        if other._clip_id != self._clip_id:
+            return False
+        keys = set(self._requested)
+        if keys != set(other._requested) or not keys:
+            return False
+        if not all(key in self.MERGES_WITH for key in keys):
+            return False
+        return other._at - self._at <= self.MERGE_WINDOW_S
+
+    def absorb(self, other: "Command"):
+        self._requested = dict(other._requested)
+        self._applied = dict(other._applied)
+        self._at = other._at
+
+    def description(self) -> str:
+        parts = []
+        if "name" in self._requested:
+            parts.append("nội dung")
+        if {"font_family", "font_size", "font_color"}.intersection(self._requested):
+            parts.append("font")
+        if any(key in self._requested for key in self.BOOLS):
+            parts.append("kiểu chữ")
+        if {"text_effect", "text_effect_intensity", "text_style"}.intersection(
+                self._requested):
+            parts.append("chữ chạy")
+        return ("Đổi chữ: " + ", ".join(parts)) if parts else "Đổi chữ clip"
+
+
+class SetClipTransformCommand(Command):
+    """Đổi hình học clip (vị trí, tỷ lệ, xoay, opacity) và tên hiển thị.
+
+    Viết qua ``model.update_clip_properties`` chứ không tự ghi ``clip.transform``:
+    đó là đường duy nhất phát ``clipUpdated`` cho scene vẽ lại nhãn.
+
+    Kéo trên Canvas KHÔNG tự snapshot lúc execute() được, vì item đã ghi kết quả
+    vào model trước khi lệnh chạy — lệnh phải nhận ``before=`` từ chỗ bắt đầu
+    gesture, nếu không Ctrl+Z trả lại đúng giá trị vừa kéo và người dùng tưởng
+    nút undo hỏng.
+    """
+
+    FIELDS = ("x", "y", "scale_x", "scale_y", "rotation", "opacity")
+    MERGES_WITH = FIELDS
+    MERGE_WINDOW_S = 0.75
+
+    def __init__(self, model, clip_id: str, name=None, before=None, **values):
+        self._model = model
+        self._clip_id = clip_id
+        requested = {}
+        for key in self.FIELDS:
+            if values.get(key) is not None:
+                requested[key] = float(values[key])
+        if name is not None:
+            requested["name"] = str(name)
+        self._requested = requested
+        self._gesture_before = dict(before) if before else None
+        self._before: dict = {}
+        self._before_name = ""
+        self._at = time.monotonic()
+
+    def _write(self, values: dict):
+        self._model.update_clip_properties(
+            self._clip_id,
+            name=values.get("name"),
+            scale_x=values.get("scale_x"), scale_y=values.get("scale_y"),
+            rotation=values.get("rotation"), opacity=values.get("opacity"),
+            x=values.get("x"), y=values.get("y"),
+        )
+
+    def execute(self):
+        clip = self._model.get_clip(self._clip_id)
+        if clip is None:
+            return
+        live = transform_snapshot(clip)
+        self._before_name = str(clip.name)
+        self._before = dict(self._gesture_before) if self._gesture_before else live
+        self._write(self._requested)
+
+    def undo(self):
+        if not self._before:
+            return
+        values = dict(self._before)
+        values["name"] = self._before_name
+        self._write(values)
+
+    def merges_with(self, other: "Command") -> bool:
+        if not isinstance(other, SetClipTransformCommand):
+            return False
+        if other._clip_id != self._clip_id:
+            return False
+        # Gesture trên Canvas luôn là một bước riêng, không hòa vào lệnh trước.
+        if self._gesture_before is not None or other._gesture_before is not None:
+            return False
+        if set(self._requested) != set(other._requested):
+            return False
+        return other._at - self._at <= self.MERGE_WINDOW_S
+
+    def absorb(self, other: "Command"):
+        self._requested = dict(other._requested)
+        self._at = other._at
+
+    def description(self) -> str:
+        labels = {"x": "vị trí X", "y": "vị trí Y", "scale_x": "rộng",
+                  "scale_y": "cao", "rotation": "xoay", "opacity": "mờ",
+                  "name": "tên"}
+        parts = [labels[key] for key in self.FIELDS + ("name",)
+                 if key in self._requested]
+        return ("Đổi " + " + ".join(parts)) if parts else "Đổi hình học clip"
 
 
 # ── Keyframe Commands ──────────────────────────────────────────

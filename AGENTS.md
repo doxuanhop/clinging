@@ -26,12 +26,25 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
 
 ```bash
 python main.py                                  # chay app binh thuong
-python main.py --selftest                       # 28 dong cong, bao JSON co "failed"
+python main.py --selftest                       # 33 dong cong, bao JSON co "failed"
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
 python scratch/icon_name_audit.py               # ten glyph + tham so tren toan bo nguon
 python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi dung ly do
+python scratch/boot_laziness_counterfactual.py  # phan chung: boot khong duoc keo trang dung phim/psutil
+python scratch/save_atomic_counterfactual.py    # phan chung: 4 phep doi byte o duong luu du an
+python scratch/media_locator_counterfactual.py  # phan chung: 6 phep doi byte o chieu dinh vi media
+python scratch/save_atomic_evidence.py          # anh + JSON: ban cu duoc quay, lan ghi hong khong pha file
+python scratch/media_locator_evidence.py        # anh + JSON: file bi don van ra cung payload o preview va export
+python scratch/undo_text_transform_counterfactual.py  # phan chung: tat push chu + mo merges_with -> cua undo do dung ly do
+python scratch/undo_text_transform_evidence.py  # anh FrameComposer: doi chu/hinh hoc lech pixel, Ctrl+Z tra bang het
+python scratch/clipboard_counterfactual.py      # phan chung: tat place_clip + clipboard rong + mat le + undo khong xoa -> cua clipboard do
+python scratch/clipboard_evidence.py            # anh FrameComposer: ban dan giong het goc, Ctrl+Z gach ban dan ve nen
+python scratch/text_styling_counterfactual.py   # phan chung: 6 phep doi byte -> cua style chu do dung ly do
+python scratch/text_styling_evidence.py         # anh FrameComposer: vien/bong/bong mo/hop nen/can le ve ra that
+python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
+python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile
 python scratch/user_data_snapshot.py capture scratch/_snap_before.json  # truoc khi do
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json   # sau khi do
 python scratch/user_data_snapshot.py diff scratch/_snap_before.json scratch/_snap_after.json

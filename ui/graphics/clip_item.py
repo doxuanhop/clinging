@@ -1237,17 +1237,12 @@ class MediaExtractionWorker(QObject):
                         duration=self.clip_duration * self.speed)
                     self.waveformReady.emit(amplitudes)
             elif self.item_type == "image":
-                import os
-                
+                from core.media_locator import locate
+
                 image = QImage()
-                if os.path.exists(self.file_path):
-                    image.load(self.file_path)
-                else:
-                    # Fallback
-                    for root, dirs, files in os.walk("."):
-                        if self.clip_name in files:
-                            image.load(os.path.join(root, self.clip_name))
-                            break
+                found = locate(self.file_path)
+                if found:
+                    image.load(found)
                 if not image.isNull():
                     scaled = image.scaledToHeight(int(self.track_height), Qt.SmoothTransformation)
                     self.thumbnailReady.emit(scaled)

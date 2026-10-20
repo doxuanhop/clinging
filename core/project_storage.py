@@ -25,6 +25,10 @@ from typing import Optional
 # ── Đường dẫn lưu trữ ──────────────────────────────────────────
 APP_DIR = os.path.join(os.path.expanduser("~"), ".clinqing")
 AUTO_SAVE_FILE = os.path.join(APP_DIR, "autosave.json")
+# Ban cu nam trong APP_DIR chu khong ben canh file .clinq: thu muc cua nguoi
+# dung khong duoc tu nhien moc them file.
+RECOVERY_DIR = os.path.join(APP_DIR, "recovery")
+RECOVERY_KEEP = 5
 
 
 def _ensure_dir():
@@ -161,6 +165,67 @@ def _build_asset_id(asset_dict: dict, source_path: str, media_type: str,
 
 # ── Save Project (.clinq format) ──────────────────────────────
 
+def _write_bytes_atomic(target_path: str, payload: bytes) -> None:
+    """Ghi payload roi thay target_path bang mot phep doi ten.
+
+    `open(path, "w")` cat ngat file that ngay tuc thi, nen loi giua chung (dia
+    day, process bi giet, payload hong) de lai mot file do khong doc lai duoc.
+    File tam cung thu muc + `os.replace` la atomic tren Windows, nen file dich
+    luon luon la mot ban tron ven.
+    """
+    parent = os.path.dirname(target_path) or "."
+    os.makedirs(parent, exist_ok=True)
+    tmp_path = target_path + ".tmp"
+    try:
+        with open(tmp_path, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, target_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def _prune_recovery(stem: str) -> None:
+    """Giu toi da RECOVERY_KEEP ban cu nhat cho mot ten du an."""
+    prefix = stem + "__"
+    try:
+        names = sorted(n for n in os.listdir(RECOVERY_DIR) if n.startswith(prefix))
+    except OSError:
+        return
+    for name in names[:-RECOVERY_KEEP] if RECOVERY_KEEP > 0 else names:
+        try:
+            os.remove(os.path.join(RECOVERY_DIR, name))
+        except OSError:
+            pass
+
+
+def _rotate_recovery_copy(target_path: str) -> None:
+    """Copy ban dang co vao RECOVERY_DIR truoc khi ban moi de len no.
+
+    Chi giu RECOVERY_KEEP ban gan nhat (nhin _prune_recovery) de thu muc khong
+    lon theo chu ky autosay.
+    """
+    try:
+        with open(target_path, "rb") as handle:
+            previous = handle.read()
+    except OSError:
+        return
+    stem = os.path.splitext(os.path.basename(target_path))[0]
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    try:
+        os.makedirs(RECOVERY_DIR, exist_ok=True)
+        with open(os.path.join(RECOVERY_DIR, f"{stem}__{stamp}.clinq"), "wb") as handle:
+            handle.write(previous)
+    except OSError:
+        return
+    _prune_recovery(stem)
+
+
 def save_project_to_file(model, project_path: str, project_meta: dict = None):
     """
     Lưu toàn bộ trạng thái Timeline ra file .clinq theo định dạng CapCut-style.
@@ -224,6 +289,17 @@ def save_project_to_file(model, project_path: str, project_meta: dict = None):
                 "text_effect": getattr(clip, "text_effect", "none"),
                 "text_effect_intensity": getattr(clip, "text_effect_intensity", 0.6),
                 "text_style": getattr(clip, "text_style", "none"),
+                "text_outline_color": getattr(clip, "text_outline_color", "#000000"),
+                "text_outline_width": getattr(clip, "text_outline_width", 0.0),
+                "text_shadow_color": getattr(clip, "text_shadow_color", "#000000"),
+                "text_shadow_dx": getattr(clip, "text_shadow_dx", 0.0),
+                "text_shadow_dy": getattr(clip, "text_shadow_dy", 0.0),
+                "text_shadow_blur": getattr(clip, "text_shadow_blur", 0.0),
+                "text_box_color": getattr(clip, "text_box_color", "#000000"),
+                "text_box_alpha": getattr(clip, "text_box_alpha", 0.0),
+                "text_box_radius": getattr(clip, "text_box_radius", 8.0),
+                "text_box_padding": getattr(clip, "text_box_padding", 12.0),
+                "text_align": getattr(clip, "text_align", "center"),
                 "sticker_icon": getattr(clip, "sticker_icon", ""),
                 "sticker_color": getattr(clip, "sticker_color", "#FFFFFF"),
                 **_audio_fields(clip),
@@ -292,13 +368,19 @@ def save_project_to_file(model, project_path: str, project_meta: dict = None):
     }
 
     # ── 5. Write to disk ──
+    # Serialize TRUOC khi cham vao file that: loi payload thi file cu van nguyen.
     try:
-        os.makedirs(os.path.dirname(project_path), exist_ok=True)
-        with open(project_path, "w", encoding="utf-8") as f:
-            json.dump(project_data, f, ensure_ascii=False, indent=2)
+        payload = json.dumps(project_data, ensure_ascii=False,
+                             indent=2).encode("utf-8")
+    except Exception as e:
+        print("Loi luu du an: %s" % e)
+        return False
+    try:
+        _rotate_recovery_copy(project_path)
+        _write_bytes_atomic(project_path, payload)
         return True
     except Exception as e:
-        print(f"Lỗi lưu dự án: {e}")
+        print("Loi luu du an: %s" % e)
         return False
 
 
@@ -330,14 +412,18 @@ def load_project_from_file(project_path: str) -> Optional[dict]:
         with open(project_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(f"Lỗi đọc dự án: {e}")
+        print("Loi doc du an: %s" % e)
         return None
 
 
-def restore_model_from_clinq(model, project: dict):
+def restore_model_from_clinq(model, project: dict, media_roots=()):
     """
     Khôi phục TimelineModel từ dữ liệu .clinq.
     Xóa toàn bộ track/clip hiện có trước khi restore.
+
+    `media_roots` la nhung thu muc duoc phep di bo khi tim file lac cho (thuong
+    la thu muc chua file .clinq). Viec dinh vi dat ra MOT lan o day, sau khi
+    model du lap day, de preview va export cung nhin mot duong dan.
     """
     from core.timeline_model import (TrackType, ClipModel, TransformData,
                                      track_accepts_media, track_type_for_media)
@@ -386,18 +472,6 @@ def restore_model_from_clinq(model, project: dict):
             source_path = clip_data.get("source_path", "")
             media_type = clip_data.get("media_type", "video")
 
-            # Kiểm tra file còn tồn tại không
-            if media_type in ("video", "image", "audio") and source_path:
-                if not os.path.exists(source_path):
-                    # Tìm lại file theo tên trong cùng thư mục
-                    basename = os.path.basename(source_path)
-                    parent_dir = os.path.dirname(source_path)
-                    if os.path.exists(parent_dir):
-                        for f in os.listdir(parent_dir):
-                            if f == basename:
-                                source_path = os.path.join(parent_dir, f)
-                                break
-
             target_track = track
             if not track_accepts_media(track.track_type, media_type):
                 target_track = model.find_or_create_track(track_type_for_media(media_type))
@@ -430,6 +504,17 @@ def restore_model_from_clinq(model, project: dict):
                 text_effect=clip_data.get("text_effect", "none"),
                 text_effect_intensity=clip_data.get("text_effect_intensity", 0.6),
                 text_style=clip_data.get("text_style", "none"),
+                text_outline_color=clip_data.get("text_outline_color", "#000000"),
+                text_outline_width=clip_data.get("text_outline_width", 0.0),
+                text_shadow_color=clip_data.get("text_shadow_color", "#000000"),
+                text_shadow_dx=clip_data.get("text_shadow_dx", 0.0),
+                text_shadow_dy=clip_data.get("text_shadow_dy", 0.0),
+                text_shadow_blur=clip_data.get("text_shadow_blur", 0.0),
+                text_box_color=clip_data.get("text_box_color", "#000000"),
+                text_box_alpha=clip_data.get("text_box_alpha", 0.0),
+                text_box_radius=clip_data.get("text_box_radius", 8.0),
+                text_box_padding=clip_data.get("text_box_padding", 12.0),
+                text_align=clip_data.get("text_align", "center"),
                 sticker_icon=clip_data.get("sticker_icon", ""),
                 sticker_color=clip_data.get("sticker_color", "#FFFFFF"),
                 **_audio_values(clip_data),
@@ -446,6 +531,10 @@ def restore_model_from_clinq(model, project: dict):
     model._normalize_track_layers(enforce_main=True)
     model.tracksReordered.emit()
     model.playhead = timeline.get("playhead", 0.0)
+    # Dinh vi mot lan, sau khi clip da nam trong model: cung duong dan nay di
+    # ca preview lan export, khong con "sang tren timeline, trang khi xuat ra".
+    from core.media_locator import resolve_model
+    resolve_model(model, media_roots)
 
 
 # ── Audio per-clip ─────────────────────────────────────────────
@@ -521,6 +610,17 @@ def save_project(model, aspect_ratio: str = "16:9", playhead: float = 0.0):
                 "text_effect": getattr(clip, "text_effect", "none"),
                 "text_effect_intensity": getattr(clip, "text_effect_intensity", 0.6),
                 "text_style": getattr(clip, "text_style", "none"),
+                "text_outline_color": getattr(clip, "text_outline_color", "#000000"),
+                "text_outline_width": getattr(clip, "text_outline_width", 0.0),
+                "text_shadow_color": getattr(clip, "text_shadow_color", "#000000"),
+                "text_shadow_dx": getattr(clip, "text_shadow_dx", 0.0),
+                "text_shadow_dy": getattr(clip, "text_shadow_dy", 0.0),
+                "text_shadow_blur": getattr(clip, "text_shadow_blur", 0.0),
+                "text_box_color": getattr(clip, "text_box_color", "#000000"),
+                "text_box_alpha": getattr(clip, "text_box_alpha", 0.0),
+                "text_box_radius": getattr(clip, "text_box_radius", 8.0),
+                "text_box_padding": getattr(clip, "text_box_padding", 12.0),
+                "text_align": getattr(clip, "text_align", "center"),
                 "sticker_icon": getattr(clip, "sticker_icon", ""),
                 "sticker_color": getattr(clip, "sticker_color", "#FFFFFF"),
                 **_audio_fields(clip),
@@ -551,11 +651,16 @@ def save_project(model, aspect_ratio: str = "16:9", playhead: float = 0.0):
     }
 
     try:
-        with open(AUTO_SAVE_FILE, "w", encoding="utf-8") as f:
-            json.dump(project, f, ensure_ascii=False, indent=2)
+        payload = json.dumps(project, ensure_ascii=False,
+                             indent=2).encode("utf-8")
+    except Exception as e:
+        print("Loi auto-save: %s" % e)
+        return False
+    try:
+        _write_bytes_atomic(AUTO_SAVE_FILE, payload)
         return True
     except Exception as e:
-        print(f"Lỗi auto-save: {e}")
+        print("Loi auto-save: %s" % e)
         return False
 
 
@@ -567,7 +672,7 @@ def load_project() -> Optional[dict]:
         with open(AUTO_SAVE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(f"Lỗi load autosave: {e}")
+        print("Loi load autosave: %s" % e)
         return None
 
 
@@ -636,6 +741,17 @@ def restore_model(model, project: dict):
                 text_effect=clip_data.get("text_effect", "none"),
                 text_effect_intensity=clip_data.get("text_effect_intensity", 0.6),
                 text_style=clip_data.get("text_style", "none"),
+                text_outline_color=clip_data.get("text_outline_color", "#000000"),
+                text_outline_width=clip_data.get("text_outline_width", 0.0),
+                text_shadow_color=clip_data.get("text_shadow_color", "#000000"),
+                text_shadow_dx=clip_data.get("text_shadow_dx", 0.0),
+                text_shadow_dy=clip_data.get("text_shadow_dy", 0.0),
+                text_shadow_blur=clip_data.get("text_shadow_blur", 0.0),
+                text_box_color=clip_data.get("text_box_color", "#000000"),
+                text_box_alpha=clip_data.get("text_box_alpha", 0.0),
+                text_box_radius=clip_data.get("text_box_radius", 8.0),
+                text_box_padding=clip_data.get("text_box_padding", 12.0),
+                text_align=clip_data.get("text_align", "center"),
                 sticker_icon=clip_data.get("sticker_icon", ""),
                 sticker_color=clip_data.get("sticker_color", "#FFFFFF"),
                 **_audio_values(clip_data),
@@ -652,6 +768,10 @@ def restore_model(model, project: dict):
     model._normalize_track_layers(enforce_main=True)
     model.tracksReordered.emit()
     model.playhead = project.get("playhead", 0.0)
+    # Ban tam autosave cung phai di qua chieu dinh vi nhu file .clinq, neu khong
+    # mo lai ban tam lai cho ra cai duong dan ma export khong doc duoc.
+    from core.media_locator import resolve_model
+    resolve_model(model)
 
 
 def has_autosave() -> bool:
@@ -758,7 +878,8 @@ class ProjectManager:
         self._project_meta = project.get("project_meta", {})
         self._project_id = self._project_meta.get("project_id", self._project_id)
 
-        restore_model_from_clinq(model, project)
+        restore_model_from_clinq(model, project,
+                                 media_roots=[os.path.dirname(path)])
         self.mark_saved()
         return True
 

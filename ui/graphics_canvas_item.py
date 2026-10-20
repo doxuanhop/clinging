@@ -116,10 +116,13 @@ class CanvasClipItem(QGraphicsRectItem):
     Kỹ thuật: rect() luôn đại diện cho kích thước thực tế trên canvas.
     QTransform chỉ dùng cho rotation. Scale được thao tác trực tiếp lên rect.
     """
-    def __init__(self, clip_model: ClipModel, on_transform_callback=None, parent=None):
+    def __init__(self, clip_model: ClipModel, on_transform_callback=None,
+                 on_edit_commit=None, parent=None):
         super().__init__(parent)
         self.clip_model = clip_model
         self.on_transform_callback = on_transform_callback
+        self.on_edit_commit = on_edit_commit
+        self._gesture_before = None
 
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
@@ -419,7 +422,6 @@ class CanvasClipItem(QGraphicsRectItem):
             painter.translate(-center.x(), -center.y())
 
     def _load_media_pixmap(self):
-        import os
         from PySide6.QtGui import QPixmap
 
         if self.current_frame_pixmap and not self.current_frame_pixmap.isNull():
@@ -429,18 +431,11 @@ class CanvasClipItem(QGraphicsRectItem):
         media_type = self.clip_model.media_type
 
         if media_type == "image":
+            from core.media_locator import locate
             pixmap = QPixmap()
-            if os.path.exists(file_path):
-                pixmap.load(file_path)
-            else:
-                for root, dirs, files in os.walk("."):
-                    if self.clip_model.name in files:
-                        pixmap.load(os.path.join(root, self.clip_model.name))
-                        break
-                    basename = os.path.basename(file_path)
-                    if basename in files:
-                        pixmap.load(os.path.join(root, basename))
-                        break
+            found = locate(file_path)
+            if found:
+                pixmap.load(found)
             if not pixmap.isNull():
                 self.current_frame_pixmap = pixmap
                 return pixmap
@@ -510,16 +505,10 @@ class CanvasClipItem(QGraphicsRectItem):
         try:
             import cv2
             from PySide6.QtGui import QImage, QPixmap
+            from core.media_locator import locate
 
-            actual_path = file_path
-            if not os.path.exists(file_path):
-                basename = os.path.basename(file_path)
-                for root, dirs, files in os.walk("."):
-                    if basename in files:
-                        actual_path = os.path.join(root, basename)
-                        break
-
-            if not os.path.exists(actual_path):
+            actual_path = locate(file_path)
+            if not actual_path:
                 return None
 
             import os as _os
@@ -618,6 +607,8 @@ class CanvasClipItem(QGraphicsRectItem):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            from core.commands import transform_snapshot
+            self._gesture_before = transform_snapshot(self.clip_model)
             pos = event.pos()
             handle = self._hit_test_handle(pos)
             if handle >= 0:
@@ -674,6 +665,7 @@ class CanvasClipItem(QGraphicsRectItem):
 
     def mouseReleaseEvent(self, event):
         _clear_smart_guides(self)
+        self._commit_gesture()
         if self._resizing_handle is not None:
             self._resizing_handle = None
             self.setCursor(Qt.OpenHandCursor)
@@ -715,16 +707,33 @@ class CanvasClipItem(QGraphicsRectItem):
             self.setCursor(Qt.OpenHandCursor)
 
 
+    def _commit_gesture(self):
+        """Goi mot lan keo chuot tren Canvas thanh MOT lenh undo.
+
+        `before` lay tu luc bam chuot: item da ghi ket qua vao model o tung lan
+        mouseMove, neu lenh tu snapshot luc nang chuot thi Ctrl+Z tra lai dung
+        gia tri vua keo va nguoi dung tuong nut undo hong.
+        """
+        before, self._gesture_before = self._gesture_before, None
+        if before is None or self.on_edit_commit is None:
+            return
+        from core.commands import transform_snapshot
+        self.on_edit_commit(self.clip_model, "transform",
+                            transform_snapshot(self.clip_model), before)
+
 class TextClipItem(QGraphicsTextItem):
     """
     Văn bản trên Canvas Player.
     Hỗ trợ kéo dãn, di chuyển, xoay và chỉnh sửa nội dung.
     """
 
-    def __init__(self, clip_model: ClipModel, on_transform_callback=None, parent=None):
+    def __init__(self, clip_model: ClipModel, on_transform_callback=None,
+                 on_edit_commit=None, parent=None):
         super().__init__(clip_model.name, parent)
         self.clip_model = clip_model
         self.on_transform_callback = on_transform_callback
+        self.on_edit_commit = on_edit_commit
+        self._gesture_before = None
 
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
@@ -758,6 +767,20 @@ class TextClipItem(QGraphicsTextItem):
             return
         self._transition_state = state
         self.update()
+
+    def _commit_gesture(self):
+        """Goi mot lan keo chuot tren Canvas thanh MOT lenh undo.
+
+        `before` lay tu luc bam chuot: item da ghi ket qua vao model o tung lan
+        mouseMove, neu lenh tu snapshot luc nang chuot thi Ctrl+Z tra lai dung
+        gia tri vua keo va nguoi dung tuong nut undo hong.
+        """
+        before, self._gesture_before = self._gesture_before, None
+        if before is None or self.on_edit_commit is None:
+            return
+        from core.commands import transform_snapshot
+        self.on_edit_commit(self.clip_model, "transform",
+                            transform_snapshot(self.clip_model), before)
 
     def refresh_style(self):
         """Đọc lại font/màu từ model — model là nguồn sự thật cho cả export."""
@@ -850,7 +873,7 @@ class TextClipItem(QGraphicsTextItem):
             return
 
         clip = self.clip_model
-        from core.text_paint import clip_font, paint_animated_text
+        from core.text_paint import clip_font, paint_animated_text, text_style_of
         from core import anim_engine
 
         scene_rect = self.scene().sceneRect() if self.scene() else QRectF(0, 0, 1920, 1080)
@@ -876,6 +899,7 @@ class TextClipItem(QGraphicsTextItem):
             intensity=float(getattr(clip, "text_effect_intensity", 0.6)),
             style=getattr(clip, "text_style", "none") or "none",
             t=getattr(self, "_local_time", 0.0),
+            styling=text_style_of(clip),
         )
 
     def _get_handles(self):
@@ -904,6 +928,8 @@ class TextClipItem(QGraphicsTextItem):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            from core.commands import transform_snapshot
+            self._gesture_before = transform_snapshot(self.clip_model)
             pos = event.pos()
             handle = self._hit_test_handle(pos)
             if handle >= 0:
@@ -963,6 +989,7 @@ class TextClipItem(QGraphicsTextItem):
 
     def mouseReleaseEvent(self, event):
         _clear_smart_guides(self)
+        self._commit_gesture()
         if self._resizing_handle is not None:
             self._resizing_handle = None
             self.setCursor(Qt.OpenHandCursor)
@@ -980,7 +1007,10 @@ class TextClipItem(QGraphicsTextItem):
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         text = self.toPlainText()
         if text and text != self.clip_model.name:
-            self.clip_model.name = text
+            if self.on_edit_commit is not None:
+                self.on_edit_commit(self.clip_model, "text", {"name": text})
+            else:
+                self.clip_model.name = text
         self.sync_to_model()
         super().focusOutEvent(event)
 

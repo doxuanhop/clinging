@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
 )
 
 from ui.home_page import HomePage
-from ui.main_window import MainWindow
 
 
 def _make_app_icon():
@@ -276,7 +275,10 @@ class MainController(QMainWindow):
         from core.project_storage import load_project_from_file, restore_model_from_clinq
         project = load_project_from_file(project_path)
         if project:
-            restore_model_from_clinq(self.editor_page.timeline_panel.model, project)
+            import os
+            restore_model_from_clinq(
+                self.editor_page.timeline_panel.model, project,
+                media_roots=[os.path.dirname(os.path.abspath(project_path))])
             self.editor_page.restore_library_from_project(project)
             self.editor_page._sync_canvas()
 
@@ -298,6 +300,11 @@ class MainController(QMainWindow):
     def _init_editor(self):
         """Lazy init trang editor."""
         if self.editor_page is None:
+            # Import o day, khong o dau file: dong `from ui.main_window import
+            # MainWindow` cap nhat toan bo panel dung phim (timeline, preview,
+            # properties, ui.graphics, PySide6.QtMultimedia + QtNetwork) chi de
+            # lay mot lop MainWindow, va no nam trong lan boot cua trang Home.
+            from ui.main_window import MainWindow
             self.editor_page = MainWindow()
             self.stack.addWidget(self.editor_page)
             self.editor_page.title_bar.goToHome.connect(self.show_home)

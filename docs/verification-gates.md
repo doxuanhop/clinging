@@ -56,7 +56,8 @@ do chính script vừa in ra.
 
 Ảnh đang có: `scratch/icon_parity.png` (ta vs qtawesome), `scratch/fonticon_*.png`
 (9 bản UI), `scratch/desktop_icon_probe.png`, `scratch/aura_evidence_sheet.png`,
-`scratch/karaoke_ui_evidence.png`, `scratch/transition_ui_evidence.png`.
+`scratch/karaoke_ui_evidence.png`, `scratch/transition_ui_evidence.png`,
+`scratch/save_atomic_evidence.png`, `scratch/media_locator_evidence.png`.
 
 Bẫy đã trả giá (xem `~/.qoder/memory`): ảnh DPR > 1 phải blit vào QRect theo device
 size, không `drawPixmap(x, y, pm)` trên QImage DPR-1 (co còn 80%, ăn cả dấu trừ);
@@ -88,14 +89,36 @@ python scratch/user_data_snapshot.py capture scratch/_snap_before.json
 # 1) Audit tên icon + tham số color= trên toàn bộ nguồn
 python scratch/icon_name_audit.py
 
-# 2) Selftest 28 dòng trên tree nguồn
+# 2) Selftest 32 dòng trên tree nguồn
 python main.py --selftest
 
 # 3) Đo khởi động (bao gồm control cùng lần, xem mục dưới đây)
 python main.py --startup-report
 
-# 4) Phản chứng của các cổng đã sửa gần đây (31 check)
+# 4) Phản chứng của các cổng đã sửa gần đây (32 check)
 python scratch/gate_discrimination_probe.py
+
+# 4b) Phản chứng riêng cho hai check "cái gì KHÔNG được nạp lúc boot"
+python scratch/boot_laziness_counterfactual.py
+
+# 4c) Độ trễ NGƯỜI DUNG thấy (Popen -> cửa sổ hiện) + tham do UI thread
+python scratch/wall_to_window_probe.py --runs 3
+python scratch/wall_to_window_probe.py --selfcheck   # do luong phan biet duoc UI bi chan
+
+# 4d) Phản chứng + ảnh cho năm cổng "luu du an", "media lac cho", "undo chu + hinh hoc",
+#     "clipboard Ctrl+C/V", "style chu" (vien/bong/hop nen/can le)
+#     (moi probe do byte trong nguon that, chay --selftest lai sau moi phien ban
+#     CU, va KHOI PHUC byte trong finally -> lan cuoi phai ra ALL PASS rc=0)
+python scratch/save_atomic_counterfactual.py
+python scratch/media_locator_counterfactual.py
+python scratch/undo_text_transform_counterfactual.py
+python scratch/clipboard_counterfactual.py
+python scratch/text_styling_counterfactual.py
+python scratch/save_atomic_evidence.py       # -> scratch/save_atomic_evidence.png
+python scratch/media_locator_evidence.py     # -> scratch/media_locator_evidence.png
+python scratch/undo_text_transform_evidence.py  # -> %TEMP%\clinging_undo_evidence.png
+python scratch/clipboard_evidence.py            # -> %TEMP%\clinging_clipboard_evidence.png
+python scratch/text_styling_evidence.py         # -> %TEMP%\clinging_text_styling_evidence.png
 
 # 5) Chụp lại rồi diff: phải ra 0 THEM / 0 MAT / 0 DOI
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json
@@ -120,6 +143,94 @@ Bảng so sánh chi phí khởi động chỉ có giá trị khi control nằm T
 chạy (`--startup-report` in `nhe_s` / `nang_s`, trong đó `nang_s` là qtawesome bị
 kéo qua đúng seam đó). Wall clock giữa hai lần chạy trên HDD máy này sai do cache,
 do import bị hoist, và do layout shift khi icon rỗng.
+
+### Làn boot của trang Home
+
+`--startup-report` có hai check về **thứ không được xuất hiện** lúc cửa sổ hiện:
+`boot_khong_keo_trang_dung` (`ui.main_window`) và `boot_khong_psutil`. Lý do đo
+bằng module chứ không bằng giây: số giây dao động, còn "module nào thường trú lúc
+mở app" thì không.
+
+| Bằng chứng (2026-10-20, tree nguồn) | Số |
+| --- | --- |
+| `python -X importtime -c "import ui.main_controller"` | `ui.main_window` cumulative **155 ms**, `core` 66 ms, `PySide6.QtMultimedia` 36 ms, `QtNetwork` 16 ms |
+| `python scratch/boot_phase_profile.py` (cProfile trên `main._boot`) | `system_stats.psutil_or_none` **102 ms** cum, nằm trong `HomePage()` |
+| `--startup-report` 3 lần, median `boot_to_window_s` | **1,645 → 1,204 s** sau khi lazify |
+| RAM lúc cửa sổ hiện | **78,4 → 68,4 MB** (−10,0 MB) |
+| `boot_laziness_counterfactual.py` | SACH rc=0 / DOC rc=1, hai check lật đúng chiều, `boot_khong_cv2` vẫn True |
+
+Cùng lúc đó `wall_to_window_probe.py` đo từ **bên ngoài** app: trên exe 1.0.2 đã
+cài, `Popen() → cửa sổ hiện` là **1,34–1,39 s** (lần đầu tiên sau reinstall 2,26 s)
+trong khi đồng hồ trong app chỉ báo 0,84 s — ~0,5 s chênh là bootloader
+PyInstaller + LoadLibrary, nằm ngoài mọi `--startup-report`. Probe cũng ghi
+`mapped_files`/`cold_read_mb` (46 file, **67,6 MB** DLL-PYD mà một lần mở Home phải
+giải phóng) vì hai lý do đã trả giá:
+
+* **Đuổi cache bằng cách đọc file lớn KHÔNG được**: đọc 1.531,9 MB từ chính file
+  installer chỉ hết 1,3 s — nó nằm trong RAM, nên phép "proxy cold boot" đó vô
+  hiệu; `GetProcessIoCounters` của process cũng trả `ReadTransferCount = 0` cho
+  image mapping.
+* **`SendMessageTimeout(WM_NULL, SMTO_ABORTIFHUNG)` là đồng hồ trung thực**: cắm
+  `time.sleep(3)` vào một slot của cửa sổ thật thì probe đọc ra 2.973 ms một lần
+  mẫu duy nhất >1 s — tham số phải chứng minh nó phân biệt được rồi mới được tin.
+
+---
+
+## Cổng "đừng làm mất việc của người dùng" (nhóm A, 2026-10-20)
+
+Bốn dòng selftest mới giữ các lỗi từng làm mất trắng công sức của người dùng,
+cộng thêm cổng cho tính năng clipboard clip (Ctrl+C / Ctrl+V).
+
+| Dòng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `luu du an: ghi hong khong pha ban cu` | `save_project_to_file` serialize ra byte TRƯỚC khi chạm file thật, ghi `.tmp` + `fsync` + `os.replace`, và quay bản cũ vào `~/.clinqing/recovery` (giữ `RECOVERY_KEEP = 5`) | `save_atomic_counterfactual.py`: 4 phép đổi byte (`open(path,"w")` cũ, bỏ rotation, handler lỗi có dấu, bỏ `or "."`) — mỗi phép phải làm ĐỎ đúng một dòng |
+| `media lac cho: preview va export cung duong dan` | Một chiều duy nhất `core/media_locator.py`: chỉ đi bộ trong thư mục của chính file + thư mục chứa `.clinq`, chặn `MAX_DEPTH = 4` / `MAX_ENTRIES = 2000`, không bao giờ đụng thư mục hiện hành; định vị MỘT lần lúc mở dự án nên preview và export nhìn cùng một `source_path` | `media_locator_counterfactual.py`: 6 phép đổi byte trên 3 file (`MAX_DEPTH = 9`, `roots = [os.getcwd()]`, resolver rỗng, bỏ resolve ở `restore_model`, cắm lại `os.walk(".")` vào `TimelinePanel._get_media_duration`, bỏ báo `missing`) |
+| `undo cho chu + hinh hoc clip` | Mười handler chữ của panel không còn ghi thẳng `clip_model`: mọi sửa chữ đi qua `SetClipTextCommand`, mọi sửa hình học (panel + neo Canvas) đi qua `SetClipTransformCommand` (kéo trên Canvas phải nhận `before=` từ lúc bấm chuột vì item đã ghi model trước). Gõ từng ký tự / kéo từng nấc spin gộp MỘT bước (`merges_with` + `absorb`, cửa sổ `MERGE_WINDOW_S = 0.75`), thao tác khác clip/khác khóa vẫn là một Ctrl+Z riêng. `clipUpdated` được nghe lại để Canvas vẽ lại RIÊNG item (không dựng lại scene, giữ con trỏ gõ chữ) | `undo_text_transform_counterfactual.py`: 2 phép đổi byte — tắt `push` trong `_push_text` (cửa ĐỎ vì "0 buoc, phai la 1"), nới guard khác khóa trong `merges_with` (cửa ĐỎ vì "bold khong thanh mot buoc undo rieng"); mỗi phép xong đều khôi phục byte và chạy xanh lại |
+| `clipboard clip Ctrl+C/V` | `ClipClipboard.copy_from` snapshot đúng các clip đang chọn (deepcopy, giữ `offset` tương đối để dán nguyên nhóm không vỡ bố cục); `PasteClipsCommand` clone ra id MỚI, đặt qua `TimelineModel.place_clip` — CÙNG quy tắc va chạm/nhảy-layer và compaction Main Storyline như `duplicate_clip` — tại playhead, và là MỘT bước undo. Nối `Ctrl+C`/`Ctrl+V` qua `_install_editor_shortcuts` (bọc `_invoke_unless_editing`) | `clipboard_counterfactual.py`: 4 phép đổi byte — `PasteClipsCommand.execute` gọi `get_clip` thay `place_clip` (ĐỎ "seam clipboard thieu"), `copy_from` gán `self._entries = []` (ĐỎ "clipboard bao trong"), ép `offset = 0.0` (ĐỎ "le bo cuc tuong doi"), `undo` thành `pass` (ĐỎ "undo hai lan paste khong tra ve"); mỗi phép khôi phục byte rồi chạy xanh lại |
+| `media lac cho: preview va export cung duong dan` | Một chiều duy nhất `core/media_locator.py`: chỉ đi bộ trong thư mục của chính file + thư mục chứa `.clinq`, chặn `MAX_DEPTH = 4` / `MAX_ENTRIES = 2000`, không bao giờ đụng thư mục hiện hành; định vị MỘT lần lúc mở dự án nên preview và export nhìn cùng một `source_path` | `media_locator_counterfactual.py`: 6 phép đổi byte trên 3 file (`MAX_DEPTH = 9`, `roots = [os.getcwd()]`, resolver rỗng, bỏ resolve ở `restore_model`, cắm lại `os.walk(".")` vào `TimelinePanel._get_media_duration`, bỏ báo `missing`) |
+| `undo cho chu + hinh hoc clip` | Mười handler chữ của panel không còn ghi thẳng `clip_model`: mọi sửa chữ đi qua `SetClipTextCommand`, mọi sửa hình học (panel + neo Canvas) đi qua `SetClipTransformCommand` (kéo trên Canvas phải nhận `before=` từ lúc bấm chuột vì item đã ghi model trước). Gõ từng ký tự / kéo từng nấc spin gộp MỘT bước (`merges_with` + `absorb`, cửa sổ `MERGE_WINDOW_S = 0.75`), thao tác khác clip/khác khóa vẫn là một Ctrl+Z riêng. `clipUpdated` được nghe lại để Canvas vẽ lại RIÊNG item (không dựng lại scene, giữ con trỏ gõ chữ) | `undo_text_transform_counterfactual.py`: 2 phép đổi byte — tắt `push` trong `_push_text` (cửa ĐỎ vì "0 buoc, phai la 1"), nới guard khác khóa trong `merges_with` (cửa ĐỎ vì "bold khong thanh mot buoc undo rieng"); mỗi phép xong đều khôi phục byte và chạy xanh lại |
+
+Số đo thật của lần kiểm (tree nguồn, 2026-10-20):
+
+* 7 lần save đè liên tiếp trên cùng một file → recovery giữ đúng 5 bản gần nhất,
+  đánh dấu `[m3..m7]`, 0 file `.tmp` sót; lần ghi hỏng (payload `QColor`) để file
+  cũ còn nguyên từng byte.
+* Ảnh chứng minh `scratch/save_atomic_evidence.png`: ba ô (file đang dùng / bản
+  recovery / hiệu đổi ×8) — hai ô đầu bằng nhau khi nội dung không đổi.
+* `scratch/media_locator_evidence.png`: ô 1 (file đúng chỗ) và ô 2 (file bị dời
+  hai cấp, mở lại `.clinq`) cho payload xuất ra **giống nhau từng byte** (0/230.400
+  byte lệch, 320×180 RGBA); ô 3 là mồi cùng tên đặt ngoài thư mục dự án (lệch
+  118.992 byte, chứng hai bên phân biệt được thật); ô 4 là file vắng mặt thật —
+  không vẽ gì và vẫn giữ đường dẫn cũ.
+* Năm chỗ `os.walk(".")` trong `ui/` + `core/` đã bị xoá vật lý; `get_media_dimensions`
+  trên đường dẫn đã định vị trả `(8.0, 8.0)` trên ảnh 8×8.
+* Ảnh chứng minh `scratch/undo_text_transform_evidence.png` (5 ô dựng bằng
+  `FrameComposer`, đúng đường preview + export): ô A chữ nhỏ giữa khung → ô B
+  to lên sau `SetClipTextCommand` (7.955 byte RGBA lệch) → ô C sau Ctrl+Z **bằng
+  hệt A** (0 byte lệch) → ô D lệch đi sau `SetClipTransformCommand` dời + phóng
+  (3.680 byte lệch) → ô E sau Ctrl+Z **bằng hệt A** (0 byte lệch). Hoàn tác không
+  chỉ đổi model mà trả lại từng pixel.
+* Ảnh chứng minh `scratch/clipboard_evidence.png` (4 ô `FrameComposer`, có một
+  clip nền "BG" sống 0..20s để giữ duration, khỏi bị `active_visual_clips_at`
+  clamp về cuối): ô A "Clinging" gốc tại t=1s → ô B tại t=10s **chưa** paste (chỉ
+  còn nền, mốc trắng) → ô C tại t=10s **sau** Ctrl+V, chữ "Clinging" hiện ra và
+  **giống hệt A** (0/230.400 byte lệch — bản dán giữ nguyên font/hình học) → ô D
+  tại t=10s sau Ctrl+Z **trở lại đúng ô B** (0 byte so với mốc, 5.025 byte lệch so
+  với ô C — undo đã gạch sạch bản dán, không để lại bóng ma).
+* Ảnh chứng minh `scratch/text_styling_evidence.png` (8 ô `FrameComposer`, đúng
+  đường preview + export, nền đen nên phải tint bóng màu mới thấy): ô 1 chữ trắng
+  thường → ô 2 viền đỏ 6px (3.006 byte lệch) → ô 3 bóng xanh lệch 12px (2.544) →
+  ô 4 bóng mờ cyan blur 8 (2.208) → ô 5 hộp nền xanh lá 60% (11.033) → ô 6 căn TRÁI
+  và ô 7 căn PHẢI **dịch thật** (trai↔phai 1.506 byte lệch) → ô 8 kết hợp viền vàng
+  + hộp tím + bóng (6.411). Phản chứng `text_styling_counterfactual.py`: 6 phép đổi
+  byte, mỗi phép làm cổng "style chu" đỏ ĐÚNG lý do — tắt composite → "vien ve giong
+  chu thuong", export mất styling → "export bo qua style chu hop nen", preview mất
+  seam → "seam style chu thieu", đổi khoá lưu → "style chu mat khi quay qua file",
+  mất cast float → "text_style_of khong chuan hoa so ve float", ép lề center →
+  "can le khong dich vi tri chu"; sau khi khôi phục byte, bảng xanh lại 33/33 rc=0.
+
+Mọi vòng đều khép lại bằng `user_data_snapshot.py diff` ra
+`THEM: 0 / MAT: 0 / DOI: 0` trên 1612 file — gate không được quyền chạm dữ liệu thật.
 
 ---
 

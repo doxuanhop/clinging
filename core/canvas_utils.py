@@ -67,17 +67,14 @@ def get_media_dimensions(file_path: str, media_type: str) -> tuple[float, float]
     Lấy kích thước (width, height) của file media.
     Trả về (0, 0) nếu không đọc được.
     """
-    import os
-    
-    # Tìm file thực tế
-    actual_path = file_path
-    if not os.path.exists(file_path):
-        basename = os.path.basename(file_path)
-        for root, dirs, files in os.walk("."):
-            if basename in files:
-                actual_path = os.path.join(root, basename)
-                break
-    
+    from core.media_locator import locate
+
+    # Duong dan da duoc `restore_model_from_clinq` dinh vi luc mo du an; o day
+    # chi con mot kha nang lac cho la file bi doi ten sau khi mo. Khong di bo
+    # thu muc hien hanh: `os.walk(".")` cung mot lenh go cua nguoi dung co the
+    # tro toi `C:\Windows\System32` khi app mo tu Explorer.
+    actual_path = locate(file_path) or file_path
+
     if not os.path.exists(actual_path):
         return 0.0, 0.0
 
@@ -90,7 +87,6 @@ def get_media_dimensions(file_path: str, media_type: str) -> tuple[float, float]
 
         elif media_type == "video":
             import cv2
-            import os
             # Suppress OpenCV error messages for unsupported codecs
             old_stderr = os.dup(2)
             devnull = os.open(os.devnull, os.O_WRONLY)

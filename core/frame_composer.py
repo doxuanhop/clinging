@@ -188,7 +188,7 @@ class FrameComposer:
     def _draw_text(self, painter, clip, x, y, sx, sy, rot, opacity, local_time,
                    state=None):
         """Vẽ chữ qua core.text_paint — cùng một đường vẽ với Canvas preview."""
-        from core.text_paint import clip_font, paint_animated_text
+        from core.text_paint import clip_font, paint_animated_text, text_style_of
 
         state = state if state is not None else transitions.NEUTRAL
         font = clip_font(clip)
@@ -211,6 +211,7 @@ class FrameComposer:
             intensity=float(getattr(clip, "text_effect_intensity", 0.6)),
             style=getattr(clip, "text_style", "none") or "none",
             t=local_time,
+            styling=text_style_of(clip),
         )
         painter.restore()
 

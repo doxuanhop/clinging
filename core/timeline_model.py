@@ -272,6 +272,20 @@ class ClipModel:
     # Kiểu karaoke (core.karaoke_paint.STYLE_KEYS) — mô tả MÀU của từng từ,
     # độc lập với text_effect ở trên nên hai thứ dùng chung được.
     text_style: str = "none"
+    # ── Style chữ tĩnh (nhóm C) ──
+    # Vẽ qua đúng core.text_paint nên preview lẫn export ra cùng một khung hình.
+    # Bề rộng 0 / alpha 0 nghĩa là TẮT hẳn lớp đó (không tốn bước composite).
+    text_outline_color: str = "#000000"
+    text_outline_width: float = 0.0        # px, 0 = không viền
+    text_shadow_color: str = "#000000"
+    text_shadow_dx: float = 0.0            # px, offset bóng theo X
+    text_shadow_dy: float = 0.0            # px, offset bóng theo Y
+    text_shadow_blur: float = 0.0          # px, 0 = bóng cứng
+    text_box_color: str = "#000000"
+    text_box_alpha: float = 0.0            # 0..1, 0 = không có hộp nền
+    text_box_radius: float = 8.0           # px bo góc hộp nền
+    text_box_padding: float = 12.0         # px đệm quanh khối chữ
+    text_align: str = "center"             # left | center | right
     sticker_icon: str = ""
     sticker_color: str = "#FFFFFF"
     keyframes: dict = field(default_factory=lambda: {
@@ -1131,6 +1145,63 @@ class TimelineModel(QObject):
             self.recalculate_project_duration()
         self.clipAdded.emit(new_clip)
         return new_clip
+
+    def place_clip(self, clip: ClipModel, target_track_id: str,
+                   start_time: float) -> Optional[ClipModel]:
+        """Đặt một clip (đã clone, id mới) xuống track đích tại thời điểm cho trước.
+
+        Đây là phần chèn của ``duplicate_clip`` tách ra cho Ctrl+V dùng: quy tắc
+        va chạm (nhảy layer) và compaction Main Storyline phải giống hệt để bản
+        dán không xử khác bản nhân bản. Track đích mất (đã bị xoá từ lúc copy) thì
+        suy ra track cùng loại gần nhất; không còn đâu thì tạo track mới.
+
+        Trả về clip đã đặt, hoặc None nếu không chèn được (khóa / sai loại media).
+        """
+        track = self.get_track(target_track_id)
+        if track is None or track.is_locked or not track_accepts_media(
+                track.track_type, clip.media_type):
+            track = self._track_compatible_with(clip.media_type)
+        if track is None or track.is_locked:
+            return None
+
+        clip.track_id = track.track_id
+        clip.start_time = max(0.0, float(start_time))
+
+        if track.is_main_track:
+            track.clips.append(clip)
+            ordered = sorted(track.clips, key=lambda c: c.start_time)
+            self.recalculate_main_storyline(track, ordered)
+        else:
+            if not self._track_interval_is_free(
+                    track, clip.start_time, clip.duration,
+                    exclude_id=clip.clip_id):
+                new_track = self._create_collision_track(track)
+                clip.track_id = new_track.track_id
+                new_track.clips.append(clip)
+                new_track.clips.sort(key=lambda c: c.start_time)
+            else:
+                track.clips.append(clip)
+                track.clips.sort(key=lambda c: c.start_time)
+            self.recalculate_project_duration()
+
+        self.clipAdded.emit(clip)
+        return clip
+
+    def _track_compatible_with(self, media_type: str) -> Optional[TrackModel]:
+        """Track đầu tiên nhận được loại media này, để Ctrl+V đổ về khi track
+        nguồn không còn."""
+        from ui.timeline_panel import MEDIA_TO_TRACK
+        wanted = MEDIA_TO_TRACK.get(media_type)
+        for track in self._tracks:
+            if (not track.is_locked and
+                    (wanted is None or track.track_type == wanted) and
+                    track_accepts_media(track.track_type, media_type)):
+                return track
+        for track in self._tracks:
+            if not track.is_locked and track_accepts_media(
+                    track.track_type, media_type):
+                return track
+        return None
 
     # ── Transitions ─────────────────────────────────────────────
 

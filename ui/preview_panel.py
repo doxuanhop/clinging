@@ -391,7 +391,8 @@ class PreviewCanvas(QGraphicsView):
         else:
             self.itemSelected.emit(None)
 
-    def sync_scene_from_model(self, model, on_transform_callback):
+    def sync_scene_from_model(self, model, on_transform_callback,
+                              on_edit_commit=None):
         """Đồng bộ toàn bộ clip từ TimelineModel lên Canvas."""
         self._model = model
         self._syncing = True
@@ -409,10 +410,12 @@ class PreviewCanvas(QGraphicsView):
 
                     if clip.media_type == "text":
                         from ui.graphics_canvas_item import TextClipItem
-                        canvas_item = TextClipItem(clip, on_transform_callback)
+                        canvas_item = TextClipItem(
+                            clip, on_transform_callback, on_edit_commit)
                     else:
                         from ui.graphics_canvas_item import CanvasClipItem
-                        canvas_item = CanvasClipItem(clip, on_transform_callback)
+                        canvas_item = CanvasClipItem(
+                            clip, on_transform_callback, on_edit_commit)
 
                     canvas_item.setZValue(z_value)
                     self.scene_obj.addItem(canvas_item)

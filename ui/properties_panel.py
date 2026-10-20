@@ -467,13 +467,58 @@ class ClipPropertiesWidget(QWidget):
         intensity_layout.addWidget(self.lbl_text_intensity)
         layout_motion.addRow("Cường độ:", intensity_widget)
 
+        # Card 5: Style chữ — viền / bóng / hộp nền / căn lề. Đọc và ghi đúng
+        # mười một trường text_* trên ClipModel; mỗi điều khiển đi qua
+        # _push_text nên Ctrl+Z bỏ trọn một lần chỉnh. Đây là phần MÀU/HÌNH của
+        # khối chữ, tách khỏi "Kiểu karaoke" (quét màu theo từ) và "Kiểu chạy"
+        # (hình học anim_engine) — ba thứ dùng chung được.
+        self.card_style = QFrame()
+        self.card_style.setObjectName("PropertyCard")
+        layout_style = QFormLayout(self.card_style)
+        layout_style.setSpacing(8)
+        layout_style.setContentsMargins(12, 12, 12, 12)
+        lbl_style_title = QLabel("Style chữ")
+        lbl_style_title.setObjectName("CardTitle")
+        layout_style.addRow(lbl_style_title)
+
+        layout_style.addRow(*self._build_align_row())
+        self.spin_outline_width = self._add_style_spin(
+            layout_style, "Viền (px):", "text_outline_width",
+            0.0, 40.0, 1.0, 0, " px")
+        self.btn_outline_color = self._add_style_swatch(
+            layout_style, "Màu viền:", "text_outline_color")
+        self.btn_shadow_color = self._add_style_swatch(
+            layout_style, "Màu bóng:", "text_shadow_color")
+        self.spin_shadow_dx = self._add_style_spin(
+            layout_style, "Bóng ngang:", "text_shadow_dx",
+            -60.0, 60.0, 1.0, 0, " px")
+        self.spin_shadow_dy = self._add_style_spin(
+            layout_style, "Bóng dọc:", "text_shadow_dy",
+            -60.0, 60.0, 1.0, 0, " px")
+        self.spin_shadow_blur = self._add_style_spin(
+            layout_style, "Bóng mờ:", "text_shadow_blur",
+            0.0, 40.0, 1.0, 0, " px")
+        self.btn_box_color = self._add_style_swatch(
+            layout_style, "Màu nền:", "text_box_color")
+        self.spin_box_alpha = self._add_style_spin(
+            layout_style, "Độ đậm nền:", "text_box_alpha",
+            0.0, 1.0, 0.05, 2, "")
+        self.spin_box_padding = self._add_style_spin(
+            layout_style, "Vùng đệm:", "text_box_padding",
+            0.0, 60.0, 1.0, 0, " px")
+        self.spin_box_radius = self._add_style_spin(
+            layout_style, "Bo góc:", "text_box_radius",
+            0.0, 60.0, 1.0, 0, " px")
+
         # Ẩn/hiện dựa trên media_type
         is_text = clip_model.media_type == "text"
         self.card_text.setVisible(is_text)
         self.card_motion.setVisible(is_text)
-        
+        self.card_style.setVisible(is_text)
+
         scroll_layout.addWidget(self.card_text)
         scroll_layout.addWidget(self.card_motion)
+        scroll_layout.addWidget(self.card_style)
         scroll_layout.addStretch(1)
 
         scroll_area.setWidget(scroll_content)
@@ -660,46 +705,156 @@ class ClipPropertiesWidget(QWidget):
             item.refresh_style()
         elif item is not None:
             item.update()
-        self._on_values_changed()
+
+    def _push_text(self, **changes):
+        """Gói một lần đổi chữ thành một lệnh undo; đổi về giá trị cũ = không thêm bước.
+
+        Không phát `propertyChanged` (ống funnel hình học) nữa: nếu phát thì mỗi
+        cú gõ chữ kéo theo SetClipTransformCommand rỗng, và người dùng phải
+        Ctrl+Z hai lần cho một lần sửa chữ.
+        """
+        if self._block_signals:
+            return
+        clip = self.clip_model
+        requested = {}
+        for key, value in changes.items():
+            current = getattr(clip, key)
+            if isinstance(current, bool) or isinstance(value, bool):
+                if bool(current) == bool(value):
+                    continue
+            elif isinstance(current, (int, float)) and isinstance(value, (int, float)):
+                if abs(float(current) - float(value)) < 0.005:
+                    continue
+            elif str(current) == str(value):
+                continue
+            requested[key] = value
+        if not requested:
+            return
+        main_window = self._find_main_window()
+        if main_window is None:
+            # Widget chưa nằm trong cửa sổ (probe dựng đơn lẻ): vẫn phải ghi.
+            for key, value in requested.items():
+                setattr(clip, key, value)
+            self._refresh_canvas()
+            return
+        from core.commands import SetClipTextCommand
+        main_window.timeline_panel.undo_stack.push(
+            SetClipTextCommand(main_window.timeline_panel.model,
+                               self.clip_id, **requested))
+        self._refresh_canvas()
 
     def _set_color_swatch(self, color):
         self.btn_text_color.setStyleSheet(
             f"background-color: {color}; border: 1px solid #333;")
 
+    def _paint_style_swatch(self, btn, color):
+        btn.setStyleSheet(f"background-color: {color}; border: 1px solid #333;")
+
+    def _add_style_spin(self, layout, label, key, vmin, vmax, step, decimals,
+                        suffix):
+        """Spin số cho một trường text_* — giá trị float, đơn vị px hoặc 0..1."""
+        spin = QDoubleSpinBox()
+        spin.setRange(vmin, vmax)
+        spin.setSingleStep(step)
+        spin.setDecimals(decimals)
+        if suffix:
+            spin.setSuffix(suffix)
+        spin.setValue(float(getattr(self.clip_model, key)))
+        spin.valueChanged.connect(lambda v, k=key: self._push_text(**{k: float(v)}))
+        layout.addRow(label, spin)
+        return spin
+
+    def _add_style_swatch(self, layout, label, key):
+        """Nút màu cho một trường text_*; bấm ra QColorDialog rồi push undo."""
+        btn = QPushButton()
+        btn.setFixedSize(80, 26)
+        btn.setCursor(Qt.PointingHandCursor)
+        self._paint_style_swatch(btn, str(getattr(self.clip_model, key)))
+        btn.clicked.connect(lambda _=False, k=key, b=btn: self._on_style_swatch_clicked(k, b))
+        layout.addRow(label, btn)
+        return btn
+
+    def _on_style_swatch_clicked(self, key, btn):
+        from PySide6.QtWidgets import QColorDialog
+        from PySide6.QtGui import QColor
+        current = QColor(str(getattr(self.clip_model, key, "#000000")))
+        chosen = QColorDialog.getColor(current, self, "Chọn màu")
+        if chosen.isValid():
+            self._paint_style_swatch(btn, chosen.name())
+            self._push_text(**{key: chosen.name()})
+
+    def _build_align_row(self):
+        """Hàng căn lề ba nút loại trừ: Trái / Giữa / Phải -> trường text_align."""
+        from PySide6.QtWidgets import QButtonGroup
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        labels = {"left": "Trái", "center": "Giữa", "right": "Phải"}
+        current = str(getattr(self.clip_model, "text_align", "center"))
+        self._align_buttons = {}
+        for value, text in labels.items():
+            btn = QPushButton(text)
+            btn.setCheckable(True)
+            btn.setFixedHeight(26)
+            btn.setObjectName("TextFormatBtn")
+            btn.setChecked(value == current)
+            group.addButton(btn)
+            btn.clicked.connect(lambda _=False, v=value: self._push_text(text_align=v))
+            self._align_buttons[value] = btn
+            h.addWidget(btn)
+        h.addStretch(1)
+        return ("Căn lề:", row)
+
+    def _sync_style_card(self, clip_model):
+        """Đồng bộ mười một điều khiển style từ model (khi Ctrl+Z hay kéo Canvas)."""
+        self.spin_outline_width.setValue(float(clip_model.text_outline_width))
+        self._paint_style_swatch(self.btn_outline_color,
+                                 str(clip_model.text_outline_color))
+        self._paint_style_swatch(self.btn_shadow_color,
+                                 str(clip_model.text_shadow_color))
+        self.spin_shadow_dx.setValue(float(clip_model.text_shadow_dx))
+        self.spin_shadow_dy.setValue(float(clip_model.text_shadow_dy))
+        self.spin_shadow_blur.setValue(float(clip_model.text_shadow_blur))
+        self._paint_style_swatch(self.btn_box_color, str(clip_model.text_box_color))
+        self.spin_box_alpha.setValue(float(clip_model.text_box_alpha))
+        self.spin_box_padding.setValue(float(clip_model.text_box_padding))
+        self.spin_box_radius.setValue(float(clip_model.text_box_radius))
+        align = str(clip_model.text_align or "center")
+        for value, btn in self._align_buttons.items():
+            btn.setChecked(value == align)
+
     def _on_font_changed(self, font):
         """Cập nhật font chữ khi thay đổi."""
         if self._block_signals:
             return
-        self.clip_model.font_family = font.family()
-        self._refresh_canvas()
+        self._push_text(font_family=font.family())
 
     def _on_font_size_changed(self, value):
         """Cập nhật cỡ chữ."""
         if self._block_signals:
             return
-        self.clip_model.font_size = float(value)
-        self._refresh_canvas()
+        self._push_text(font_size=float(value))
 
     def _on_bold_toggled(self):
         """Bật/tắt chữ đậm."""
         if self._block_signals:
             return
-        self.clip_model.font_bold = self.btn_bold.isChecked()
-        self._refresh_canvas()
+        self._push_text(font_bold=self.btn_bold.isChecked())
 
     def _on_italic_toggled(self):
         """Bật/tắt chữ nghiêng."""
         if self._block_signals:
             return
-        self.clip_model.font_italic = self.btn_italic.isChecked()
-        self._refresh_canvas()
+        self._push_text(font_italic=self.btn_italic.isChecked())
 
     def _on_underline_toggled(self):
         """Bật/tắt gạch chân."""
         if self._block_signals:
             return
-        self.clip_model.font_underline = self.btn_underline.isChecked()
-        self._refresh_canvas()
+        self._push_text(font_underline=self.btn_underline.isChecked())
 
     def _on_text_color_clicked(self):
         """Chọn màu chữ."""
@@ -707,39 +862,34 @@ class ClipPropertiesWidget(QWidget):
         color = QColorDialog.getColor()
         if color.isValid():
             self._set_color_swatch(color.name())
-            self.clip_model.font_color = color.name()
-            self._refresh_canvas()
+            self._push_text(font_color=color.name())
 
     def _on_text_content_changed(self):
         """Cập nhật nội dung văn bản."""
         if self._block_signals:
             return
         text = self.text_edit.toPlainText()
-        self.clip_model.name = text
+        self._push_text(name=text)
         self.input_name.setText(text)
-        self._refresh_canvas()
 
     def _on_text_effect_changed(self, index):
         """Chọn kiểu chữ chạy."""
         if self._block_signals:
             return
-        self.clip_model.text_effect = self.combo_text_effect.itemData(index) or "none"
-        self._refresh_canvas()
+        self._push_text(text_effect=self.combo_text_effect.itemData(index) or "none")
 
     def _on_text_style_changed(self, index):
         """Chọn kiểu karaoke — chỉ đổi MÀU theo từ, không đổi hình học khối chữ."""
         if self._block_signals:
             return
-        self.clip_model.text_style = self.combo_text_style.itemData(index) or "none"
-        self._refresh_canvas()
+        self._push_text(text_style=self.combo_text_style.itemData(index) or "none")
 
     def _on_text_intensity_changed(self, value):
         """Cường độ chữ chạy, lưu theo thang 0..1 của EffectData."""
         self.lbl_text_intensity.setText(f"{value}%")
         if self._block_signals:
             return
-        self.clip_model.text_effect_intensity = value / 100.0
-        self._refresh_canvas()
+        self._push_text(text_effect_intensity=value / 100.0)
 
     def _on_fit_mode_changed(self, mode):
         """Chuyển đổi giữa Fit và Fill mode."""
@@ -1008,6 +1158,7 @@ class ClipPropertiesWidget(QWidget):
             intensity_percent = int(round(float(clip_model.text_effect_intensity) * 100))
             self.slider_text_intensity.setValue(intensity_percent)
             self.lbl_text_intensity.setText(f"{intensity_percent}%")
+            self._sync_style_card(clip_model)
         self._block_signals = False
         # Chuyển tiếp đổi theo ripple của những lệnh khác (xóa/trim clip), nên
         # phải đọc lại từ model mỗi lần panel cập nhật.
