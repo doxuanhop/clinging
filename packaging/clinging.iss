@@ -5,7 +5,7 @@
 ; nen ban cai chay duoc tren may khong co FFmpeg trong PATH.
 
 #define MyAppName      "Clinging"
-#define MyAppVersion   "1.0.0"
+#define MyAppVersion   "1.0.1"
 #define MyAppPublisher "Qeafivels Software"
 #define MyAppExeName   "Clinging.exe"
 #define BundleDir      "..\dist\Clinging"
@@ -17,6 +17,15 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+; FileVersion/Company/Copyright cua chinh setup.exe. Inno khong tu lay tu
+; AppVersion cho VersionInfoVersion: neu bo trong thi Properties -> Details cua
+; file tai ve in ra 0.0.0.0 va chu so huu trong. Khong anh huong gi toi cai dat.
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoProductName={#MyAppName}
+VersionInfoDescription={#MyAppName} Setup
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoCopyright=Copyright 2026 {#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes

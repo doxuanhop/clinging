@@ -27,11 +27,21 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICO = os.path.join(REPO, "assets", "app-icon", "icon.ico")
 BASE = os.path.join(os.environ["LOCALAPPDATA"], "Programs")
+
+
+def newest(pattern):
+    """Ban nao moi nhat trong build\\installer — ten file mang so version, nen
+    khong duoc hardcode no vao day (mot lan bump lam gate do sai ban)."""
+    import glob
+    hits = sorted(glob.glob(pattern), key=os.path.getmtime)
+    return hits[-1] if hits else pattern
+
+
 TARGETS = {
     "Inno\\Clinging.exe": os.path.join(BASE, "Clinging", "Clinging.exe"),
     "MSI\\Clinging.exe": os.path.join(BASE, "ClingingMSI", "Clinging.exe"),
-    "installer\\ClingingSetup.exe": os.path.join(
-        REPO, "build", "installer", "ClingingSetup-1.0.0.exe"),
+    "installer\\ClingingSetup.exe": newest(os.path.join(
+        REPO, "build", "installer", "ClingingSetup-*.exe")),
     "bundle\\Clinging.exe": os.path.join(REPO, "dist", "Clinging", "Clinging.exe"),
     "_counterfactual notepad.exe": os.path.join(
         os.environ.get("WINDIR", r"C:\Windows"), "System32", "notepad.exe"),
