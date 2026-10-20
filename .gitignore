@@ -1,0 +1,33 @@
+# Ban dung PyInstaller + Inno/WiX sinh ra: 506 MB + 320 MB, dung lai duoc tu
+# ClingingQt.spec va packaging/. Cam tuyet doi vi `heat dir dist\Clinging` lay
+# danh sach file tu bundle that, nen commit no chi tao xung dot vo nghia.
+build/
+dist/
+
+# Media nguoi dung va dau ra cua app: data/video 29 MB la clip cua that, khong
+# phai tai nguyen ma code. App tu tao lai thu muc nay luc chay.
+data/
+
+# scratch/ la 76 MB anh/video/log chung minh cho cac lan do. Giu lai 107 probe
+# .py (chung la canh gate, phai doc duoc ma khong can chay lai build), bo bo
+# toi da sinh ra.
+scratch/*
+!scratch/*.py
+
+# ffmpeg.exe + ffprobe.exe ~205 MB. Chung ngan GitHub 100 MB/file nen khong
+# the push; spec lay chung tu do, nen may nao muon build phai tai truyen bo
+# nay ve dung cho (xem README).
+tools/ffmpeg/*.exe
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Do thi / cache cua may khong phai la nguon.
+*.wixpdb
+*.msi
+*.tmp
+Thumbs.db
+.DS_Store

@@ -1,0 +1,3747 @@
+"""diagnostics.py
+
+Kiểm tra bundle đóng gói: chạy MỌI mảnh mà app cần lúc chạy, ngay trong chính
+file exe đã đóng gói.
+
+Lý do tồn tại: exe GUI windowed không in ra stdout, nên "app mở được cửa sổ"
+không chứng minh được là src.asr, styles/*.qss, qtawesome, cv2 hay PySide6
+QtMultimedia có thật trong bundle hay không. Chạy:
+
+    Clinging.exe --selftest <duong-dan-bao-cao>
+
+Exit code 0 = bundle đủ, 1 = có mục thiếu (kèm chi tiết trong file báo cáo).
+"""
+
+import json
+import math
+import os
+import subprocess
+import sys
+import time
+import types
+
+
+def _report_path(argv):
+    for arg in argv[1:]:
+        if not arg.startswith("-"):
+            return os.path.abspath(arg)
+    return os.path.join(os.environ.get("TEMP", os.getcwd()),
+                        "clinging_selftest.json")
+
+
+class Collector:
+    def __init__(self):
+        self.rows = []
+
+    def check(self, name, fn):
+        try:
+            detail = fn()
+            self.rows.append({"name": name, "ok": True, "detail": str(detail)})
+        except Exception as exc:
+            self.rows.append({"name": name, "ok": False,
+                              "detail": "%s: %s" % (type(exc).__name__, exc)})
+
+    @property
+    def failed(self):
+        return [row for row in self.rows if not row["ok"]]
+
+
+def _styles_ok():
+    from theme import BASE_DIR, STYLES_DIR, theme_manager
+    missing = [f for f in ("dark.qss", "light.qss", "style.qss")
+               if not os.path.isfile(os.path.join(STYLES_DIR, f))]
+    if missing:
+        raise RuntimeError("thieu %s trong %s" % (missing, STYLES_DIR))
+    dark = theme_manager.stylesheet()
+    theme_manager.toggle()
+    light = theme_manager.stylesheet()
+    theme_manager.toggle()
+    if len(dark) < 500 or len(light) < 500 or dark == light:
+        raise RuntimeError("stylesheet rong hoac giong nhau: %d/%d"
+                           % (len(dark), len(light)))
+    return "%d+%d byte tu %s" % (len(dark), len(light), BASE_DIR)
+
+
+def _icon_ok():
+    from widgets.common import app_icon, app_icon_path
+    path = app_icon_path()
+    if not os.path.isfile(str(path)):
+        raise RuntimeError("khong co %s" % path)
+    if app_icon().isNull():
+        raise RuntimeError("QIcon null")
+    return "%s (%d bytes)" % (path.name, os.path.getsize(str(path)))
+
+
+def _qtawesome_ok():
+    """Font icon phai ve duoc pixel that, ngay trong bundle nay.
+
+    isNull() khong du: qtawesome tra ve QIcon khong null nhung pixmap rong
+    khi khong nuong mau, va ban exe thieu .ttf/charmap cung chi bieu hien
+    bang cac o trong. Do bang chinh helper cua UI de khong co duong tat.
+    """
+    from widgets.common import font_icon
+    total = 0
+    for name in ("fa6s.film", "fa6s.xmark", "fa6s.wand-magic-sparkles"):
+        image = font_icon(name, "#40E0D0").pixmap(16, 16).toImage()
+        pixels = image.width() * image.height()
+        solid = sum(1 for y in range(image.height())
+                    for x in range(image.width()) if image.pixel(x, y) & 0xFF)
+        if solid < max(1, int(0.02 * pixels)):
+            raise RuntimeError("%s chi ve %d/%d pixel" % (name, solid, pixels))
+        total += solid
+    return "3 font icon, %d pixel khong trong" % total
+
+
+def _asr_ok():
+    import requests
+    import src.asr as asr
+    names = sorted(cls.__name__ for _label, cls in asr.CLOUD_ENGINES)
+    if len(names) != 3:
+        raise RuntimeError("CLOUD_ENGINES = %r" % (names,))
+    return "%s + requests %s" % (",".join(names), requests.__version__)
+
+
+def _media_libs_ok():
+    import cv2
+    import numpy
+    import psutil
+    import pydub  # noqa: F401
+    return "cv2 %s, numpy %s, psutil %s" % (cv2.__version__,
+                                            numpy.__version__,
+                                            psutil.__version__)
+
+
+def _qt_modules_ok():
+    from PySide6.QtMultimedia import QMediaPlayer  # noqa: F401
+    from PySide6.QtSvg import QSvgRenderer  # noqa: F401
+    from PySide6.QtWidgets import QGraphicsScene  # noqa: F401
+    return "QtMultimedia + QtSvg + Widgets"
+
+
+def _transition_audio_ok():
+    """Ke hoach afade phai co that trong bundle, khong phai chi trong source."""
+    from core import audio_mix, transitions
+    from core.timeline_model import TimelineModel, TrackType
+    if len(transitions.TRANSITIONS) != 6:
+        raise RuntimeError("TRANSITIONS = %d kieu" % len(transitions.TRANSITIONS))
+    model = TimelineModel()
+    track = model.add_track(TrackType.VIDEO)
+    a = model.add_clip(track.track_id, "a.mp4", "video", 0.0, 3.0, "a")
+    b = model.add_clip(track.track_id, "b.mp4", "video", 0.0, 3.0, "b")
+    if not model.set_transition(b.clip_id, "Cross Dissolve", 1.0):
+        raise RuntimeError("khong gan duoc Cross Dissolve")
+    graph = audio_mix.build_filter_complex(model, [a, b], model.duration)
+    if graph.count("afade=") != 2 or "curve=hsin" not in graph:
+        raise RuntimeError("chuoi filter khong co afade: %s" % graph[:120])
+    return "6 kieu, 2 afade, overlap %.1f-%.1f" % (b.start_time, a.end_time)
+
+
+def _clip_audio_ok():
+    """Buoc nut am thanh cua tung clip phai di den tan chuoi filter cua bundle.
+
+    Chi kiem tra model thi khong chung duoc dieu gi: nguoi dung mo ban cai dat,
+    keo thanh Am luong roi xuat file, va file ay phai khac.
+    """
+    from core import audio_mix
+    from core.timeline_model import TimelineModel, TrackType
+    model = TimelineModel()
+    track = model.add_track(TrackType.AUDIO)
+    clip = model.add_clip(track.track_id, "a.wav", "audio", 0.0, 4.0, "a")
+    applied = model.set_clip_audio(clip.clip_id, volume=0.5, speed=2.0,
+                                   fade_in=1.0, fade_out=0.5)
+    if (not isinstance(applied, dict) or applied.get("speed") != 2.0 or
+            round(clip.duration, 3) != 2.0):
+        raise RuntimeError("knob sai: %r duration=%r" % (applied, clip.duration))
+    graph = audio_mix.build_filter_complex(model, [clip], model.duration)
+    for token in ("atempo=2.000000,", "afade=t=in:", "afade=t=out:",
+                  "volume=0.500000,"):
+        if token not in graph:
+            raise RuntimeError("thieu %s trong %s" % (token, graph[:160]))
+
+    # Tat tieng phai di den cung mot chuoi filter: co volume=0 ma van giu
+    # volume=0.5 trong model (bat lai khong mất con số), va clip khong duoc
+    # con duoc ke vao danh sach nguon tieng cua exporter.
+    from core import transitions
+    clip.audio_muted = True
+    muted_graph = audio_mix.build_filter_complex(model, [clip], model.duration)
+    if ("volume=0.000000," not in muted_graph or
+            "volume=0.500000," in muted_graph):
+        raise RuntimeError("tat tieng khong vao chuoi ffmpeg: %s"
+                           % muted_graph[:160])
+    if transitions.clip_volume(clip) != 0.0 or clip.volume != 0.5:
+        raise RuntimeError("tat tieng an mop volume: %r" % clip.volume)
+    clip.audio_muted = False
+    if transitions.clip_volume(clip) != 0.5:
+        raise RuntimeError("bat lai tieng khong tra volume cu")
+    return "volume + speed + fade + tat tieng den duoc chuoi ffmpeg"
+
+
+def _settings_ok():
+    """Cai dat phai that trong bundle — 14 khoa, moi khoa mot hook chay duoc.
+
+    Mot bundle cu (con dict ~60 khoa, chua co core/settings.py) phai FAIL o
+    day chu khong PASS roi im lang dung gia tri mac dinh.
+    """
+    import tempfile
+    from core import settings
+
+    if len(settings.DEFAULTS) != 14:
+        raise RuntimeError("DEFAULTS = %d khoa" % len(settings.DEFAULTS))
+
+    # Hop thoai khong duoc de khoa ma chang tab nao giu, cung khong duoc hai
+    # tab cung ghi mot khoa (tab dung sau an tab dung truoc).
+    from ui.settings_dialog import SettingsDialog
+    claimed = []
+    for tab_class, _name in SettingsDialog.TAB_CLASSES:
+        claimed.extend(tab_class.KEYS)
+    if sorted(claimed) != sorted(settings.DEFAULTS):
+        raise RuntimeError("dialog khong phu kin 14 khoa: %s" % sorted(claimed))
+    if len(set(claimed)) != len(claimed):
+        raise RuntimeError("hai tab cung ghi de mot khoa")
+
+    # Round-trip xuong dia that, bang file tam de khong cham file nguoi dung.
+    probe = {"theme": "light", "snap_threshold": 999, "undo_steps": "7",
+             "show_waveform": "false", "bogus": 1}
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "settings.json")
+        saved = settings.save(probe, path)
+        again = settings.load(path)
+        if again != saved:
+            raise RuntimeError("round-trip doi gia tri: %s != %s" % (again, saved))
+    if saved["snap_threshold"] != settings.INT_RANGES["snap_threshold"][1]:
+        raise RuntimeError("ngoai khoang phai kep, khong phai loai")
+    if saved["undo_steps"] != 10 or saved["show_waveform"] is not False:
+        raise RuntimeError("kieu du lieu bi ghi nguyen: %s" % saved)
+    if "bogus" in saved:
+        raise RuntimeError("khoa la len duoc vao file")
+
+    # Bay gio moi hook phai chay that tren object that cua bundle.
+    from core.commands import AddClipCommand, UndoStack
+    from core.snap_engine import SnapEngine
+    from core.time_mapper import TimePixelMapper
+    from core.timeline_model import TimelineModel, TrackType
+    from theme import ThemeManager
+
+    mapper = TimePixelMapper(px_per_sec=48.0)
+    mapper.set_min_zoom(20)
+    mapper.set_zoom(1.0)
+    if mapper.px_per_sec < 19.9:
+        raise RuntimeError("min_zoom khong chan duoc zoom")
+
+    model = TimelineModel()
+    track = model.add_track(TrackType.VIDEO)
+    model.add_clip(track.track_id, "a.mp4", "video", 0.0, 4.0, "a")
+    model.playhead = 100.0
+    engine = SnapEngine(mapper)
+    engine.enabled, engine.threshold_px = True, 20
+    engine.snap_to_playhead = engine.snap_to_grid = False
+    engine.snap_to_clip_edges = True
+    if engine.find_snap(4.2, model) is None:
+        raise RuntimeError("mep clip khong hut duoc")
+    engine.snap_to_clip_edges = False
+    if engine.find_snap(4.2, model) is not None:
+        raise RuntimeError("co snap_to_clip_edges khong co tac dung")
+
+    stack = UndoStack()
+    for index in range(20):
+        stack.push(AddClipCommand(model, track.track_id, "b.mp4", "video",
+                                  40.0 + index, 2.0, "x%02d" % index))
+    if stack.undo_count != 20:
+        raise RuntimeError("model khong giu du 20 lenh: %d" % stack.undo_count)
+    # Ha gioi han PHAI cat ngay, khong cho den khi co lenh moi.
+    stack.set_max_history(10)
+    if stack.undo_count != 10 or not stack.can_undo:
+        raise RuntimeError("undo_steps khong cat: %d" % stack.undo_count)
+    # undo() co y khong tra gia tri, nen do bang dem cua chinh no.
+    stack.undo()
+    if stack.undo_count != 9 or not stack.can_redo:
+        raise RuntimeError("undo khong chay sau khi cat lich su")
+
+    manager = ThemeManager()
+    seen = []
+    manager.themeChanged.connect(seen.append)
+    manager.set_mode(saved["theme"])
+    if seen != ["light"] or manager.set_mode("light"):
+        raise RuntimeError("set_mode phat tin hieu sai")
+
+    settings.reload()
+    return "14 khoa, %s, snap+zoom+undo+theme chay that" % saved["theme"]
+
+
+def _ui_graph_ok():
+    from ui.main_controller import MainController  # noqa: F401
+    from core.frame_composer import FrameComposer  # noqa: F401
+    from ui.export_dialog import RenderWorker  # noqa: F401
+    from ui.thumbnail_dialog import ThumbnailDialog  # noqa: F401
+    from ui.keyframe_graph_dialog import KeyframeGraphDialog  # noqa: F401
+    return ("MainController + FrameComposer + RenderWorker + ThumbnailDialog"
+            " + KeyframeGraphDialog")
+
+
+def _keyframe_graph_ok():
+    """Do thi duong cong keyframe trong ban chay nay: duong ve, phep chieu,
+    lenh undo va diem vao — tat ca do that, khong phai nhin file nguon.
+
+    Mot bundle thieu ui.keyframe_graph_dialog van mo duoc app va chi lo khi
+    nguoi dung bam vao clip co keyframe, nen phai kiem ca import lan chu.
+    """
+    from core import keyframe_graph as kg
+    from core.commands import (AddKeyframeCommand, EditKeyframeCommand,
+                               RemoveKeyframeCommand, UndoStack)
+    from core.keyframe_manager import (frame_ease, frame_time, frame_value,
+                                       interpolate_keyframes)
+    from core.timeline_model import TimelineModel, track_type_for_media
+
+    model = TimelineModel()
+    track = model.add_track(track_type_for_media("text"), "Graph")
+    clip = model.add_clip(track.track_id, "", "text", 0.0, 2.0, "g")
+    clip.transform.x = -400.0
+    clip.add_keyframe("x", 0.0, -400.0, "ease_in_out")
+    clip.add_keyframe("x", 2.0, 400.0, "linear")
+
+    frames = kg.frames_of(clip, "x")
+    default = kg.default_value(clip, "x")
+    samples = kg.sample_curve(frames, "x", default, 0.0, clip.duration,
+                              samples=41)
+    if len(samples) != 41:
+        raise RuntimeError("sample_curve tra %d mau" % len(samples))
+    # Diem cuoi phai nam o CUOI khoang thoi gian: ghi nham thanh t0 thi mau
+    # van "khop" interpolate_keyframes (no tu noi theo chinh no) ma duong
+    # tren man hinh keo mot net nguoc qua ca lane.
+    times = [t for t, _ in samples]
+    if times[-1] != clip.duration or times[0] != 0.0:
+        raise RuntimeError("mau dau/cuoi lech khoang thoi gian: %r" %
+                           ((times[0], times[-1]),))
+    if any(b <= a for a, b in zip(times, times[1:])):
+        raise RuntimeError("mau duong cong khong tang dan")
+    for time, value in samples:
+        if abs(value - interpolate_keyframes(frames, time, default)) > 1e-9:
+            raise RuntimeError("duong tren do thi khong phai duong cua model")
+
+    for time in (0.0, 0.37, 1.0, 2.0):
+        x = kg.time_to_x(time, 0.0, clip.duration, 128.0, 800.0)
+        back = kg.x_to_time(x, 0.0, clip.duration, 128.0, 800.0)
+        if abs(back - time) > 1e-9:
+            raise RuntimeError("phep chieu thoi gian mat nghich dao")
+    shown = kg.display_value("opacity", 0.4)
+    if (shown, kg.raw_value("opacity", shown)) != (40.0, 0.4):
+        raise RuntimeError("opacity khong quy duoc % ve model")
+    flat_lo, flat_hi = kg.value_domain([(0.0, 0.5, "linear")], "opacity", 0.5)
+    if not flat_hi > flat_lo:
+        raise RuntimeError("duong nam ngang bi ep ve 0 chieu cao")
+    if kg.format_value("x", -0.4) != "0px":
+        raise RuntimeError("truc tung in ra so am khong duong (%r)"
+                           % kg.format_value("x", -0.4))
+    # Lane 48 px la chieu cao THAT khi mo du 6 property, khong chua noi 5 dong
+    # chu 16 px: nhan phai gian cach, neu khong cot so de len nhau thanh mot bo
+    # so khong doc duoc (khong crash, chi la in ra sai).
+    from ui.keyframe_graph_dialog import label_divisions
+    if [label_divisions(h, 16.0) for h in (48.3, 70.0, 90.0, 380.0)] != \
+            [1, 2, 2, 4]:
+        raise RuntimeError("nhan truc tung khong gian theo chieu cao lane")
+
+    stack = UndoStack()
+    stack.push(EditKeyframeCommand(model, clip.clip_id, "x", 2.0, 1.5, 90.0))
+    moved = model.get_clip(clip.clip_id).keyframes["x"]
+    if (round(frame_time(moved[1]), 3), round(frame_value(moved[1]), 3),
+            frame_ease(moved[1])) != (1.5, 90.0, "linear"):
+        raise RuntimeError("lenh keo moc sai: %r" % (moved[1],))
+    stack.undo()
+    if round(frame_time(model.get_clip(clip.clip_id).keyframes["x"][1]), 3) != 2.0:
+        raise RuntimeError("undo keo moc khong tra lai")
+    stack.redo()
+    if round(frame_value(model.get_clip(clip.clip_id).keyframes["x"][1]), 3) != 90.0:
+        raise RuntimeError("redo keo moc khong dat lai")
+
+    stack.push(AddKeyframeCommand(model, clip.clip_id, "x", 0.75, 10.0,
+                                  "ease_in"))
+    if len(model.get_clip(clip.clip_id).keyframes["x"]) != 3:
+        raise RuntimeError("lenh them moc khong chen")
+    stack.undo()
+    if len(model.get_clip(clip.clip_id).keyframes["x"]) != 2:
+        raise RuntimeError("undo them moc khong xoa")
+    stack.push(RemoveKeyframeCommand(model, clip.clip_id, "x", 0.0))
+    left = model.get_clip(clip.clip_id).keyframes["x"]
+    if len(left) != 1 or round(frame_time(left[0]), 3) != 1.5:
+        raise RuntimeError("lenh xoa moc sai: %r" % (left,))
+    stack.undo()
+    if len(model.get_clip(clip.clip_id).keyframes["x"]) != 2:
+        raise RuntimeError("undo xoa moc khong tra lai moc")
+
+    from ui.graphics.timeline_scene import TimelineScene
+    from ui.keyframe_graph_dialog import KeyframeGraphDialog  # noqa: F401
+    from ui.main_window import MainWindow
+    from ui.timeline_panel import TimelinePanel
+    missing = [name for name, owner in (
+        ("graph_requested", TimelineScene),
+        ("keyframeGraphRequested", TimelinePanel),
+        ("_open_keyframe_graph", MainWindow)) if not hasattr(owner, name)]
+    if missing:
+        raise RuntimeError("diem vao do thi bi thieu: %s" % ", ".join(missing))
+    return ("41 mau khop interpolate_keyframes, 3 lenh undo/redo, "
+            "3 diem vao, nhan truc tung gian theo lane")
+
+
+def _project_launch_ok():
+    """Duong mo du an tu file phai co trong bundle nay, do tren chuoi argv that.
+
+    ``main.py`` duoc dong goi thanh ``__main__`` nen khong import lai duoc:
+    parser nam trong ``core.project_storage`` va chinh app dung no. Mot bundle
+    thieu ``open_project_path`` van mo duoc Home — nguoi dung nghi app hong,
+    trong khi thuc chat la khong co loi vao.
+    """
+    import tempfile
+    from core.project_storage import project_arg_from_argv
+    from ui.main_controller import MainController
+
+    for name in ("open_project_path", "_on_open_project"):
+        if not hasattr(MainController, name):
+            raise RuntimeError("thieu %s trong MainController" % name)
+
+    here = os.path.abspath(__file__)
+    if project_arg_from_argv(["Clinging.exe"]) is not None:
+        raise RuntimeError("argv khong co du an ma parser mo ra")
+    if project_arg_from_argv(["Clinging.exe", "--project-report", here]) is not None:
+        raise RuntimeError("--project-report bi hieu nham la file mo")
+    gone = os.path.join(tempfile.gettempdir(), "clinging_selftest_vang.clinq")
+    if os.path.exists(gone):
+        os.remove(gone)
+    if project_arg_from_argv(["Clinging.exe", gone]) is not None:
+        raise RuntimeError("file khong ton tai phai tra None, khong mo")
+    if project_arg_from_argv(["Clinging.exe", here]) is not None:
+        raise RuntimeError("duong dan khong phai .clinq phai bi tu choi")
+    real = os.path.join(tempfile.gettempdir(), "clinging_selftest_mo.clinq")
+    other = os.path.join(tempfile.gettempdir(), "clinging_selftest_khac.clinq")
+    for path in (real, other):
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+    try:
+        if project_arg_from_argv(["Clinging.exe", real]) != real:
+            raise RuntimeError("Explorer dat ten file vao argv ma khong mo duoc")
+        # ``--project`` phai thang: vong lap roi cuoi co the Trung mot file
+        # .clinq khac trong thu muc hien hanh, va mo sai du an con te hon
+        # mo khong duoc.
+        if project_arg_from_argv(
+                ["Clinging.exe", real, "--project", other]) != other:
+            raise RuntimeError("--project khong co quyen uu tien")
+    finally:
+        for path in (real, other):
+            os.remove(path)
+    return ("parser doi duoc .clinq that/gia/khong co, --project thang, "
+            "2 diem vao MainController con nguyen")
+
+
+# Hai cach tu viet phep tinh moc thoi gian cua clip that su tung ton tai song
+# song nhau (preview kep ve duration - 1e-6, export tru tho). Detector ben duoi
+# phai do voi ca hai cach do va xanh voi diem vao chung, nen no duoc thu tren
+# mot ham doi thu bien dich tai luc chay — khong the doc file .py vi bundle
+# khong con nguon.
+_HAND_RENDERS = (
+    "def f(clip, t):\n"
+    "    return max(0.0, min(t, clip.end_time - 1e-6) - clip.start_time)\n",
+    "def f(clip, t):\n"
+    "    return t - clip.start_time\n",
+)
+
+
+def _local_time_ok():
+    """Preview va export phai lay moc thoi gian cuc bo cua clip tu MOT ham.
+
+    ClipModel.local_time_at la diem vao chung, cung khuon voi source_time: khi
+    moi ben tu tru ``t - clip.start_time`` thi bien clip co hai cach khac nhau,
+    va khung hinh cuoi cua clip doc sang nguon qua moc o ben nay nhung khong o
+    ben kia. Phep kiem nay do hai thu:
+
+      1. Bien [0, duration) tai sau moc ngoai doi tuong — ke ca khi playhead
+         nam qua mat clip hoac dung o cuoi du an.
+      2. ``co_names`` cua hai ham san xuat that (FrameComposer.render_frame va
+         MainWindow._sync_canvas_frames_at_time) phai goi local_time_at va
+         KHONG duoc con tai ``start_time``. co_names doc duoc ca trong bundle
+         da dong goi, khong can nguon.
+    """
+    from core.timeline_model import ClipModel
+
+    clip = ClipModel(start_time=1.0, duration=2.0, in_point=0.5, speed=2.0)
+    end = clip.end_time
+    last = round(2.0 - 0.000001, 6)
+    got = [(t, round(clip.local_time_at(t), 6)) for t in
+           (0.0, 0.4, 1.0, 2.5, end, end + 5.0)]
+    want = [(0.0, 0.0), (0.4, 0.0), (1.0, 0.0), (2.5, 1.5), (end, last),
+            (end + 5.0, last)]
+    if got != want:
+        raise RuntimeError("bien local_time_at sai: %s != %s" % (got, want))
+    limit = clip.in_point + clip.duration * clip.speed_factor
+    over = clip.source_at_local(clip.local_time_at(end + 9.0))
+    if over > limit + 1e-9:
+        raise RuntimeError("moc cuoi doc nguon qua cua so clip: %.6f > %.6f"
+                           % (over, limit))
+
+    def hand_rolled(func):
+        names = set(func.__code__.co_names)
+        return "start_time" in names or "local_time_at" not in names
+
+    for source in _HAND_RENDERS:
+        ns = {}
+        exec(compile(source, "<rival>", "exec"), ns)
+        if not hand_rolled(ns["f"]):
+            raise RuntimeError("detector bo lot cach tu viet phep tru")
+    ns = {}
+    exec(compile("def g(clip, t):\n    return clip.local_time_at(t)\n",
+                 "<seam>", "exec"), ns)
+    if hand_rolled(ns["g"]):
+        raise RuntimeError("detector bao nhom khi dung diem vao chung")
+
+    from core.frame_composer import FrameComposer
+    from ui.main_window import MainWindow
+    bad = [label for label, fn in (
+        ("FrameComposer.render_frame", FrameComposer.render_frame),
+        ("MainWindow._sync_canvas_frames_at_time",
+         MainWindow._sync_canvas_frames_at_time),
+    ) if hand_rolled(fn)]
+    if bad:
+        raise RuntimeError("tu tinh moc thoi gian cuc bo: " + ", ".join(bad))
+    return ("6 moc bien khop [0,%s), nguon dung tai %.3fs, 2/2 diem goi "
+            "dung local_time_at" % (last, limit))
+
+
+def _decode_cache_ok():
+    """Decoder tuan tu + cache dia phai co trong bundle va chay duoc that.
+
+    Ba thu dung trong bundle ma ban source khong thay: rule chon frame, key
+    cache khong duration (loi that da tung lam crash luc mo project), va mot
+    file nguon khong ton tai phai tra ve "chet", khong ngoai le.
+    """
+    from core.media_cache import (image_key, read_image, read_waveform,
+                                  remove_path, waveform_key, write_image,
+                                  write_waveform)
+    from core.media_frame import SequentialVideoReader, frame_index_at
+    import tempfile
+    if (frame_index_at(0.5, 24), frame_index_at(1.49, 24),
+            frame_index_at(-3.0, 24)) != (12, 36, 0):
+        raise RuntimeError("rule frame_index_at sai: %r" % (
+            [frame_index_at(t, 24) for t in (0.5, 1.49, -3.0)],))
+
+    src = os.path.join(tempfile.gettempdir(), "clinging_selftest_src.mp4")
+    with open(src, "wb") as handle:
+        handle.write(b"not a real video")
+    wkey = ikey = None
+    try:
+        wkey = waveform_key(src, 60, 0.0, None)
+        ikey = image_key(src, "timeline", 0.5, 160, 60)
+        if not wkey or not ikey:
+            raise RuntimeError("thieu tham so khoa cache")
+        amps = [0.25, 0.5, 1.0, 0.125]
+        if not write_waveform(wkey, amps) or read_waveform(wkey) != amps:
+            raise RuntimeError("song khong luu duoc qua cache")
+        from PySide6.QtGui import QImage
+        img = QImage(16, 8, QImage.Format_RGB32)
+        img.fill(0xFF00FF00)
+        if not write_image(ikey, img) or read_image(ikey).size() != img.size():
+            raise RuntimeError("anh nho khong luu duoc qua cache")
+        if read_waveform(wkey + ".missing") is not None:
+            raise RuntimeError("muc khong co phai tra None")
+        dead = SequentialVideoReader(os.path.join(tempfile.gettempdir(),
+                                                  "khong_co_file_nay.mp4"))
+        if dead.read_bgr(1.0) is not None or not dead.dead:
+            raise RuntimeError("nguon mat phai tra None + bao chet")
+        dead.close()
+    finally:
+        for key in (wkey, ikey):
+            if key:
+                remove_path(key)
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+    return "round(t*fps), cache anh+song, nguon mat -> dead"
+
+
+def _thumbnail_export_ok():
+    """Mot dong trong --selftest: trích xuất ảnh hàng loạt chạy thật trong bundle này.
+
+    Ba dieu ma dong khac khong thay: (1) plan_times phai theo cung quy tac
+    lam tron voi preview, (2) hai moc sat nhau khong duoc ghi de len nhau,
+    (3) mot video that phai sinh ra DUNG so anh, va file tren dia phai doc lai
+    duoc — import du module ma khong ghi duoc PNG thi van la ban hong.
+    """
+    import tempfile
+    from core import thumbnail_export as thumbs
+    from core.media_frame import frame_index_at
+
+    even = thumbs.plan_times(4.0, thumbs.MODE_COUNT, count=12)
+    # [0.167, 0.5, 0.833]: lam TRON chu khong phai cat — cat thi ra 0.166.
+    if len(even) != 12 or even[:3] != [0.167, 0.5, 0.833]:
+        raise RuntimeError("plan deu sai: %r" % even[:3])
+    periodic = thumbs.plan_times(4.0, thumbs.MODE_INTERVAL, interval=1.0)
+    if periodic != [0.0, 1.0, 2.0, 3.0, 4.0]:
+        raise RuntimeError("plan chu ky sai: %r" % periodic)
+    clipped = thumbs.plan_times(4.0, thumbs.MODE_INTERVAL, interval=1.0,
+                                start=1.0, end=3.0)
+    if clipped != [1.0, 2.0, 3.0]:
+        raise RuntimeError("plan trong khoang sai: %r" % clipped)
+    if [frame_index_at(t, 24) for t in (0.167, 0.5)] != [4, 12]:
+        raise RuntimeError("rule frame_index_at doi khac")
+
+    dense = [0.0, 0.05, 0.1]
+    digits = thumbs._naming_digits(dense)
+    names = [thumbs.frame_name(t, digits) for t in dense]
+    if len(set(names)) != 3 or digits != 3:
+        raise RuntimeError("ten file trung nhau: %r" % names)
+    if thumbs.time_label(0.05, digits) != "0.050s":
+        raise RuntimeError("chuoi nhan label khop ten file")
+
+    import cv2
+    import numpy as np
+    folder = tempfile.mkdtemp(prefix="clinging_thumb_")
+    try:
+        src = os.path.join(folder, "src.mp4")
+        writer = cv2.VideoWriter(src, cv2.VideoWriter_fourcc(*"mp4v"), 30.0,
+                                 (160, 90))
+        if not writer.isOpened():
+            raise RuntimeError("bundle nay khong tao duoc video ngan")
+        for index in range(30):
+            writer.write(np.full((90, 160, 3), index * 8 % 256, np.uint8))
+        writer.release()
+        out = os.path.join(folder, "ra")
+        result = thumbs.export_video_thumbnails(src, out, count=4, width=160)
+        written = result.get("written", [])
+        if len(written) != 4 or result.get("missing"):
+            raise RuntimeError("xuat 4 moc chi ra %d anh: %r"
+                               % (len(written), result.get("missing")))
+        on_disk = sorted(n for n in os.listdir(out) if n.startswith("frame_"))
+        if on_disk != sorted(os.path.basename(p) for p in written):
+            raise RuntimeError("anh tren dia khong khop ket qua: %r" % on_disk)
+        for path in written:
+            image = cv2.imread(path)
+            if image is None or image.shape[1] != 160 or image.shape[0] != 90:
+                raise RuntimeError("anh ghi ra doc lai khong duoc: %s" % path)
+        sheets = result.get("sheets", [])
+        if len(sheets) != 1 or not os.path.isfile(sheets[0]):
+            raise RuntimeError("thieu anh tong hop: %r" % sheets)
+    finally:
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+    return "plan 12/5/3 moc, ten 3 so le, 4 anh + 1 sheet ghi ra that"
+
+
+def _media_split_ok():
+    """Mot dong trong --selftest: cat file ra ĐĨA chạy thật trong bundle nay.
+
+    Selftest nay khong trung lap scratch/media_split_probe.py: no tra loi mot
+    cau hoi khac — LIEU BUNDLE dong goi co du `core.media_splitter` +
+    `ui.split_dialog` va goi duoc ffmpeg cua PATH de ra N file doc lai duoc
+    hay khong. Ba dieu bat buoc: (1) ke hoach cat khong duoc an hay doi noi
+    dung (tong span == nguon, cac mei cat bang 0), (2) file ghi ra phai
+    duoc ffprobe doc lai bang thoi luong that, (3) doan nao cung khong duoc
+    rong.
+    """
+    import subprocess
+    import tempfile
+
+    from core import external_tools
+    from core import media_splitter as splitter
+    from ui.split_dialog import SplitDialog  # noqa: F401  (phai co trong bundle)
+
+    ffmpeg = external_tools.find("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError(external_tools.missing_message("ffmpeg"))
+    folder = tempfile.mkdtemp(prefix="clinging_split_")
+    try:
+        src = os.path.join(folder, "nguon.mp4")
+        subprocess.run(
+            [ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+             "color=c=red:s=160x120:d=2:r=25,format=yuv420p",
+             "-c:v", "libx264", "-preset", "veryfast", "-g", "10", src],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+            check=False, creationflags=0x08000000)
+        total = splitter.probe_duration(src)
+        if total <= 0:
+            raise RuntimeError("bundle nay khong tao/doc duoc video ngan")
+        out = os.path.join(folder, "ra")
+        result = splitter.split_media(src, out, count=2)
+        rows = result["segments"]
+        if len(rows) != 2 or result["failed"] or result["cancelled"]:
+            raise RuntimeError("cat 2 doan that bai: %r" % result)
+        if abs(sum(row["span"] for row in rows) - total) > 0.05:
+            raise RuntimeError("ke hoach an/doi noi dung: %r vs %.3f"
+                               % ([row["span"] for row in rows], total))
+        for index, row in enumerate(rows, start=1):
+            if not os.path.isfile(row["path"]) or os.path.getsize(
+                    row["path"]) < 1000:
+                raise RuntimeError("doan %d khong co tren dia" % index)
+            if splitter.probe_duration(row["path"]) <= 0:
+                raise RuntimeError("doan %d ffprobe khong doc duoc" % index)
+            if index > 1 and abs(row["start"]
+                                 - (rows[index - 2]["start"]
+                                    + rows[index - 2]["span"])) > 1e-6:
+                raise RuntimeError("mei cat %d ho hoac choong" % index)
+    finally:
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+    return "2 doan ghi ra that, tong span = nguon, ffprobe doc lai duoc"
+
+
+def _captions_strip_ok():
+    """Mot dong trong --selftest: thanh tien do Auto Captions mong trong bundle nay.
+
+    Khong trung lap scratch/captions_bar_probe.py: probe do tra loi "code nguon
+    co mong khong", dong nay tra loi "ban exe NGUOI DUNG NHAN co con kiem 20px
+    vien 1px + chu trang trong no hay khong". Do tren chinh grab cua rieng thanh,
+    bang dung thuoc bar_measure.py — ba noi (split, thumbnail, dong nay) phai
+    chung mot so do, mot thuoc do thu hai la mot loi chung minh thu hai.
+
+    Khong mo MainWindow: cua so that se tai/luoi du an .clinq cua nguoi dung,
+    va selftest khong co quyen dong vao du lieu do. Hop thoai duoc dung truc
+    tiep tu lop san xuat.
+
+    Phep phan biet cung nam trong dong nay: ap lai kieu cu thi thuoc do phai
+    chi DAY HON, neu khong thi "8px" chi la mot con so tu kiem tra.
+    """
+    from PySide6.QtWidgets import QApplication, QWidget
+    import bar_measure
+    from ui.auto_captions_dialog import AutoCaptionsDialog
+
+    app = QApplication.instance()
+    if app is None:
+        raise RuntimeError("selftest khong co QApplication")
+    # Hop thoai goi refresh_sources() trong constructor, nen can mot
+    # main_window gia lap co du timeline_panel.model.tracks rong. Gia lap o
+    # day chu khong phai MainWindow that vi MainWindow tai/luoi du an .clinq
+    # cua nguoi dung — selftest khong co quyen dong vao du lieu do.
+    stub = types.SimpleNamespace(
+        timeline_panel=types.SimpleNamespace(
+            model=types.SimpleNamespace(tracks=[])))
+    host = QWidget()
+    dialog = AutoCaptionsDialog(stub, host)
+    try:
+        if dialog.progress.isVisible():
+            raise RuntimeError("thanh 0% van nam chet giua form khi chua chay")
+        if dialog.progress.isTextVisible():
+            raise RuntimeError("thanh van in chu trong no")
+        if dialog.progress.height() != 8:
+            raise RuntimeError("thanh khai %dpx, mong 8px"
+                               % dialog.progress.height())
+        dialog.show()
+        for _ in range(4):
+            app.processEvents()
+        # Slot THAT ma worker ASR goi — con so % phai chuyen sang lbl_status.
+        dialog._on_progress(50, "đang nhận dạng")
+        # _on_run moi la noi `setVisible(True)`; goi no trong bundle se khoi
+        # dong worker mang that, nen ta bat hien theo dung cach no lam roi do.
+        dialog.progress.setVisible(True)
+        for _ in range(4):
+            app.processEvents()
+        folder = os.path.dirname(_report_path(sys.argv)) or os.getcwd()
+        band = bar_measure.teal_band_height(
+            dialog.progress, os.path.join(folder, "selftest_captions_bar.png"))
+        dpr = float(dialog.progress.devicePixelRatioF())
+        if not 3 < band <= dpr * 8 + 3:
+            raise RuntimeError("bang teal %dpx vuot thanh 8px CSS (DPR %.2f)"
+                               % (band, dpr))
+        status = dialog.lbl_status.text()
+        if not status.startswith("50%"):
+            raise RuntimeError("con so %% bi mat khi thu thanh: %r" % status)
+
+        dialog.progress.setFixedHeight(20)
+        dialog.progress.setStyleSheet(
+            "QProgressBar { border: 1px solid #262831; border-radius: 6px;"
+            " background-color: #14151A; }")
+        for _ in range(4):
+            app.processEvents()
+        old_band = bar_measure.teal_band_height(
+            dialog.progress,
+            os.path.join(folder, "selftest_captions_bar_oldstyle.png"))
+        dialog.progress.setStyleSheet("")
+        dialog.progress.setFixedHeight(8)
+        for _ in range(4):
+            app.processEvents()
+        if old_band - band <= 3:
+            raise RuntimeError("thuoc do khong phan biet kieu cu: %d vs %d"
+                               % (old_band, band))
+        back = bar_measure.teal_band_height(
+            dialog.progress,
+            os.path.join(folder, "selftest_captions_bar_restored.png"))
+        if back != band:
+            raise RuntimeError("phuc kieu mong khong tra lai so ban dau: %d vs %d"
+                               % (back, band))
+
+        # Hang "Ngôn ngữ" bi xoa cung luc voi Faster Whisper (local): khong co
+        # engine nao con lai nhan duoc tham so ngon ngu, nen no la control chet.
+        # Do so hang cua chinh form nay — khong phai tin vao review — va lap
+        # toan bo hop thoai thanh anh bang chung cho ban da cai.
+        from PySide6.QtWidgets import QFormLayout, QLabel
+        form = dialog.findChild(QFormLayout)
+        if form is None:
+            raise RuntimeError("hop thoai khong con QFormLayout de do")
+        captions = [label.text() for label in dialog.findChildren(QLabel)]
+        if any("Ngôn ngữ" in text for text in captions):
+            raise RuntimeError("hang chon ngon ngu van con, khong engine nao dung den no")
+        if form.rowCount() != 2:
+            raise RuntimeError("form %d hang, mong 2 (Nguon am thanh + Engine)"
+                               % form.rowCount())
+        dialog.grab().save(os.path.join(folder, "selftest_captions_dialog.png"))
+        return ("bang teal %dpx (DPR %.2f) vs kieu cu %dpx, %% di sang "
+                "lbl_status: %r; form %d hang, khong con ngon ngu"
+                % (band, dpr, old_band, status, form.rowCount()))
+    finally:
+        dialog.close()
+        for _ in range(4):
+            app.processEvents()
+
+
+def _writable_ok():
+    from core.project_storage import APP_DIR
+    os.makedirs(APP_DIR, exist_ok=True)
+    probe = os.path.join(APP_DIR, "selftest.probe")
+    with open(probe, "w", encoding="utf-8") as handle:
+        handle.write("ok")
+    os.remove(probe)
+    return APP_DIR
+
+
+def _ffmpeg_note():
+    """ffmpeg/ffprobe mà CHÍNH bản này tìm thấy, kèm nguồn của từng bản.
+
+    Dòng này phải phân biệt được "bản đi kèm" với "bản mượn từ PATH": nếu
+    installer thiếu file thì bundle vẫn xanh nhờ ffmpeg của máy lập trình, và
+    đó là bản cài hỏng đem giao cho một máy sạch.
+    """
+    from core import external_tools
+    rows = []
+    missing = []
+    for tool in ("ffmpeg", "ffprobe"):
+        path = external_tools.find(tool)
+        if not path:
+            missing.append(tool)
+            rows.append("%s=MISSING" % tool)
+            continue
+        try:
+            out = subprocess.run([path, "-version"], capture_output=True,
+                                 timeout=20)
+            first = out.stdout.decode("utf-8", "replace").splitlines()
+            if out.returncode == 0 and first:
+                version = first[0].split(" Copyright")[0][:46]
+            else:
+                version = "rc=%d" % out.returncode
+                missing.append(tool)
+        except Exception as exc:
+            version = "GOI KHONG DUOC (%s)" % type(exc).__name__
+            missing.append(tool)
+        rows.append("%s=%s [%s]" % (tool, version,
+                                    external_tools.source(tool)))
+    if missing:
+        raise RuntimeError("; ".join(rows))
+    return "; ".join(rows)
+
+
+def run_selftest(argv=None):
+    argv = list(argv if argv is not None else sys.argv)
+    report = _report_path(argv)
+    col = Collector()
+
+    # QIcon/qtawesome nap font qua QGuiApplication, nen phai co app that —
+    # dung cai app ma exe nay van tao ra khi mo binh thuong.
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+
+    def frozen():
+        if not getattr(sys, "frozen", False):
+            return "running from source (not a bundle)"
+        base = getattr(sys, "_MEIPASS", "")
+        if not os.path.isdir(base):
+            raise RuntimeError("khong co _MEIPASS")
+        return "%s, %d entry" % (base, len(os.listdir(base)))
+
+    col.check("bundle dong goi", frozen)
+    col.check("styles/*.qss + theme", _styles_ok)
+    col.check("icon ung dung", _icon_ok)
+    col.check("qtawesome", _qtawesome_ok)
+    col.check("src.asr (Auto Captions)", _asr_ok)
+    col.check("cv2/numpy/psutil/pydub", _media_libs_ok)
+    col.check("PySide6 modules", _qt_modules_ok)
+    col.check("cross-fade audio plan", _transition_audio_ok)
+    col.check("audio cua tung clip", _clip_audio_ok)
+    col.check("cai dat that (14 khoa + hook)", _settings_ok)
+    col.check("toan bo do thi UI", _ui_graph_ok)
+    col.check("chrome nhin thay duoc co slot that", _chrome_ok)
+    col.check("duong cong easing cua keyframe", _keyframe_easing_ok)
+    col.check("do thi duong cong keyframe", _keyframe_graph_ok)
+    col.check("phong cach pop art", _popart_ok)
+    col.check("13 the mau/loc do duoc pixel that", _effect_liveness_ok)
+    col.check("8 aura to sang va chay theo dong ho clip", _aura_ok)
+    col.check("lop phu recap: vien/REC/kinh mo + luu vao file", _recap_overlay_ok)
+    col.check("8 kieu karaoke: quet theo tu + luu vao file", _karaoke_ok)
+    col.check("mo du an tu file .clinq", _project_launch_ok)
+    col.check("giai ma tuan tu + cache dia", _decode_cache_ok)
+    col.check("xem truoc = xuat: moc thoi gian cuc bo dung mot ham", _local_time_ok)
+    col.check("trich xuat anh thumbnail", _thumbnail_export_ok)
+    col.check("cat file thanh N doan ra dia", _media_split_ok)
+    col.check("thanh tien do Auto Captions 8px", _captions_strip_ok)
+    col.check("thu muc du lieu nguoi dung", _writable_ok)
+    col.check("ffmpeg + ffprobe tim thay", _ffmpeg_note)
+
+    payload = {
+        "exe": os.path.abspath(sys.argv[0]),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "python": sys.version.split()[0],
+        "checks": col.rows,
+        "failed": [row["name"] for row in col.failed],
+    }
+    with open(report, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    return 0 if not col.failed else 1
+
+
+def run_layout_report(argv=None):
+    """Do ti le bo cuc mac dinh cua CHINH ban exe nay.
+
+    selftest chi chung minh bundle du manh; no khong do duoc timeline chiem
+    bao nhieu phan tram cua so. Nguoc lai, do bang source thi khong phai la
+    ban da cai. nen can cay do nay.
+
+    Clinging.exe --layout-report <duong-dan-json>
+    """
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest", "clinging_layout")
+
+    from PySide6.QtWidgets import QApplication, QSplitter
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+    from ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.resize(1920, 1035)
+    win.show()
+    for _ in range(12):
+        app.processEvents()
+
+    vsplit = next(s for s in win.findChildren(QSplitter)
+                  if s.orientation().name == "Vertical")
+    sizes = list(vsplit.sizes())
+    payload = {
+        "exe": os.path.abspath(sys.argv[0]),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "splitter_sizes": sizes,
+        "timeline_pct": round(100.0 * sizes[1] / sum(sizes), 1),
+        "timeline_height": win.timeline_panel.height(),
+        "timeline_minimum_height": win.timeline_panel.minimumHeight(),
+        "timeline_header_height": win.timeline_panel.header.height(),
+        "preview_height": win.preview_panel.height(),
+        "window_height": win.height(),
+    }
+    win.close()
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    return 0
+
+
+def run_alignment_report(argv=None):
+    """Do lech hang track (header trai vs lane phai) cua CHINH ban exe nay.
+
+    Bo cuc lech nhau chi lo khi co 2 scene + 2 view rieng va range cuộn khac
+    nhau, nen do bang source la chưa đủ bằng chứng cho bản đã cài.
+
+    Clinging.exe --alignment-report <duong-dan-json>
+    """
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest", "clinging_alignment")
+
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+    from ui.main_window import MainWindow
+    from core.timeline_model import TrackType
+
+    def _diffs(tl):
+        rows = []
+        for track in tl.model.tracks:
+            lane = tl.scene._track_lanes[track.track_id]
+            item = tl.header_scene._header_items[track.track_id]
+            body_y = tl.view.mapToGlobal(tl.view.mapFromScene(
+                QPointF(0.0, lane.pos().y() + lane.rect().y())))
+            head_y = tl.header_view.mapToGlobal(tl.header_view.mapFromScene(
+                QPointF(0.0, item.pos().y() + item.rect().y())))
+            rows.append({
+                "track": track.name,
+                "body_global_y": body_y.y(),
+                "header_global_y": head_y.y(),
+                "diff_px": body_y.y() - head_y.y(),
+            })
+        return rows
+
+    def _geometry(tl):
+        bar = tl.view.verticalScrollBar()
+        hbar = tl.header_view.verticalScrollBar()
+        return {
+            "body_scene_h": tl.scene.sceneRect().height(),
+            "header_scene_h": tl.header_scene.sceneRect().height(),
+            "body_viewport_h": tl.view.viewport().height(),
+            "header_viewport_h": tl.header_view.viewport().height(),
+            "body_scroll": [bar.value(), bar.maximum()],
+            "header_scroll": [hbar.value(), hbar.maximum()],
+        }
+
+    win = MainWindow()
+    win.resize(1920, 1035)
+    win.show()
+    for _ in range(12):
+        app.processEvents()
+
+    tl = win.timeline_panel
+    track = next((t for t in tl.model.tracks if t.is_main_track),
+                 None) or tl.model.add_track(TrackType.VIDEO,
+                                             is_main_track=True)
+    tl.model.add_clip(track.track_id, "Recording.mp4", "video", 0.0, 4.8,
+                      "Recording")
+    for _ in range(12):
+        app.processEvents()
+
+    scenarios = {"1 track": {"geometry": _geometry(tl), "rows": _diffs(tl)}}
+    for _ in range(2):
+        extra = tl.model.add_track(TrackType.VIDEO)
+        tl.model.add_clip(extra.track_id, "extra.mp4", "video", 0.0, 1.5,
+                          "extra")
+    for _ in range(12):
+        app.processEvents()
+    scenarios["3 track"] = {"geometry": _geometry(tl), "rows": _diffs(tl)}
+    bar = tl.view.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    for _ in range(12):
+        app.processEvents()
+    scenarios["3 track, cuon toi day"] = {
+        "geometry": _geometry(tl), "rows": _diffs(tl)}
+
+    worst = max(abs(row["diff_px"])
+                for scene in scenarios.values() for row in scene["rows"])
+    shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+    win.grab().save(shot)
+    payload = {
+        "exe": os.path.abspath(sys.argv[0]),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "worst_diff_px": worst,
+        "aligned": worst <= 1,
+        "screenshot": os.path.abspath(shot),
+        "scenarios": scenarios,
+    }
+    win.close()
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    return 0 if worst <= 1 else 1
+
+
+def _report_video(seconds=4.0, fps=30.0, size=(160, 90)):
+    """Mot file video ngan trong TEMP de ban da cai co thu can giai ma."""
+    import cv2
+    import numpy as np
+    import tempfile
+    path = os.path.join(tempfile.gettempdir(), "clinging_thumbnail_report.mp4")
+    writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+    if not writer.isOpened():
+        raise RuntimeError("khong tao duoc video mau")
+    for index in range(int(seconds * fps)):
+        writer.write(np.full((size[1], size[0], 3), index * 7 % 256, np.uint8))
+    writer.release()
+    return path
+
+
+def run_thumbnail_report(argv=None):
+    """Hộp thoại trích xuất ảnh + kết quả ghi ra đĩa, đo từ CHÍNH bản exe này.
+
+    --selftest chỉ chứng minh module có trong bundle. Cái người ta thấy là cửa
+    sổ thật mở từ MainWindow, chạy worker thật, và PNG nằm lại trên đĩa — cả
+    bốn thứ đó phải do bản đã cài tự đo, vì source luôn đúng.
+
+    Clinging.exe --thumbnail-report <duong-dan-json>
+    """
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest", "clinging_thumbnail")
+    shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+
+    import cv2
+    import tempfile
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication, QScrollArea
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    src = _report_video()
+    out_dir = os.path.join(tempfile.gettempdir(), "clinging_thumbnail_report_out")
+    from ui.main_window import MainWindow
+    win = MainWindow()
+    win.resize(1500, 900)
+    win.show()
+    for _ in range(12):
+        app.processEvents()
+
+    dialog = win._open_thumbnail_export(src)
+    dialog.edit_out.setText(out_dir)
+    dialog.spin_count.setValue(6)
+    scroll = dialog.findChild(QScrollArea)
+    bar_before = {
+        "visible": scroll.verticalScrollBar().isVisible(),
+        "maximum": scroll.verticalScrollBar().maximum(),
+        "progress_visible_before": dialog.progress.isVisible(),
+    }
+    dialog.btn_run.click()
+    deadline = time.time() + 120
+    while dialog._busy and time.time() < deadline:
+        for _ in range(6):
+            app.processEvents()
+        time.sleep(0.03)
+    result = dialog.last_result or {}
+    for _ in range(10):
+        app.processEvents()
+    dialog.grab().save(shot)
+    # Do day THAT cua thanh tien trinh tren pixel thiet bi cua chinh bundle
+    # nay, bang dung mot thuoc do voi gate tren source (bar_measure.py).
+    # Khong phai grab ca hop thoai: nut "Trích xuất" cung mau teal va cao hon
+    # thanh rat nhieu, do tren cua so thi dinh dem chieu cao cai nut.
+    import bar_measure
+    progress_band = bar_measure.teal_band_height(
+        dialog.progress, shot[:-4] + "_bar.png")
+
+    names = sorted(n for n in os.listdir(out_dir)
+                   if n.startswith("frame_")) if os.path.isdir(out_dir) else []
+    # Kich thuoc mong doi lay tu chinh ham ma hop thoai da hien tren dong
+    # tom tat: form hen 640x360 thi file phai 640x360, khong phai do hardcode.
+    from core import thumbnail_export as thumbs
+    expect_size = thumbs.cell_size(src, int(dialog.combo_width.currentData()))
+    sizes = []
+    for name in names:
+        image = cv2.imread(os.path.join(out_dir, name))
+        sizes.append(None if image is None else [image.shape[1], image.shape[0]])
+    colors = 0
+    if os.path.isfile(shot):
+        grabbed = QImage(shot).convertToFormat(QImage.Format_RGB32)
+        colors = len({grabbed.pixel(x, y)
+                      for x in range(0, grabbed.width(), 4)
+                      for y in range(0, grabbed.height(), 4)})
+
+    payload = {
+        "exe": os.path.abspath(sys.argv[0]),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "source": src,
+        "output_dir": out_dir,
+        "dialog_title": dialog.windowTitle(),
+        "selected_source": os.path.abspath(dialog._current_source() or ""),
+        "chrome": bar_before,
+        "progress_visible_after": dialog.progress.isVisible(),
+        # 8 px CSS quy ra bao nhieu pixel thiet bi tuy may — so voi 14 cung
+        # mot nguoc voi may 4K (8 x 2 = 16). Nen doi chieu voi chinh DPR cua
+        # widget luc do.
+        "progress_band_px": progress_band,
+        "progress_dpr": float(dialog.progress.devicePixelRatioF()),
+        "status": dialog.lbl_status.text(),
+        "summary": dialog.lbl_summary.text(),
+        "written": [os.path.basename(p) for p in result.get("written", [])],
+        "on_disk": names,
+        "decoded_sizes": sizes,
+        "sheets": [os.path.basename(p) for p in result.get("sheets", [])],
+        "missing": result.get("missing", []),
+        "screenshot": os.path.abspath(shot),
+        "distinct_colors": colors,
+    }
+    dialog.close()
+    win.close()
+    for _ in range(8):
+        app.processEvents()
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    ok = (payload["selected_source"] == os.path.abspath(src)
+          and bar_before["visible"] is False and bar_before["maximum"] == 0
+          and bar_before["progress_visible_before"] is False
+          and payload["progress_visible_after"] is True
+          and 3 < payload["progress_band_px"] <= payload["progress_dpr"] * 8 + 3
+          and len(names) == 6 and names == sorted(payload["written"])
+          and all(s == list(expect_size) for s in sizes) and len(payload["sheets"]) == 1
+          and not payload["missing"] and colors > 40 and os.path.isfile(shot))
+    return 0 if ok else 1
+
+
+def _mean_hue(path, seconds):
+    """Góc màu trung bình của khung hình tại một giây, đọc bằng ĐÚNG decoder mà
+    preview dùng. Màu là đồng hồ: một doan replay doan khac lech ngay tuc la
+    lech hang chuc do, con thoi luong thi van 'dat'."""
+    import math
+
+    import numpy as np
+    from PySide6.QtGui import QImage
+    from core.media_frame import extract_frame_image
+
+    image = extract_frame_image(path, seconds)
+    if image.isNull():
+        return None
+    image = image.convertToFormat(QImage.Format_RGB32)
+    stride = image.bytesPerLine() // 4
+    arr = np.frombuffer(image.constBits(), np.uint8).reshape(
+        image.height(), stride, 4)[:, :image.width(), :].astype(float)
+    blue, green, red = arr[..., 0], arr[..., 1], arr[..., 2]
+    high = np.maximum(np.maximum(red, green), blue)
+    low = np.minimum(np.minimum(red, green), blue)
+    chroma = high - low
+    hue = np.zeros_like(red)
+    mask = (chroma > 0) & (high == red)
+    hue[mask] = (((green[mask] - blue[mask]) / chroma[mask]) % 6.0)
+    mask = (chroma > 0) & (high == green)
+    hue[mask] = ((blue[mask] - red[mask]) / chroma[mask]) + 2.0
+    mask = (chroma > 0) & (high == blue)
+    hue[mask] = ((red[mask] - green[mask]) / chroma[mask]) + 4.0
+    angle = np.deg2rad(hue * 60.0)[chroma > 0]
+    if angle.size == 0:
+        return None
+    return math.degrees(math.atan2(float(np.sin(angle).mean()),
+                                   float(np.cos(angle).mean()))) % 360.0
+
+
+def run_split_report(argv=None):
+    """Cắt file thành N đoạn — mở bằng CHUỘT PHẢI thật, cắt thật, do từ bản exe
+    đã cài.
+
+    --selftest chỉ chứng minh module có trong bundle; probe trong scratch/ chứng
+    minh core đúng trên source. Thứ mà hai cái đó không nói được: bundle có mở
+    được hộp thoại từ menu của card thật, và ffmpeg mà NGƯỜI DÙNG có (không phải
+    ffmpeg của người lập trình) có cắt ra file đọc lại được hay không. Nên mỗi
+    đoạn ở đây vừa được ffprobe đo thời lượng, vừa được so MÀU với nguồn — một
+    đoạn replay đoạn khác vẫn có thời lượng đẹp.
+
+    Clinging.exe --split-report <duong-dan-json>
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    import time as _time
+
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest", "clinging_split")
+    shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    def pump(times=6):
+        for _ in range(times):
+            app.processEvents()
+            _time.sleep(0.03)
+
+    from core import external_tools
+
+    # Ban nay console=False, nen mot exception khong ai bat se duoc PyInstaller
+    # hien thi thanh HOP THOAI traceback mo — khong ai bam OK, va probe chay
+    # report treo ca 10 phut. Thieu ffmpeg la truong hop da do duoc, nen bao
+    # vao JSON roi ve, dung de no thoat len thanh cua so.
+    ffmpeg = external_tools.find("ffmpeg")
+    if not ffmpeg:
+        with open(out, "w", encoding="utf-8") as handle:
+            json.dump({"exe": os.path.abspath(sys.argv[0]),
+                       "frozen": bool(getattr(sys, "frozen", False)),
+                       "ok": False,
+                       "error": external_tools.missing_message("ffmpeg"),
+                       "ffmpeg_source": "", "segments": [], "on_disk": [],
+                       "failed": [], "cancelled": True, "joints": [],
+                       "hue_gaps": [], "progress_band_px": 0,
+                       "progress_dpr": 0.0, "progress_visible_after": False,
+                       "screenshot": os.path.abspath(shot),
+                       "distinct_colors": 0, "menu_actions": [],
+                       "dialog_title": None, "selected_source": "",
+                       "duration": 0.0, "summary": "", "status": "",
+                       "source": ""},
+                      handle, ensure_ascii=False, indent=2)
+        return 1
+
+    src = os.path.join(tempfile.gettempdir(), "clinging_split_report.mp4")
+    subprocess.run(
+        [ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+         "color=c=red:s=320x240:d=6:r=25,format=yuv420p,hue=h='t*60'",
+         "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=6", "-shortest",
+         "-c:v", "libx264", "-preset", "veryfast", "-g", "12",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", src],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300,
+        check=False, creationflags=0x08000000)
+    out_dir = os.path.join(tempfile.gettempdir(), "clinging_split_report_out")
+    shutil.rmtree(out_dir, ignore_errors=True)
+
+    from core import media_splitter as splitter
+    from ui.main_window import MainWindow
+    win = MainWindow()
+    win.resize(1500, 900)
+    win.show()
+    pump(12)
+
+    card = win.library_panel.add_resource("split_report.mp4", "video", src)
+    menu = card.context_menu()
+    actions = [action.text() for action in menu.actions()]
+    cut = [action for action in menu.actions() if "Cắt" in action.text()]
+    if cut:
+        cut[0].trigger()
+    pump(8)
+    dialog = getattr(win, "_split_dialog", None)
+
+    payload = {"exe": os.path.abspath(sys.argv[0]),
+               "frozen": bool(getattr(sys, "frozen", False)),
+               "source": src, "output_dir": out_dir, "menu_actions": actions,
+               "dialog_title": None if dialog is None else dialog.windowTitle(),
+               "selected_source": "", "duration": 0.0, "status": "",
+               "summary": "", "segments": [], "on_disk": [], "failed": [],
+               "cancelled": True, "joints": [], "hue_gaps": [],
+               "progress_band_px": 0, "progress_dpr": 0.0,
+               "progress_visible_after": False,
+               "ffmpeg_source": external_tools.source("ffmpeg"),
+               "ffmpeg_path": ffmpeg,
+               "screenshot": os.path.abspath(shot), "distinct_colors": 0}
+    try:
+        if dialog is None:
+            raise RuntimeError("menu khong mo duoc hop thoai")
+        dialog.edit_out.setText(out_dir)
+        dialog.spin_count.setValue(3)
+        payload["selected_source"] = os.path.abspath(
+            dialog._current_source() or "")
+        payload["duration"] = float(dialog._duration)
+        payload["summary"] = dialog.lbl_summary.text()
+        dialog.btn_run.click()
+        deadline = _time.time() + 300
+        while dialog._busy and _time.time() < deadline:
+            pump(4)
+        result = dialog.last_result or {}
+        pump(6)
+        dialog.grab().save(shot)
+        # Do day thanh tien trinh tren pixel thiet bi cua bundle nay, bang
+        # dung thuoc do voi gate tren source — grab ca hop thoai se lay chieu
+        # cao nut "Cắt" (cung mau teal) chu khong lay thanh.
+        import bar_measure
+        payload["progress_visible_after"] = dialog.progress.isVisible()
+        payload["progress_band_px"] = bar_measure.teal_band_height(
+            dialog.progress, shot[:-4] + "_bar.png")
+        payload["progress_dpr"] = float(dialog.progress.devicePixelRatioF())
+
+        rows = result.get("segments", [])
+        payload["status"] = dialog.lbl_status.text()
+        payload["cancelled"] = bool(result.get("cancelled"))
+        payload["failed"] = list(result.get("failed") or [])
+        payload["segments"] = [{"name": os.path.basename(row["path"]),
+                                "start": row["start"], "span": row["span"],
+                                "mode": row["mode"], "actual": row["actual"]}
+                               for row in rows]
+        payload["joints"] = [round(rows[i]["start"] - (rows[i - 1]["start"]
+                                                       + rows[i - 1]["span"]), 4)
+                             for i in range(1, len(rows))]
+        payload["on_disk"] = sorted(n for n in os.listdir(out_dir)) \
+            if os.path.isdir(out_dir) else []
+        for row, listed in zip(payload["segments"], rows):
+            # Do LAI tren dia, bang ffprobe va bang mau, khong tin ket qua ham
+            # tra ve: bundle phai tu chung minh file no ghi ra doc duoc.
+            row["probe"] = splitter.probe_duration(listed["path"])
+            source_hue = _mean_hue(src, listed["start"] + listed["span"] / 2.0)
+            part_hue = _mean_hue(listed["path"], listed["span"] / 2.0)
+            if source_hue is None or part_hue is None:
+                payload["hue_gaps"].append(None)
+                continue
+            payload["hue_gaps"].append(round(min(
+                abs(source_hue - part_hue),
+                360.0 - abs(source_hue - part_hue)), 2))
+        grabbed = QImage(shot).convertToFormat(QImage.Format_RGB32)
+        payload["distinct_colors"] = len({
+            grabbed.pixel(x, y) for x in range(0, grabbed.width(), 4)
+            for y in range(0, grabbed.height(), 4)})
+    finally:
+        if dialog is not None:
+            dialog.close()
+        card.deleteLater()
+        win.close()
+        pump(8)
+
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    gaps = payload["hue_gaps"]
+    ok = (payload["frozen"]
+          and payload["selected_source"] == os.path.abspath(src)
+          and len(payload["menu_actions"]) == 2
+          and len(payload["on_disk"]) == 3
+          and payload["on_disk"] == sorted(r["name"]
+                                           for r in payload["segments"])
+          and not payload["failed"] and not payload["cancelled"]
+          and all(r["probe"] > 0.5 for r in payload["segments"])
+          and all(abs(j) <= 1e-3 for j in payload["joints"])
+          and all(g is not None and g < 22.0 for g in gaps)
+          and len(gaps) == 3
+          and "3 đoạn" in payload["status"]
+          # grab() cua widget an van ve duoc, nen con so do day phai di kem
+          # "no dang hien tren man" — neu khong thi no chi la mot hinh chu nhat.
+          and payload["progress_visible_after"] is True
+          and 3 < payload["progress_band_px"] <= payload["progress_dpr"] * 8 + 3
+          and payload["distinct_colors"] > 40 and os.path.isfile(shot))
+    return 0 if ok else 1
+
+
+# Gia tri that cua tung loai property, dung cho fixture "du 6 lane" o ca
+# --graph-report lan probe: mot do thi mo 6 lane ma opacity ghi "756%" thi
+# khong con la bang chung cua mot ung dung that nua.
+LANE_FIXTURE = {
+    "x": (-600.0, 600.0),
+    "y": (300.0, -300.0),
+    "scale_x": (0.8, 1.4),
+    "scale_y": (1.4, 0.8),
+    "rotation": (-30.0, 45.0),
+    "opacity": (0.2, 1.0),
+}
+
+
+def run_graph_report(argv=None):
+    """Đồ thị đường cong keyframe — cửa thật, kéo thật, đo từ bản exe đã cài.
+
+    --selftest chỉ chứng minh module có trong bundle. Năm thứ phải do chính
+    file exe cài vào máy tự đo, vì source luôn đúng:
+      * ``MainWindow._open_keyframe_graph`` mở được hộp thoại thật;
+      * một cú kéo chuột thật đưa model tới ĐÚNG giá trị của pixel đích, và
+        bắt đầu NGOÀI bán kính bam thì model không nhúc nhích (chứng minh thay
+        đổi đến từ node, không phải từ đường dẫn chuột);
+      * undo/redo trên stack của timeline làm viên kim cương trên timeline chạy
+        theo — đi thẳng qua stack, không qua hộp thoại;
+      * đường người ta nhìn thấy trên đồ thị là đường ``interpolate_keyframes``
+        trả ra, đo bằng pixel trên ảnh grab;
+      * cột số của sáu lane phải ĐỌC ĐƯỢC: không dòng nhãn nào đè lên dòng khác
+        (đo bằng pixel mực, vì lỗi này không crash và không sai số);
+      * ảnh bằng chứng phải là bản sao 1:1 của cửa thật: lane dán bằng QRect theo
+        kích thước THIẾT BỊ, và số nhãn in ra có dấu trừ phải ĐÚNG BẰNG số lane
+        có đáy miền âm. Dán ``drawPixmap(x, y, pm)`` ảnh DPR 1.25 lên canvas DPR 1
+        co ảnh lại 80%: "-372px" mất nét trừ, ảnh tự nói sai mà không crash.
+
+    Clinging.exe --graph-report <duong-dan-json>
+    """
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest", "clinging_graph")
+    shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+
+    import numpy as np
+    from PySide6.QtCore import QEvent, QRect, QPointF, Qt
+    from PySide6.QtGui import QColor, QFont, QImage, QMouseEvent, QPainter, QPen
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    from core import keyframe_graph as kg
+    from core.keyframe_manager import frame_ease, frame_time, frame_value
+    from core.timeline_model import track_type_for_media
+    from ui.keyframe_graph_dialog import HIT_RADIUS, color_of
+
+    def pump(count=8):
+        for _ in range(count):
+            app.processEvents()
+
+    def send(widget, kind, pos):
+        """Kiem chuot that gui toi widget (bo bat su kien, khong mo hop thoai
+        moi) — giong het duong ma probe da dung tren source."""
+        held = (Qt.LeftButton if kind in (QEvent.MouseButtonPress,
+                                         QEvent.MouseMove)
+                else Qt.MouseButton.NoButton)
+        QApplication.sendEvent(widget, QMouseEvent(
+            kind, QPointF(pos), widget.mapToGlobal(pos.toPoint()),
+            Qt.LeftButton, held, Qt.KeyboardModifier.NoModifier))
+
+    def drag(view, lane, from_time, from_value, to_time, to_value, dx=0.0):
+        start = QPointF(lane.x_of(from_time) + dx, lane.y_of(from_value))
+        end = QPointF(lane.x_of(to_time), lane.y_of(to_value))
+        send(view, QEvent.MouseButtonPress, start)
+        send(view, QEvent.MouseMove, end)
+        send(view, QEvent.MouseButtonRelease, end)
+        pump()
+
+    def frame_row(clip, prop):
+        return [(round(frame_time(f), 4), round(frame_value(f), 4),
+                 frame_ease(f)) for f in kg.frames_of(clip, prop)]
+
+    def node_times(item, prop):
+        return sorted(round(node.time_sec, 3) for node in item._keyframe_nodes
+                      if node.property_key == prop)
+
+    def curve_check(view, clip, times):
+        """Do duong VE so voi duong MODEL: cot anh tai t phai nam dung
+        y_of(gia tri interpolate_keyframes), va chi mot doan net moi cot."""
+        lane = view.lane_for("x", clip)
+        pix = view.grab()
+        dpr = pix.devicePixelRatio() or 1.0
+        img = pix.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+        buf = img.constBits()
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else bytes(buf)
+        arr = np.frombuffer(raw, np.uint8).reshape(
+            (img.height(), img.width(), 4)).astype(np.float64)
+        accent = np.array([color_of("x").red(), color_of("x").green(),
+                           color_of("x").blue()], float)
+        default = kg.default_value(clip, "x")
+        top = int(round(lane.rect.top() * dpr))
+        bottom = int(round(lane.rect.bottom() * dpr))
+        worst = 0.0
+        runs = []
+        for time in times:
+            want = lane.y_of(kg.interpolate_at(lane.frames, "x", default, time))
+            x = int(round(lane.x_of(time) * dpr))
+            if not 0 <= x < arr.shape[1]:
+                continue
+            column = arr[top:bottom + 1, x, :3]
+            hit = np.abs(column - accent).sum(axis=1) < 150.0
+            if not hit.any():
+                # Cot khong co net nao: lech vo so, gate tren payload se no.
+                return None, len(runs), runs
+            rows = np.nonzero(hit)[0]
+            runs.append(int((np.diff(rows) > max(2, int(round(2 * dpr))
+                                                 )).sum()) + 1)
+            worst = max(worst, abs((rows.mean() + top) / dpr - want))
+        return round(worst, 2), len(runs), runs
+
+    def gutter_profile(source, source_dpr):
+        """(cao dong nhan lon nhat, le hep nhat, so dong, cao chu, so nhan dau
+        tru) cua cot so.
+
+        Do tren ANH do chinh exe ve ra: loi cua cot so khong crash va khong sai
+        so — no chi in hai dong chu de len nhau thanh mot bo so doc khong duoc,
+        nen chi con cach dem pixel muc theo tung dong.
+
+        ``source_dpr`` phai la ty le pixel cua ANH CHUA NHAN, khong phai cua
+        thiet bi dang do: khi nhan bi ep xuong (ve vao canvas DPR 1) thi nhung
+        net mong nhu dau tru bi nao hut mat, va mot con so am in ra khong con
+        dau am. Dem dau tru cung luc nay de khong the im lang duoc nua.
+        """
+        from PySide6.QtGui import QFontMetrics
+        from ui.keyframe_graph_dialog import AXIS_TEXT, VALUE_LABEL_RIGHT
+        dpr = float(source_dpr) or 1.0
+        img = (source.toImage() if hasattr(source, "toImage") else source)
+        img = img.convertToFormat(QImage.Format.Format_RGBA8888)
+        buf = img.constBits()
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else bytes(buf)
+        arr = np.frombuffer(raw, np.uint8).reshape(
+            (img.height(), img.width(), 4)).astype(np.float64)
+        target = np.array([AXIS_TEXT.red(), AXIS_TEXT.green(),
+                           AXIS_TEXT.blue()], float)
+        x0 = int(round((VALUE_LABEL_RIGHT - 70) * dpr))
+        x1 = int(round((VALUE_LABEL_RIGHT + 2) * dpr))
+        band = arr[:, max(0, x0):max(0, x1), :3]
+        mask = (np.abs(band - target).sum(axis=2) < 90.0)
+        hit = mask.any(axis=1)
+        rows = [int(r) for r in np.nonzero(hit)[0]]
+        runs, start, prev = [], None, None
+        for row in rows:
+            if start is None:
+                start = prev = row
+            elif row - prev > 3:
+                runs.append((start, prev))
+                start = row
+            prev = row
+        if start is not None:
+            runs.append((start, prev))
+        font = view.font()
+        font.setPointSizeF(8.4)
+        text_h = float(QFontMetrics(font).height()) / dpr
+        heights = [(b - a + 1) / dpr for a, b in runs]
+        gaps = [(runs[i + 1][0] - runs[i][1] - 1) / dpr
+                for i in range(len(runs) - 1)]
+        # Mot nhan co dau tru khi khoi dau no la mot dao mong (<= 6 px, cao
+        # <= 2 px) tach roi khoi chu bang it nhat mot cot trong.
+        minuses = 0
+        for a, b in runs:
+            cols = mask[a:b + 1, :].any(axis=0)
+            ink = np.nonzero(cols)[0]
+            if len(ink) < 3:
+                continue
+            head = [ink[0]]
+            for c in ink[1:]:
+                if c != head[-1] + 1:
+                    break
+                head.append(c)
+            if len(head) > max(2, int(round(6 * dpr))):
+                continue
+            rows_hit = mask[a:b + 1, head[0]:head[-1] + 1].any(axis=1)
+            if int(rows_hit.sum()) <= max(1, int(round(2 * dpr))) \
+                    and len(ink) - len(head) > len(head):
+                minuses += 1
+        return (round(max(heights or [0]), 1), round(min(gaps or [0]), 1),
+                len(runs), round(text_h, 1), minuses)
+
+    from ui.main_window import MainWindow
+    win = MainWindow()
+    win.resize(1500, 900)
+    win.show()
+    pump(20)
+    timer = getattr(win, "_autosave_timer", None)
+    if timer is not None:
+        timer.stop()
+
+    model = win.timeline_panel.model
+    track = model.add_track(track_type_for_media("text"), "Graph")
+    clip = model.add_clip(track.track_id, "", "text", 0.0, 2.0, "Chuyen dong")
+    clip.transform.x = -600.0
+    clip.add_keyframe("x", 0.0, -600.0, "ease_in_out")
+    clip.add_keyframe("x", 1.0, 600.0, "linear")
+    clip.add_keyframe("x", 2.0, -100.0, "ease_out_expo")
+    clip.add_keyframe("opacity", 0.0, 0.0, "linear")
+    clip.add_keyframe("opacity", 2.0, 1.0, "ease_in_cubic")
+    win._sync_canvas()
+    pump()
+    item = win.timeline_panel.scene._clip_items[clip.clip_id]
+    item.sync_keyframe_nodes_from_model()
+
+    # Diem vao cua app: hop thoai dung lai, khong nhan ban khi mo clip khac.
+    dialog = win._open_keyframe_graph(clip.clip_id)
+    dialog.move(360, 200)
+    pump()
+    again = win._open_keyframe_graph(clip.clip_id)
+    view = dialog.view
+    stack = win.timeline_panel.undo_stack
+    base = stack.undo_count
+    before = frame_row(model.get_clip(clip.clip_id), "x")
+
+    # 1. NGOAI ban kinh bam: cu keo khong duoc cham vao model.
+    lane = view.lane_for("x")
+    drag(view, lane, 1.0, 600.0, 0.4, 100.0, dx=HIT_RADIUS + 6)
+    outside = frame_row(model.get_clip(clip.clip_id), "x")
+    outside_delta = stack.undo_count - base
+    outside_selected = view._selected
+
+    # 2. TRONG ban kinh bam: model nhan dung (thoi gian, gia tri) cua pixel.
+    drag(view, view.lane_for("x"), 2.0, -100.0, 1.5, 250.0)
+    dragged = frame_row(model.get_clip(clip.clip_id), "x")
+    drag_delta = stack.undo_count - base
+
+    # 3. undo/redo tu STACK CUA TIMELINE (khong qua hop thoai) — kim cuong
+    #    tren timeline phai di theo, khong duoc o lai vi tri cu.
+    stack.undo()
+    pump()
+    undone = frame_row(model.get_clip(clip.clip_id), "x")
+    undone_nodes = node_times(item, "x")
+    stack.redo()
+    pump()
+    redone = frame_row(model.get_clip(clip.clip_id), "x")
+    redone_nodes = node_times(item, "x")
+
+    # 4. Duong tren man hinh = duong cua model, tai trang thai dang nhin thay.
+    worst_px, columns, column_runs = curve_check(
+        view, model.get_clip(clip.clip_id),
+        (0.2, 0.5, 0.8, 1.2, 1.38))
+    panel_dragged = dialog.grab()
+
+    # 5. Sau property, sau lane — do thi phai tu co theo tung don vi.
+    wide_track = model.add_track(track_type_for_media("text"), "Wide")
+    wide = model.add_clip(wide_track.track_id, "", "text", 4.0, 7.0,
+                          "Du property")
+    for index, prop in enumerate(kg.PROPERTY_ORDER):
+        first, second = LANE_FIXTURE[prop]
+        wide.add_keyframe(prop, 0.0, first, "ease_in_out")
+        wide.add_keyframe(prop, 1.0 + index, second, "ease_out")
+    win._sync_canvas()
+    pump()
+    dialog.set_clip(wide.clip_id)
+    pump()
+    wide_lanes = view._lanes(model.get_clip(wide.clip_id))
+    lanes = [l.prop for l in wide_lanes]
+    lane_heights = [round(l.rect.height(), 1) for l in wide_lanes]
+    # Bao nhieu lane co day so AM — do la so dau tru phai nam duoc tren ANH.
+    want_minuses = sum(1 for l in wide_lanes if l.lo < 0)
+    panel_lanes = view.grab()
+
+    captions = [
+        "exe: %s (frozen=%s)" % (os.path.abspath(sys.argv[0]),
+                                 bool(getattr(sys, "frozen", False))),
+        "keo ngoai %d px: model khong doi=%s, undo delta=%d, selection=%r"
+        % (HIT_RADIUS + 6, outside == before, outside_delta, outside_selected),
+        "keo dung tam: model=%r (muon (1.5, 250.0)), undo delta=%d"
+        % (dragged[-1], drag_delta),
+        "undo tu stack timeline: model=%r, kim cuong x=%r" % (undone[-1],
+                                                             undone_nodes),
+        "redo: model=%r, kim cuong x=%r" % (redone[-1], redone_nodes),
+        "duong ve so voi model: lech lon nhat=%.2f px qua %d cot, doan net "
+        "moi cot=%r" % (worst_px if worst_px is not None else -1, columns,
+                        column_runs),
+        "6 lane=%r cao=%r" % (lanes, lane_heights),
+        None,
+    ]
+    pad, cap_h = 12, 20 + 20 * len(captions)
+    width = pad * 3 + max(panel_dragged.width(), panel_lanes.width())
+    height = pad * 3 + cap_h + panel_dragged.height() + panel_lanes.height()
+    canvas = QImage(width, height, QImage.Format_RGB32)
+    canvas.fill(QColor("#0F1014").rgb())
+    lanes_y = pad * 2 + panel_dragged.height()
+    painter = QPainter(canvas)
+    # Ve vao QRect theo KICH THUOC THIET BI. drawPixmap(x, y, pm) tren canvas
+    # DPR 1 hieu pixmap DPR 1.25 la kich thuoc LOGIC va ep no xuong 80%: nhung
+    # net mong nhu dau tru o cot so bi nao hut mat, va anh chung in ra mot con
+    # so AM khong con dau am — sai hon ca man hinh that.
+    painter.drawPixmap(QRect(pad, pad, panel_dragged.width(),
+                             panel_dragged.height()), panel_dragged)
+    painter.drawPixmap(QRect(pad, lanes_y, panel_lanes.width(),
+                             panel_lanes.height()), panel_lanes)
+    painter.end()
+
+    # Sau lane la luc cot so de len nhau nhat: moi lane chi con ~48 px. Do tren
+    # vung anh vua ghe — tuc la do dung thu nguoi ta nhin thay.
+    tallest, tightest, label_rows, glyph_h, minus_labels = gutter_profile(
+        canvas.copy(QRect(pad, lanes_y, panel_lanes.width(),
+                          panel_lanes.height())),
+        panel_lanes.devicePixelRatio() or 1.0)
+    captions[-1] = ("cot so 6 lane: %d dong, cao nhat=%.1fpx (chu %.1fpx), le "
+                    "hep nhat=%.1fpx, dau tru=%d/%d"
+                    % (label_rows, tallest, glyph_h, tightest, minus_labels,
+                       want_minuses))
+    painter = QPainter(canvas)
+    painter.setFont(QFont("Segoe UI", 9))
+    painter.setPen(QPen(QColor("#C8CBD4")))
+    text_y = lanes_y + panel_lanes.height() + pad + 16
+    for line in captions:
+        painter.drawText(pad + 2, text_y, line)
+        text_y += 20
+    painter.end()
+    canvas.save(shot)
+
+    colors = 0
+    if os.path.isfile(shot):
+        grabbed = QImage(shot).convertToFormat(QImage.Format_RGB32)
+        colors = len({grabbed.pixel(x, p_)
+                      for x in range(0, grabbed.width(), 4)
+                      for p_ in range(0, grabbed.height(), 4)})
+
+    payload = {
+        "exe": os.path.abspath(sys.argv[0]),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "dialog_title": dialog.windowTitle(),
+        "clip_title": dialog.lbl_title.text(),
+        "hop_thoai_dung_lai": again is dialog,
+        "modal": dialog.isModal(),
+        "lanes": lanes,
+        "lane_heights": lane_heights,
+        "truoc_khi_keo": before,
+        "keo_ngoai_ban_kinh": {"model": outside, "undo_delta": outside_delta,
+                               "selected": outside_selected},
+        "keo_dung_tam": {"model": dragged, "undo_delta": drag_delta},
+        "undo": {"model": undone, "diamonds_x": undone_nodes},
+        "redo": {"model": redone, "diamonds_x": redone_nodes},
+        "duong_ve": {"max_lech_px": worst_px, "cot_do": columns,
+                     "doan_net": column_runs},
+        "cot_so": {"dong": label_rows, "cao_nhat_px": tallest,
+                   "le_hep_nhat_px": tightest, "cao_chu_px": glyph_h,
+                   "dau_tru": minus_labels, "dau_tru_muon": want_minuses},
+        "screenshot": os.path.abspath(shot),
+        "distinct_colors": colors,
+        "captions": captions,
+    }
+    dialog.close()
+    win.close()
+    pump(8)
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    ok = (payload["hop_thoai_dung_lai"] and not payload["modal"]
+          and outside == before and outside_delta == 0
+          and outside_selected is None
+          and dragged[-1] == (1.5, 250.0, "ease_out_expo")
+          and drag_delta == 1
+          and undone[-1] == (2.0, -100.0, "ease_out_expo")
+          and undone_nodes == [0.0, 1.0, 2.0]
+          and redone[-1] == (1.5, 250.0, "ease_out_expo")
+          and redone_nodes == [0.0, 1.0, 1.5]
+          and worst_px is not None and worst_px <= 2.5 and columns >= 4
+          and all(runs == 1 for runs in column_runs)
+          and lanes == list(kg.PROPERTY_ORDER)
+          and label_rows >= 2 * len(lanes) and tallest <= glyph_h + 3.0
+          and tightest >= 2.0
+          and want_minuses >= 3 and minus_labels == want_minuses
+          and len(set(lane_heights)) == 1 and colors > 40
+          and os.path.isfile(shot))
+    return 0 if ok else 1
+
+
+def _report_wav(seconds=4.0):
+    """Mot file .wav that trong TEMP: plan xuat chi xet clip co tieng that."""
+    import wave
+    import tempfile
+    frames = int(48000 * seconds)
+    path = os.path.join(tempfile.gettempdir(), "clinging_audio_report.wav")
+    with wave.open(path, "wb") as handle:
+        handle.setnchannels(2)
+        handle.setsampwidth(2)
+        handle.setframerate(48000)
+        handle.writeframes(b"\x00\x00\x00\x00" * frames)
+    return path
+
+
+def run_audio_report(argv=None):
+    """Anh that the Am thanh + chuoi filter xuat, do tu DUNG ban exe nay.
+
+    Nguon code nao ve cung cai card ay, nen anh chup bang source khong noi len
+    duoc dieu gi ve ban da dong goi. Day chay MainWindow that, PropertiesPanel
+    that, roi goi dung bo tao plan cua exporter.
+
+    Clinging.exe --audio-report <duong-dan-json>
+    """
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest", "clinging_audio")
+
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+    from ui.main_window import MainWindow
+    from core.timeline_model import TrackType
+    from core import audio_mix
+
+    win = MainWindow()
+    win.resize(1600, 900)
+    win.show()
+    for _ in range(12):
+        app.processEvents()
+
+    tl = win.timeline_panel
+    for old in list(tl.model.tracks):
+        tl.model.remove_track(old.track_id)
+    track = tl.model.add_track(TrackType.AUDIO)
+    clip = tl.model.add_clip(track.track_id, _report_wav(), "audio", 0.0, 4.0,
+                             "tone.wav")
+    applied = tl.model.set_clip_audio(clip.clip_id, volume=0.45, speed=1.0,
+                                      fade_in=0.5, fade_out=0.0)
+    win.properties_panel.show_clip_properties(clip)
+    for _ in range(12):
+        app.processEvents()
+
+    editor = win.properties_panel.current_editor
+    card = getattr(editor, "card_audio", None)
+    shown = card is not None and card.isVisible()
+    sliders = ([editor.slider_volume.value(), editor.slider_speed.value(),
+                editor.slider_fade_in.value(), editor.slider_fade_out.value()]
+               if shown else None)
+    shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+    colors = 0
+    if shown:
+        image = card.grab().toImage()
+        colors = len({image.pixel(x, y)
+                      for x in range(0, image.width(), 3)
+                      for y in range(0, image.height(), 3)})
+        card.grab().save(shot)
+
+    graph = audio_mix.build_filter_complex(
+        tl.model, audio_mix.collect_audio_clips(tl.model, {}), tl.model.duration)
+    tokens = [token for token in ("volume=0.450000,", "afade=t=in:")
+              if token in graph]
+    ok = (applied.get("volume") == 0.45 and applied.get("fade_in") == 0.5 and
+          sliders == [45, 100, 50, 0] and colors > 20 and len(tokens) == 2 and
+          os.path.isfile(shot))
+
+    payload = {
+        "exe": os.path.abspath(sys.argv[0]),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "card_visible": shown,
+        "sliders": sliders,
+        "distinct_colors": colors,
+        "screenshot": os.path.abspath(shot) if shown else "",
+        "export_tokens": tokens,
+        "graph": graph[:200],
+    }
+    win.close()
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    return 0 if ok else 1
+
+
+def signal_names(widget):
+    """Mọi tín hiệu của widget, tính cả tín hiệu thừa kế.
+
+    PySide6 không phơi QMetaObject.Signal ra lớp QMetaObject, và phần "tín hiệu
+    riêng của lớp này" của QPushButton chỉ có showMenu() — clicked nằm ở
+    QAbstractButton. Lọc theo superClass sẽ bỏ đúng thứ cần tìm, nên phải quét
+    cả metaObject và so sánh theo tên enum.
+    """
+    meta = widget.metaObject()
+    out = []
+    for index in range(meta.methodCount()):
+        method = meta.method(index)
+        if method.methodType().name != "Signal":
+            continue
+        signature = bytes(method.methodSignature()).decode()
+        if signature not in out:
+            out.append(signature)
+    return out
+
+
+def raw_receivers(obj):
+    """Số receiver trên mọi tín hiệu "hành động" của obj, chưa trừ nền."""
+    total = 0
+    for signature in signal_names(obj):
+        name = signature.split("(")[0]
+        # Bỏ tín hiệu nội bộ Qt — app không bao giờ nối chúng.
+        if name.startswith(("destroyed", "objectName", "customContextMenu",
+                            "windowTitle", "modal", "enabled", "focus")):
+            continue
+        for spelling in ("2" + signature, signature):
+            try:
+                found = obj.receivers(spelling)
+            except Exception:
+                found = 0
+            if found:
+                total += found
+                break
+    return total
+
+
+def _fresh_instance(cls):
+    """Một instance của chính lớp đó, chưa nối gì, để đo nền.
+
+    Lớp tùy biến (IconButton, PropTab...) không construct được không tham số;
+    lùi theo MRO tới lớp gần nhất làm được — QToolButton là đủ cho IconButton.
+    """
+    for candidate in cls.__mro__:
+        if candidate is object:
+            continue
+        try:
+            return candidate()
+        except Exception:
+            continue
+    return None
+
+
+_BASELINE = {}
+
+
+def baseline_count(obj):
+    """Nền của một object chưa ai nối, đo trên đúng lớp của nó.
+
+    QToolButton tự nối pressed()/released() vào slot riêng, QMenu tự nối
+    triggered của mỗi action nó chứa — nên "có receivers" không đồng nghĩa với
+    "app có xử lý". Không trừ nền thì mọi control chết đều bị báo là sống.
+    """
+    cls = type(obj)
+    if cls not in _BASELINE:
+        probe = _fresh_instance(cls)
+        _BASELINE[cls] = raw_receivers(probe) if probe is not None else 0
+    return _BASELINE[cls]
+
+
+def own_connection_count(obj):
+    return max(0, raw_receivers(obj) - baseline_count(obj))
+
+
+def group_of(widget):
+    """QButtonGroup chứa widget này, nếu có.
+
+    AnimatedTabBar nối group.idClicked chứ không nối clicked của từng nút, nên
+    một nút "0 receivers" vẫn sống thật. Bỏ qua đường này thì máy dò buộc phải
+    sửa code đang chạy đúng.
+    """
+    from PySide6.QtWidgets import QButtonGroup
+    parent = widget.parent()
+    while parent is not None:
+        for child in parent.children():
+            if isinstance(child, QButtonGroup) and widget in child.buttons():
+                return child
+        parent = parent.parent()
+    return None
+
+
+def menu_of(widget):
+    """QMenu mà widget bật lên khi bấm (QPushButton/QToolButton.setMenu).
+
+    Nút kiểu này không cần ai nối clicked: Qt tự mở menu. Nó chỉ chết khi menu
+    của nó không có action sống nào.
+    """
+    try:
+        return widget.menu()
+    except Exception:
+        return None
+
+
+def live_actions(menu):
+    """Action trong menu này có slot của app — dùng để xử nút dạng menu."""
+    base = orphan_baseline(menu)
+    out = []
+    for action in menu.actions():
+        if action.isSeparator() or not action.isVisible() \
+                or not action.isEnabled():
+            continue
+        if action_connection(action) > base:
+            out.append(action)
+    return out
+
+
+def connection_count(widget):
+    total = own_connection_count(widget)
+    if total == 0:
+        group = group_of(widget)
+        if group is not None:
+            total = own_connection_count(group)
+    if total == 0:
+        menu = menu_of(widget)
+        if menu is not None:
+            total = len(live_actions(menu))
+    return total
+
+
+def path_of(widget):
+    parts = []
+    node = widget
+    while node is not None and len(parts) < 5:
+        label = node.objectName() or type(node).__name__
+        parts.append(label)
+        node = node.parent()
+    return "/".join(reversed(parts))
+
+
+def describe(widget):
+    text = ""
+    for getter in ("text", "placeholderText", "toolTip"):
+        try:
+            value = getattr(widget, getter)()
+        except Exception:
+            value = ""
+        if value:
+            text = str(value)
+            break
+    return "%s(%r) @ %s" % (type(widget).__name__, text[:34], path_of(widget))
+
+
+def visible_interactive(root):
+    from PySide6.QtWidgets import (QCheckBox, QComboBox, QLineEdit,
+                                   QPushButton, QRadioButton, QSlider,
+                                   QTabBar, QToolButton, QWidget)
+    classes = (QPushButton, QToolButton, QCheckBox, QRadioButton, QComboBox,
+               QLineEdit, QSlider, QTabBar)
+    found = []
+    for widget in root.findChildren(QWidget):
+        if not isinstance(widget, classes):
+            continue
+        if not widget.isVisible() or not widget.isEnabled():
+            continue
+        found.append(widget)
+    return found
+
+
+def collect_menus(root):
+    """Mọi QMenu với tới được từ root, kể cả menu KHÔNG có cha.
+
+    QToolButton.setMenu() và QAction.setMenu() không reparent cái menu, còn
+    TitleBar giữ main_menu bằng thuộc tính Python. findChildren(QMenu) vì thế
+    không thấy cả menu của nút "Menu" — audit im lặng bỏ sót đúng chỗ hay chết
+    nhất.
+    """
+    from PySide6.QtWidgets import QMenu, QWidget
+    found = []
+    seen = set()
+
+    def push(menu):
+        if menu is None or id(menu) in seen:
+            return
+        seen.add(id(menu))
+        found.append(menu)
+        for action in menu.actions():
+            try:
+                push(action.menu())
+            except Exception:
+                pass
+
+    for menu in root.findChildren(QMenu):
+        push(menu)
+    for widget in root.findChildren(QWidget):
+        push(menu_of(widget))
+        for action in widget.actions():
+            try:
+                push(action.menu())
+            except Exception:
+                pass
+    return found
+
+
+def menu_label(menu):
+    return (menu.objectName() or menu.title() or path_of(menu)
+            or type(menu).__name__)
+
+
+def visible_menu_actions(root):
+    """QMenu không 'visible' cho tới khi mở, nên phải soi cả action của nó."""
+    out = []
+    for menu in collect_menus(root):
+        for action in menu.actions():
+            if action.isSeparator() or not action.isVisible() \
+                    or not action.isEnabled():
+                continue
+            out.append((menu, action))
+    return out
+
+
+def action_connection(action):
+    total = 0
+    for signature in signal_names(action):
+        for spelling in ("2" + signature, signature):
+            try:
+                found = action.receivers(spelling)
+            except Exception:
+                found = 0
+            if found:
+                total += found
+                break
+    return total
+
+
+def orphan_baseline(menu):
+    """Số receivers của một action vừa được thêm vào chính menu này.
+
+    QMenu tự nối triggered của mỗi action nó chứa vào slot riêng của menu, nên
+    một action mồ côi vẫn có receivers > 0. Đếm tuyệt đối sẽ báo "sống" cho mọi
+    action trong menu — gate phải so với chuẩn do chính menu đó tạo ra.
+    """
+    from PySide6.QtGui import QAction
+    probe = QAction("probe-mo-coi", menu)
+    probe.setCheckable(True)
+    menu.addAction(probe)
+    baseline = action_connection(probe)
+    menu.removeAction(probe)
+    return baseline
+
+
+def audit_chrome(label, root):
+    """Liệt kê control tương tác nhìn thấy được mà không có slot nào."""
+    dead = []
+    widgets = visible_interactive(root)
+    for widget in widgets:
+        if connection_count(widget) == 0:
+            dead.append(("widget", describe(widget)))
+    menus = collect_menus(root)
+    actions = visible_menu_actions(root)
+    live = {}
+    for menu, _action in actions:
+        if menu not in live:
+            live[menu] = {id(item) for item in live_actions(menu)}
+    for menu, action in actions:
+        if id(action) not in live[menu]:
+            dead.append(("action", "%s:%s" % (menu_label(menu),
+                                              action.text())))
+    return {"label": label, "controls": len(widgets), "menus": len(menus),
+            "menu_actions": len(actions),
+            "dead": ["%s %s" % (kind, name) for kind, name in dead]}
+
+
+def alpha_signature(button, size=24):
+    """Chữ ký raster của icon đang gắn trên nút: số pixel đặc + tổng alpha.
+
+    isNull() không chứng minh icon hiện ra (qtawesome không màu cho pixmap rỗng
+    vẫn not-null), và tên icon thì đổi được mà không đổi hình. Đây là pixel thật.
+    """
+    from PySide6.QtGui import QImage
+    pixmap = button.icon().pixmap(size, size)
+    if pixmap.isNull():
+        return (0, 0)
+    image = pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
+    solid = 0
+    total_alpha = 0
+    for y in range(image.height()):
+        for x in range(image.width()):
+            alpha = image.pixel(x, y) & 0xFF
+            total_alpha += alpha
+            if alpha:
+                solid += 1
+    return (solid, total_alpha)
+
+
+def measure_focus_toggle(window):
+    """Bấm nút toàn màn hình timeline và đo hậu quả thật trên splitter."""
+    from PySide6.QtWidgets import QApplication
+    header = window.timeline_panel.header
+    sizes0 = list(window.work_splitter.sizes())
+    ink0 = alpha_signature(header.btn_focus)
+    header.btn_focus.click()
+    for _ in range(6):
+        QApplication.processEvents()
+    sizes1 = list(window.work_splitter.sizes())
+    ink1 = alpha_signature(header.btn_focus)
+    header.btn_focus.click()
+    for _ in range(6):
+        QApplication.processEvents()
+    sizes2 = list(window.work_splitter.sizes())
+    return {
+        "before": sizes0, "focused": sizes1, "restored": sizes2,
+        "timeline_grows": sizes1[1] > sizes0[1],
+        "preview_shrinks": sizes1[0] < sizes0[0],
+        "icon_pixels_before": ink0, "icon_pixels_focus": ink1,
+        "icon_changed": ink0 != ink1 and ink1[0] > 0,
+        "restore_exact": sizes2 == sizes0,
+    }
+
+
+def run_chrome_report(argv=None):
+    """Kiểm tra "chrome sống" trên CHINH ban exe nay.
+
+    Nút bấm không ra gì là loi nguoi dung thay ngay, nhưng no khong crash va
+    khong de lai dấu vết nao trong log, nen chi co mot cay do ket noi that cua
+    bundle da cai moi chung minh duoc. --selftest goi cay do nay;
+    --chrome-report in ra ban ke chi tiet va anh bang chung.
+
+    Clinging.exe --chrome-report <duong-dan-json>
+    """
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest", "clinging_chrome")
+
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    from ui.main_controller import MainController
+    controller = MainController()
+    controller.show()
+    for _ in range(25):
+        app.processEvents()
+    home = audit_chrome("Trang chủ", controller.home_page)
+
+    from ui.main_window import MainWindow
+    editor = MainWindow()
+    editor.resize(1500, 900)
+    editor.show()
+    for _ in range(25):
+        app.processEvents()
+    editor_rows = audit_chrome("Editor", editor)
+
+    shot = os.path.join(os.path.dirname(out) or ".", "clinging_chrome_focus.png")
+    editor.timeline_panel.header.btn_focus.click()
+    for _ in range(10):
+        app.processEvents()
+    editor.grab().save(shot)
+    editor.timeline_panel.header.btn_focus.click()
+    for _ in range(10):
+        app.processEvents()
+
+    payload = {
+        "exe": os.path.abspath(sys.argv[0]),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "audit": [home, editor_rows],
+        "dead": home["dead"] + editor_rows["dead"],
+        "focus": measure_focus_toggle(editor),
+        "screenshot": os.path.abspath(shot),
+    }
+    editor.close()
+    controller.close()
+    for _ in range(8):
+        app.processEvents()
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    ok = (not payload["dead"]
+          and all(payload["focus"][key] for key in
+                  ("timeline_grows", "preview_shrinks", "icon_changed",
+                   "restore_exact")))
+    return 0 if ok else 1
+
+
+def _chrome_ok():
+    """Mot dong trong --selftest: 0 control nhin thay duoc ma khong co slot."""
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    from ui.main_controller import MainController
+    controller = MainController()
+    controller.show()
+    for _ in range(20):
+        app.processEvents()
+    rows = [audit_chrome("Trang chủ", controller.home_page)]
+
+    from ui.main_window import MainWindow
+    editor = MainWindow()
+    editor.resize(1600, 900)
+    editor.show()
+    for _ in range(20):
+        app.processEvents()
+    rows.append(audit_chrome("Editor", editor))
+    editor.close()
+    controller.close()
+    for _ in range(8):
+        app.processEvents()
+
+    dead = [item for row in rows for item in row["dead"]]
+    if dead:
+        raise RuntimeError("chat: %s" % dead[:6])
+    return ", ".join("%s %d nut/%d menu/%d action" % (
+        row["label"], row["controls"], row["menus"], row["menu_actions"])
+        for row in rows)
+
+
+def _keyframe_easing_ok():
+    """Mot dong trong --selftest: bang cong easing that, va funnel noi suy dung no.
+
+    Gate nay phai co that bai duoc: neu interpolate_keyframes quay ve lerp
+    tuyen tinh thi ba ten cong cho cung mot gia tri o giua doan va dong nay no.
+    """
+    from core.keyframe_manager import EASINGS, apply_ease, interpolate_keyframes
+
+    broken = []
+    for name in sorted(EASINGS):
+        samples = [apply_ease(name, i / 100.0) for i in range(101)]
+        if abs(samples[0]) > 1e-9 or abs(samples[-1] - 1.0) > 1e-9:
+            broken.append("%s: doi dau" % name)
+        elif any(s < -1e-9 or s > 1.0 + 1e-9 for s in samples):
+            broken.append("%s: vuot [0,1]" % name)
+        elif any(samples[i + 1] < samples[i] - 1e-9 for i in range(100)):
+            broken.append("%s: khong don dieu tang" % name)
+    if broken:
+        raise RuntimeError(", ".join(broken[:6]))
+
+    # Doan 0s(gia tri 0) -> 1s(gia tri 100): gia tri do duoc o giua doan phai
+    # bang 100 * f(0.5) cua dung cong cua keyframe dau.
+    middle = {name: interpolate_keyframes([(0.0, 0.0, name), (1.0, 100.0)], 0.5)
+              for name in sorted(EASINGS)}
+    wrong = [name for name in middle
+             if abs(middle[name] - 100.0 * apply_ease(name, 0.5)) > 1e-6]
+    if wrong:
+        raise RuntimeError("noi suy bo duong cong: %s" % wrong[:6])
+    if len(set(round(v, 6) for v in middle.values())) < 4:
+        raise RuntimeError("moi ten cong cho mot gia tri khac nhau o giua doan")
+    return "%d duong cong, giua doan: linear %.1f / in %.1f / out %.1f" % (
+        len(EASINGS), middle["linear"], middle["ease_in"], middle["ease_out"])
+
+
+def _popart_ok():
+    """Mot dong trong --selftest: bon chang ve pop art lam viec THAT.
+
+    Gate nay phai co that bai duoc: neu posterize_rgb / halftone_rgb /
+    outline_rgb / contrast_rgb bi gia lap thanh "tra nguyen anh" thi ca bon
+    kich thuoc duoi day (so bac mau, dien tich muc, do toi bien, do roi cua
+    duoi mau) dong loai no. Ham duoc goi qua thuoc tinh module
+    (clip_effects.posterize_rgb) vi chinh le do, de phep gia lap ben ngoai
+    nhìn thay duoc — do that cua module se vo hieu hoa phan chung nay.
+    """
+    import numpy as np
+    from core import clip_effects
+
+    w = 96
+    ramp = np.linspace(0.0, 255.0, w, dtype=np.float32)
+    grey = np.repeat(ramp[:, None], 3, axis=1)
+    img = np.tile(grey[None, :, :], (w, 1, 1))  # (w, w, 3), doc ramp theo truc x
+
+    # 1) Posterize: nen thi phai con DUNG so bac, khong phai giua nguyen 96 muc.
+    for levels in (2, 4, 8):
+        got = int(len(np.unique(np.round(clip_effects.posterize_rgb(img, levels)[:, :, 0], 3))))
+        if got != levels:
+            raise RuntimeError("posterize %d bac con %d bac" % (levels, got))
+
+    # 2) Halftone: vung toi phai nap muc nhieu hon vung sang rat ro.
+    def ink(v):
+        out = clip_effects.halftone_rgb(np.full((w, w, 3), v, np.float32), 6.0)
+        return float(np.mean(clip_effects._luma(out) < v - 1.0))
+
+    dark, light = ink(32.0), ink(224.0)
+    if not (dark > 0.30 and dark - light > 0.25):
+        raise RuntimeError("halftone khong nap muc theo do toi: toi %.2f sang %.2f"
+                           % (dark, light))
+
+    # 3) Outline: mang phang nguyen ven 100%, bien do sang thi toi di.
+    flat = np.full((w, w, 3), 128.0, np.float32)
+    if float(np.abs(clip_effects.outline_rgb(flat, 0.9) - flat).max()) != 0.0:
+        raise RuntimeError("outline cham ca vung phang")
+    # Bien do sang phai toi mot ben duoi gia tri cua chinh no, nen cot ke ben
+    # phai la 235 con cot ke ben phai la 120: net viem ro 30 -> 90 duoi nay
+    # phan biet ham ve that voi ban "tra nguyen anh".
+    cols = np.where(np.arange(w) < w // 2, 235.0, 120.0).astype(np.float32)
+    edge = np.tile(cols[None, :, None], (w, 1, 3))
+    edge_out = clip_effects.outline_rgb(edge, 0.35)
+    seam = float(edge_out[:, w // 2, 0].min())       # cot dau tien cua ben toi
+    lit = float(edge_out[:, 2, 0].mean())            # vung sang bang phang
+    quiet = float(edge_out[:, w - 1, 0].mean())      # vung toi bang phang
+    if seam > 120.0 - 30.0:
+        raise RuntimeError("outline khong dam bien: seam %.1f" % seam)
+    if abs(lit - 235.0) > 1.0 or abs(quiet - 120.0) > 1.0:
+        raise RuntimeError("outline lan vung phang: sang %.1f toi %.1f" % (lit, quiet))
+
+    # 4) Contrast: la HE SO nhan quanh 128 (kéo giãn duoi mau), khong phai
+    #    cong thuc 259/(259-c) dao nguoc anh nhu ban cu.
+    lifted = clip_effects.contrast_rgb(img, 1.25, 1.0)
+    spread = float(lifted.std()) / float(img.std())
+    corr = float(np.corrcoef(clip_effects._luma(lifted).ravel(),
+                             clip_effects._luma(img).ravel())[0, 1])
+    if spread <= 1.05:
+        raise RuntimeError("contrast khong keo gian duoi mau (he so %.3f)" % spread)
+    if corr <= 0.99:
+        raise RuntimeError("contrast dao nguoc sang toi (tuong quan %.3f)" % corr)
+
+    # 5) Preset + the trong phai co du khoa cho bon chang tren.
+    from core.timeline_model import EFFECT_PRESETS
+    params = EFFECT_PRESETS.get("Pop Art", {})
+    missing = [k for k in ("contrast", "saturation", "halftone", "posterize",
+                           "outline") if k not in params]
+    if missing:
+        raise RuntimeError("preset Pop Art thieu %s" % ", ".join(missing))
+    from ui.effects_panel import EFFECT_CATEGORIES
+    cards = [c["name"] for c in EFFECT_CATEGORIES.get("Sắc thái", [])]
+    if "Pop Art" not in cards:
+        raise RuntimeError("the Pop Art khong co trong muc Sac thai")
+    return ("posterize 2/4/8 bac, halftone muc %.0f%%->%.0f%%, "
+            "bien toi con %.0f, contrast x%.2f" %
+            (dark * 100.0, light * 100.0, seam, spread))
+
+
+def _effect_liveness_ok():
+    """Một dòng --selftest: không còn "thẻ ma" nào trong bảng hiệu ứng.
+
+    Chromatic và Lens Flare từng là hai thẻ bán bằng ảnh minh hoạ: preset có
+    khoá nhưng chuỗi lọc màu không có nhánh nào đọc khoá đó, nên kéo thẻ vào
+    clip không đổi lấy một pixel. Cửa này đo THẲNG qua apply_color_effects
+    (cùng hàm preview và export gọi), nên cả ba lỗi đều lộ ra tại đây: thiếu
+    nhánh, hàm bị identity-patch, hoặc key đổi tên.
+
+    Hướng dời của tán sắc đo bằng hai vạch sáng mỏng ở hai bên tâm: phóng to
+    thì vạch bên phải đi RA xa tâm còn vạch bên trái đi NGƯỢC chiều. Một bản
+    chỉ nhích cả ảnh sang một phía (lỗi kinh điển của filter CA viết vội) qua
+    được ải một vạch nhưng hỏng ải hai vạch.
+    """
+    import numpy as np
+    from PySide6.QtGui import QImage
+    from core import clip_effects
+    from core.timeline_model import EFFECT_PRESETS, EffectData
+    from ui.effects_panel import EFFECT_CATEGORIES
+
+    def qimage(a):
+        arr = np.ascontiguousarray(np.clip(a, 0, 255).astype(np.uint8))
+        h, w = arr.shape[:2]
+        rgba = np.ascontiguousarray(
+            np.dstack([arr, np.full((h, w, 1), 255, np.uint8)]))
+        return QImage(rgba.data, w, h, w * 4,
+                      QImage.Format.Format_RGBA8888).copy()
+
+    def rgb_of(image):
+        img = image.convertToFormat(QImage.Format.Format_RGBA8888)
+        buf = img.constBits()
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else bytes(buf)
+        return np.frombuffer(raw, np.uint8).reshape(
+            (img.height(), img.width(), 4))[:, :, :3].astype(np.float64)
+
+    def run(a, params, intensity=1.0):
+        src = qimage(a)
+        return rgb_of(clip_effects.apply_color_effects(src, [EffectData(
+            name="probe", category="Bộ lọc", intensity=intensity,
+            params=dict(params))]))
+
+    # 1) Khong the mau/loc nao duoc mang khoa ma chuoi loc khong biet, va
+    #    PIXEL_KEYS phải đúng bằng tập khoá các preset đang bán (khong lech
+    #    hai chieu: khoa mo coi trong preset thi vo sinh, khoa trong PIXEL_KEYS
+    #    ma khong the nao dung thi la do ran).
+    cards = [c["name"] for t in ("Sắc thái", "Bộ lọc")
+             for c in EFFECT_CATEGORIES[t]]
+    used, ghost = set(), []
+    for name in cards:
+        params = EFFECT_PRESETS.get(name) or {}
+        if not params:
+            ghost.append("%s(khong preset)" % name)
+            continue
+        used |= set(params)
+        if set(params) - set(clip_effects.PIXEL_KEYS):
+            ghost.append("%s(%s)" % (name, ",".join(
+                sorted(set(params) - set(clip_effects.PIXEL_KEYS)))))
+    if ghost:
+        raise RuntimeError("the ma: %s" % ", ".join(ghost))
+    if sorted(used) != sorted(clip_effects.PIXEL_KEYS):
+        raise RuntimeError("PIXEL_KEYS lech preset: thieu %s thua %s" % (
+            sorted(set(clip_effects.PIXEL_KEYS) - used),
+            sorted(used - set(clip_effects.PIXEL_KEYS))))
+
+    h, w = 400, 600
+
+    def line_x(a, ch, frac):
+        lo = int(w * frac) - 30
+        return int(np.argmax(a[:, :, ch][:, lo:lo + 61].mean(axis=0))) + lo
+
+    # 2) Tan sac: hai vach mong 0.2w va 0.8w, do huong dich tung kenh.
+    lines = np.full((h, w, 3), 20.0, np.float64)
+    lines[:, int(w * 0.2)] = 250.0
+    lines[:, int(w * 0.8)] = 250.0
+    out = run(lines, {"chromatic": 1.0})
+    if float(np.abs(out[:, :, 1] - lines[:, :, 1]).max()) > 0.0:
+        raise RuntimeError("chromatic cham ca kenh luc")
+    moves = {
+        "r_left": line_x(out, 0, 0.2) - line_x(lines, 0, 0.2),
+        "r_right": line_x(out, 0, 0.8) - line_x(lines, 0, 0.8),
+        "b_left": line_x(out, 2, 0.2) - line_x(lines, 2, 0.2),
+        "b_right": line_x(out, 2, 0.8) - line_x(lines, 2, 0.8),
+    }
+    if not (moves["r_right"] >= 2 and moves["r_left"] <= -2):
+        raise RuntimeError("do khong phong to ra tam: %s" % moves)
+    if not (moves["b_right"] <= -2 and moves["b_left"] >= 2):
+        raise RuntimeError("xanh duong khong thu ve tam: %s" % moves)
+
+    # 3) Loang sang: cham trang sinh Quang, vong xa nguyen ven, dinh khong toi.
+    yy, xx = np.mgrid[0:h, 0:w]
+    dist = np.sqrt((xx - w / 2.0) ** 2 + (yy - h / 2.0) ** 2)
+    dots = np.full((h, w, 3), 22.0, np.float64)
+    dots[dist <= 8.0] = 250.0
+    flare = run(dots, {"lens_flare": 1.0})
+    near_l, far_l = clip_effects._luma(dots), clip_effects._luma(flare)
+
+    def gain(r0, r1):
+        m = (dist >= r0) & (dist < r1)
+        return float(far_l[m].mean() - near_l[m].mean())
+
+    near_gain, far_gain, core_gain = gain(12, 26), gain(160, 180), gain(0, 9)
+    if near_gain < 3.0:
+        raise RuntimeError("khong co quang sang: +%.2f o 12-26px" % near_gain)
+    if far_gain > 0.05:
+        raise RuntimeError("quang sang lan toi vong xa: +%.2f" % far_gain)
+    if core_gain < -0.5:
+        raise RuntimeError("dinh cham bi toi di (blur, khong phai screen): %.2f"
+                           % core_gain)
+    flat = np.full((120, 160, 3), 128.0, np.float64)
+    still = float(np.abs(run(flat, {"lens_flare": 1.0}) - flat).mean())
+    if still > 0.02:
+        raise RuntimeError("nang sang ca anh khong co nguon sang: %.3f" % still)
+
+    # 4) Cuong do 0 phai tra lai ANH NGUYEN VAN cho ca hai khoa moi.
+    for key in ("chromatic", "lens_flare"):
+        if not np.array_equal(rgb_of(qimage(dots)), run(dots, {key: 1.0}, 0.0)):
+            raise RuntimeError("%s o cuong do 0 van doi anh" % key)
+    return ("%d the mau/loc khong khoa ma, do dich do %+dpx/%+dpx, quang +%.1f, "
+            "xam128 +%.3f" % (len(cards), moves["r_left"], moves["r_right"],
+                              near_gain, still))
+
+
+def _aura_ok():
+    """Một dòng --selftest: 8 thẻ Aura vẽ thật, đổi pixel và đổi theo đồng hồ.
+
+    Aura không đi qua apply_color_effects nên cửa liveness màu không nhìn thấy
+    nó. Ở đây đo thẳng vào core.aura_paint — cùng hàm mà CanvasClipItem và
+    FrameComposer gọi — trên nền đen tuyệt đối:
+
+      * một thẻ không khớp preset, hoặc preset trỏ vào kiểu không tồn tại, thì
+       _raise ngay (đó chính là cách thẻ ma bị loại khỏi họ Aura);
+      * tổng độ sáng phải TĂNG so với nền trắng xoá, nếu không là thẻ minh hoạ;
+      * hai mốc thời gian khác nhau phải cho hai ảnh khác nhau, vì aura là hiệu
+        ứng chạy theo t chứ không phải ảnh tĩnh dán lên khung.
+    """
+    import numpy as np
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QImage, QPainter
+    from core import aura_paint
+    from core.timeline_model import EFFECT_PRESETS
+    from ui.effects_panel import EFFECT_CATEGORIES
+
+    cards = [c["name"] for c in EFFECT_CATEGORIES.get("Aura", [])]
+    if len(cards) != len(aura_paint.AURA_EFFECTS):
+        raise RuntimeError("the Aura %d cai but preset %d kieu" %
+                           (len(cards), len(aura_paint.AURA_EFFECTS)))
+    for name in cards:
+        key = (EFFECT_PRESETS.get(name) or {}).get("aura")
+        if key not in aura_paint.AURA_EFFECTS:
+            raise RuntimeError("the Aura %s khong tro kieu aura nao co that" % name)
+
+    W, H = 240, 320
+    rect = QRectF(0, 0, W, H)
+
+    def frame(name, t):
+        img = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.black)
+        painter = QPainter(img)
+        aura_paint.paint_aura(painter, rect, t, name)
+        painter.end()
+        buf = img.constBits()
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else bytes(buf)
+        return np.frombuffer(raw, np.uint8).reshape((H, W, 4))[:, :, :3]
+
+    def lum(name, t):
+        return float(frame(name, t).mean())
+
+    floor = lum("__khong_ton_tai__", 0.0)
+    if floor > 0.01:
+        raise RuntimeError("nen den khong con den: %.3f" % floor)
+    weakest = None
+    still_moving = None
+    for name in aura_paint.aura_names():
+        a, b = frame(name, 0.0), frame(name, 1.37)
+        bright = float(a.mean()) - floor
+        if bright < 0.05:
+            raise RuntimeError("aura %s khong to sang nen (%.3f)" % (name, bright))
+        # "Chay theo dong ho" la pixel DI CHUYER, khong phai anh sang doi total:
+        # dai song aurora troi ngang ma tong do sang khong le, nen do bang so
+        # pixel lech nhau thi moi bat duoc kieu dung yen.
+        moved = float((np.abs(a.astype(np.int16) - b.astype(np.int16)) > 8
+                       ).any(axis=2).mean())
+        if moved < 0.004:
+            raise RuntimeError("aura %s dung yen theo t (%.4f pixel dich)"
+                               % (name, moved))
+        if weakest is None or bright < weakest[1]:
+            weakest = (name, bright)
+        if still_moving is None or moved < still_moving[1]:
+            still_moving = (name, moved)
+    return ("%d aura to sang (yeu nhat +%s %.2f), %s dich %.1f%% pixel theo t"
+            % (len(cards), weakest[0], weakest[1], still_moving[0],
+               still_moving[1] * 100.0))
+
+
+def _recap_overlay_ok():
+    """Một dòng --selftest: lớp phủ recap sống ở model, trong file dự án và ở cả hai đường vẽ.
+
+    Không giống aura, đây là cấu hình CẢ DỰ ÁN nên bốn mắt xích phải khớp: mặc
+    định tắt (file cũ không có khoá), clamp khi đọc, tròn-trip qua
+    ``save_project_to_file``/``restore_model_from_clinq``, và FrameComposer phải
+    đổi pixel thật. Đo ở đúng 1920x1080 vì FrameComposer vẽ lớp phủ TRƯỚC khi
+    co về kích thước xuất: thử ở 640x360 thì nét 6px bị hạ xuống 2px và trôi
+    màu, gate đỏ vì lý do kỹ thuật chứ không phải vì thiếu lớp phủ.
+    """
+    import numpy as np
+    import tempfile
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QImage
+    from core import project_storage, recap_overlay
+    from core.frame_composer import FrameComposer
+    from core.timeline_model import TimelineModel, TrackType
+
+    if recap_overlay.overlay_active({}):
+        raise RuntimeError("mac dinh phai TAT nhung overlay_active({}) = True")
+    clamped = recap_overlay.normalize({"bg_brightness": 9, "border_width": 0,
+                                       "reticle_shape": "khong_co"})
+    if clamped["bg_brightness"] != 1.0 or clamped["border_width"] < 1.0 \
+            or clamped["reticle_shape"] != "cross":
+        raise RuntimeError("normalize khong clamp: %s" % clamped)
+
+    W, H = 1920, 1080
+    folder = os.path.join(tempfile.gettempdir(), "clinging_recap_report")
+    os.makedirs(folder, exist_ok=True)
+    png = os.path.join(folder, "nen_trang.png")
+    if not os.path.exists(png):
+        seed = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
+        seed.fill(Qt.GlobalColor.white)
+        seed.save(png)
+
+    settings = {"enabled": True, "border": True, "border_color": "#3673FE",
+                "reticle": True, "reticle_shape": "scope",
+                "reticle_color": "#00FFFF", "rec": True, "rec_fps": 30}
+
+    def build(overlay):
+        model = TimelineModel()
+        model.project_ratio = "16:9"
+        track = model.add_track(TrackType.IMAGE)
+        clip = model.add_clip(track.track_id, png, "image", 0.0, 2.0, name="recap")
+        if clip is None:
+            raise RuntimeError("add_clip tra None (track/media khong khop)")
+        model.set_recap_overlay(overlay)
+        return model
+
+    def frame(model):
+        composer = FrameComposer(model, W, H)
+        try:
+            img = composer.render_frame(0.5).convertToFormat(
+                QImage.Format.Format_ARGB32_Premultiplied)
+        finally:
+            composer.close()
+        buf = img.constBits()
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else bytes(buf)
+        row = img.bytesPerLine() // 4
+        # ARGB32 trên máy little-endian nằm trong bộ nhớ theo thứ tự B,G,R,A,
+        # nên phải đảo ba kênh đầu trước khi so với mã màu hex.
+        px = np.frombuffer(raw, np.uint8).reshape((H, row, 4))[:, :W, :3]
+        return px[:, :, ::-1].astype(np.int16)
+
+    def count(px, hexcolor, tol):
+        c = QColor(hexcolor)
+        d = np.abs(px - np.array([c.red(), c.green(), c.blue()], np.int16))
+        return int((d.max(axis=2) <= tol).sum())
+
+    on = frame(build(settings))
+    off = frame(build({"enabled": False}))
+    border = count(on, "#3673FE", 60)
+    reticle = count(on, "#00FFFF", 60)
+    #Vien 4*k=2px quanh 640x360 ~ 4000px, tam ngam scope ~ 200px; bat ky lop nao
+    #bang 0 la mat nui ve, con khac biet on/off = 0 la master off khong tat.
+    if border < 1500 or reticle < 60:
+        raise RuntimeError("lop phu khong hien khi bat (vien %d, tam ngam %d px)"
+                           % (border, reticle))
+    if np.array_equal(on, off):
+        raise RuntimeError("bat full overlay ma khung khong doi pixel")
+    if count(off, "#00FFFF", 60) or count(off, "#3673FE", 60):
+        raise RuntimeError("master off van con ve lop phu")
+    if not np.array_equal(on, frame(build(settings))):
+        raise RuntimeError("cung settings + cung t ra hai khung khac nhau")
+
+    path = os.path.join(folder, "Kiem recap.clinq")
+    project_storage.save_project_to_file(build(settings), path)
+    reloaded = TimelineModel()
+    data = project_storage.load_project_from_file(path)
+    if not data:
+        raise RuntimeError("load_project_from_file tra rong")
+    project_storage.restore_model_from_clinq(reloaded, data)
+    if reloaded.recap_overlay != recap_overlay.normalize(settings):
+        raise RuntimeError("recap_overlay khong tron ven qua file: %s"
+                           % (reloaded.recap_overlay,))
+    return ("vien %d px, tam ngam %d px, master off sach %d/%d, file giu nguyen %d khoa"
+            % (border, reticle, int((np.abs(on - off).max(axis=2) > 6).sum()),
+               W * H, len(reloaded.recap_overlay)))
+
+
+# Khổ chữ đo "từ ĐANG HÁT có còn đọc được không": 40 là cỡ trong bản xuất,
+# 12-16 là cỡ nó hiện ra trên khung preview của canvas.
+_FLAME_SIZES = (40, 28, 20, 16, 12)
+# Ba pha của nhịp nhấp nháy: đáy (pulse 0), giữa (0.5) và đỉnh (1).
+_FLAME_PHASES = (0.0, math.pi * 1.5 / 2.4, math.pi / 2 / 2.4)
+
+
+def _flame_legibility():
+    """Đo từ đang hát của kiểu "lửa": còn lỗ chữ, hay đã thành một khối cam.
+
+    Quầng lửa là 8 bản sao lệch của nét chữ chồng nhau, nên alpha hiệu dụng giữa
+    thân chữ là 1-(1-a/255)^8. Với alpha 90 con số đó 0.95: mọi lỗ (a, o, u) bị
+    lấp ở MỌI khổ, kể cả 40px — ảnh vẫn "đẹp" trên băng chứng khổ lớn nhưng chữ
+    thì không đọc ra. Ba số đo phân biệt được khối đặc và chữ:
+
+      * ``fill`` = mực / hộp khít của mực. Chữ thường 47-65%, khối đặc 75-80%.
+      * ``lo``   = số vùng nền bị bao kín trong mực. Không lỗ = không chữ.
+      * ``spill``= số pixel mực nhiều hơn chữ thường cùng từ. Đây là chốt CHỐNG
+                   GIAN LẬN: gate ``fill`` một mình thì xanh ngay khi ai đó bỏ
+                   hẳn quầng lửa, còn số này buộc quầng phải còn thật.
+
+    Mỗi số là TE NHẤT trên cả ba pha, không phải số ở đỉnh nhấp nháy: bán kính
+    nhỏ hơn lẽ ra mở chữ hơn, nhưng mode 'counter' của phản chứng đo ra 1 lỗ ở
+    28px tại một pha trung gian — lưới pixel của 8 hướng lệch không đơn điệu
+    theo bán kính. Vẽ qua đúng ``paint_animated_text`` (không có bản sao thứ hai
+    của thuật toán) và chỉ đổi bộ hằng số ``karaoke_paint._FLAME_HALO``.
+    """
+    import cv2
+    import numpy as np
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter
+    from core.text_paint import make_font, paint_animated_text
+
+    W, H = 420, 160
+    # Một từ + sweep này -> lit_count = 0 -> từ ở trạng thái ACTIVE.
+    sweep = 0.2
+
+    def ink_of(style, px, t):
+        img = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.black)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        paint_animated_text(p, "chao", make_font("Arial", px, True), "#FFFFFF",
+                            W, H, W / 2.0, H / 2.0, effect="none", p=sweep,
+                            intensity=1.0, style=style, t=t)
+        p.end()
+        row = img.bytesPerLine() // 4
+        a = np.frombuffer(img.constBits(), np.uint8,
+                          count=row * 4 * H).reshape(H, row, 4)[:, :W, :3]
+        mask = a[:, :, ::-1].max(axis=2) > 40
+        if not mask.any():
+            return 0, 0.0, 0
+        ys, xs = np.nonzero(mask)
+        box = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+        n, _, stats, _ = cv2.connectedComponentsWithStats(
+            (~box).astype(np.uint8), 8)
+        h, w = box.shape
+        holes = sum(1 for i in range(1, n)
+                    if stats[i][4] >= 2 and stats[i][0] > 0 and stats[i][1] > 0
+                    and stats[i][0] + stats[i][2] < w
+                    and stats[i][1] + stats[i][3] < h)
+        return int(mask.sum()), round(100.0 * box.sum() / box.size, 1), holes
+
+    out = {}
+    for px in _FLAME_SIZES:
+        rows = []
+        for t in _FLAME_PHASES:
+            plain_ink, _, _ = ink_of("none", px, t)
+            hot_ink, hot_fill, hot_holes = ink_of("flame", px, t)
+            rows.append((hot_ink, hot_fill, hot_holes, hot_ink - plain_ink))
+        out[px] = {"muc": max(r[0] for r in rows),
+                   "fill": max(r[1] for r in rows),
+                   "lo": min(r[2] for r in rows),
+                   "spill": min(r[3] for r in rows)}
+    return out
+
+
+def _flame_legibility_problems(leg):
+    """Danh sách lỗi đọc được từ bảng số đo; rỗng là từ đang hát còn đọc được.
+
+    Ngưỡng lấy từ phép quét 5 bộ hằng số ở
+    scratch/karaoke_flame_density_probe.py, đo TE NHẤT trên cả chu kỳ: bộ đang
+    ship cho fill 66.7-68.3 và >=1 lỗ ở mọi khổ/mọi pha, bộ cũ (alpha 90) cho
+    fill 74.8-80.0 và 0 lỗ — hai dải cách nhau rõ nên gate không mong manh.
+
+    ``spill`` chỉ bắt ở khổ 40px: ở 12-16px nó dao động vài chục pixel theo pha
+    và theo font, đủ để một ngưỡng cứng đỏ sai trên máy khác.
+    """
+    bad = ["%dpx fill=%s lo=%s" % (px, m["fill"], m["lo"])
+           for px, m in sorted(leg.items()) if m["lo"] < 1 or m["fill"] > 72.0]
+    if bad:
+        return ["tu_dang_hat_bi_lap_lo: " + "; ".join(bad)]
+    if leg[_FLAME_SIZES[0]]["spill"] < 100:
+        return ["khong_con_quang_lua (spill=%d)" % leg[_FLAME_SIZES[0]]["spill"]]
+    return []
+
+
+def _karaoke_ok():
+    """Một dòng --selftest: tám kiểu phụ đề karaoke, nối đủ hai đường vẽ và qua file.
+
+    Đo sâu (hộp mực từng từ, cầu thang sweep, bóng đổi hướng, gradient không
+    được thành khối đặc, parity export = vẽ trực tiếp tới từng pixel) nằm ở
+    scratch/karaoke_probe.py cùng 10 phản chứng
+    scratch/karaoke_probe_counterfactual.py. Đây chỉ là năm mắt xích nối mà
+    bundle đóng gói có quyền làm đứt: registry đủ 8 khoá, mỗi kiểu đổi pixel
+    THẬT qua ``paint_animated_text``, 8 kiểu phải ra 8 ảnh KHÁC NHAU (so với
+    chữ thường không bắt được lỗi cả 8 cùng vẽ một nét), quét theo từ và tất
+    định, đường xuất đọc ``clip.text_style``, và khoá sống sót
+    model → ``.clinq`` → model.
+
+    Font phải là font THẬT. Headless không còn font nào thì Qt vẽ mọi ký tự ra
+    hình chữ nhật, nên so nét chữ ở đó chỉ tạo ra màu xanh giả.
+    """
+    import numpy as np
+    import tempfile
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from core import karaoke_paint, project_storage
+    from core.frame_composer import FrameComposer
+    from core.text_paint import make_font, paint_animated_text
+    from core.timeline_model import TimelineModel, TrackType
+
+    keys = karaoke_paint.STYLE_KEYS
+    if len(keys) != 8:
+        raise RuntimeError("karaoke co %d kieu, khong phai 8" % len(keys))
+    if karaoke_paint.normalize_style("khong_co_kieu_nay") != "none":
+        raise RuntimeError("normalize_style chap nhan gia tri rac")
+    for key in keys:
+        if karaoke_paint.normalize_style("  %s  " % key.upper()) != key:
+            raise RuntimeError("normalize_style lam mat kieu %s" % key)
+
+    W, H = 900, 260
+    font = make_font("Arial", 40, True)
+    line = "Xin chao buoi sang"
+    # "outline"/"shadow" là pigment TỐI màu: trên nền đen chúng vô hình thật,
+    # nên đo chúng trên nền sáng — đúng chỗ người dùng cần đến chúng.
+    home = {"outline": "#c8c8c8", "shadow": "#c8c8c8"}
+
+    def render(style, sweep=0.0, t=0.0, bg="#000000"):
+        img = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(QColor(bg))
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        paint_animated_text(p, line, font, "#FFFFFF", W, H, W / 2.0, H / 2.0,
+                            effect="none", p=sweep, intensity=1.0,
+                            style=style, t=t)
+        p.end()
+        return img
+
+    def px(img):
+        row = img.bytesPerLine() // 4
+        a = np.frombuffer(img.constBits(), np.uint8,
+                          count=row * 4 * img.height()).reshape(
+            img.height(), row, 4)[:, :img.width(), :3]
+        # ARGB32 little-endian là B,G,R,A — đảo trước khi so, nếu không mọi
+        # kiểu đổi màu vẫn đọc là giống nhau.
+        return a[:, :, ::-1].astype(np.int16)
+
+    def diff(a, b):
+        return int((np.abs(px(a) - px(b)).max(axis=2) > 24).sum())
+
+    weakest = None
+    for key in keys:
+        bg = home.get(key, "#000000")
+        n = diff(render(key, 0.34, 0.7, bg), render("none", 0.34, 0.7, bg))
+        if n < 200:
+            raise RuntimeError("kieu %s ve giong chu thuong (%d px lech tren %s)"
+                               % (key, n, bg))
+        if weakest is None or n < weakest[1]:
+            weakest = (key, n)
+
+    # Tam kieu PHAI ra tam anh khac nhau. So voi chu thuong khong du: ke duong
+    # ve ve mot net chung cho ca tam kieu thi lech van > 200 px vi do ve tung
+    # tu, nen phai so chung voi NHAU. Probe o scratch/karaoke_probe.py doi chieu
+    # ca 28 cap; o day dem so van in chi can du de bat that bam.
+    prints = set()
+    for key in keys:
+        prints.add(px(render(key, 0.34, 0.7, home.get(key, "#000000"))).tobytes())
+    if len(prints) != len(keys):
+        raise RuntimeError("%d kieu chi ra %d anh khac nhau (duong ve bi gop)"
+                           % (len(keys), len(prints)))
+
+    # Quét theo từ phải ĐỔI khung hình theo p, và cùng (p, t) phải ra cùng một
+    # ảnh. Kiểm tra tất định phải chạy trên kiểu THỰC SỰ phụ thuộc t (lửa chớp,
+    # cầu vồng xoay): trên glow/neon thì thêm bộ đếm toàn cục vào đường vẽ vẫn
+    # cho ra hai ảnh giống hệt nhau, tức là gate xanh giả.
+    for key in ("glow", "gradient"):
+        if diff(render(key, 0.05), render(key, 0.95)) < 200:
+            raise RuntimeError("kieu %s khong quet theo tu (p=0.05 ~ p=0.95)" % key)
+    for key in ("flame", "rainbow"):
+        if diff(render(key, 0.4, 0.0), render(key, 0.4, 0.9)) < 50:
+            raise RuntimeError("kieu %s khong chay theo dong ho clip (t=0 ~ t=0.9)"
+                               % key)
+        if not np.array_equal(px(render(key, 0.4, 1.25)),
+                              px(render(key, 0.4, 1.25))):
+            raise RuntimeError("kieu %s khong tat dinh: cung (p, t) ra hai anh khac" % key)
+
+    staircase = [karaoke_paint.lit_count(4, s / 100.0) for s in range(101)]
+    if sorted(set(staircase)) != list(range(5)) \
+            or any(b < a for a, b in zip(staircase, staircase[1:])):
+        raise RuntimeError("cab thang sweep bo qua tu nao do (duoc %s)"
+                           % sorted(set(staircase)))
+
+    model = TimelineModel()
+    model.project_ratio = "16:9"
+    track = model.add_track(TrackType.TEXT)
+    clip = model.add_clip(track.track_id, "", "text", 0.0, 4.0, name=line)
+    if clip is None:
+        raise RuntimeError("add_clip text tra None (track loai TEXT khong nhan media text?)")
+    clip.font_size = 44.0
+    clip.font_bold = True
+
+    # So ở ĐÚNG khổ canvas mà FrameComposer dựng: nó vẽ theo project_ratio rồi
+    # mới co về khổ xuất, nên đo ở khổ nhỏ hơn là đo một ảnh đã bị hạ tỉ lệ.
+    CW, CH = 1920, 1080
+
+    def frame():
+        composer = FrameComposer(model, CW, CH)
+        try:
+            return composer.render_frame(1.0).convertToFormat(
+                QImage.Format.Format_ARGB32_Premultiplied)
+        finally:
+            composer.close()
+
+    clip.text_style = "none"
+    off_img = frame()
+    # "rainbow" chứ không phải "glow": kiểm tra tất định bên xuất chỉ có ý nghĩa
+    # trên kiểu đổi theo t, nên cùng một lý do với vòng determinism ở trên.
+    clip.text_style = "rainbow"
+    on_img = frame()
+    export_px = diff(on_img, off_img)
+    if export_px < 200:
+        raise RuntimeError("export bo qua clip.text_style (%d px lech)" % export_px)
+    if not np.array_equal(px(on_img), px(frame())):
+        raise RuntimeError("export cung thoi diem cho hai khung khac nhau")
+
+    folder = os.path.join(tempfile.gettempdir(), "clinging_karaoke_report")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "Kiem karaoke.clinq")
+    lost = []
+    for key in keys:
+        clip.text_style = key
+        project_storage.save_project_to_file(model, path)
+        data = project_storage.load_project_from_file(path)
+        if not data:
+            raise RuntimeError("load_project_from_file tra rong")
+        back = TimelineModel()
+        project_storage.restore_model_from_clinq(back, data)
+        got = [c.text_style for c in back.active_visual_clips_at(0.5)]
+        if got != [key]:
+            lost.append("%s->%s" % (key, got))
+    if lost:
+        raise RuntimeError("text_style mat khi quay qua file: %s" % ", ".join(lost))
+    if karaoke_paint.normalize_style(
+            back.active_visual_clips_at(0.5)[0].text_style) != keys[-1]:
+        raise RuntimeError("kieu doc tu file khong phai la khoa karaoke hop le")
+
+    # Từ ĐANG HÁT của kiểu "lửa" phải còn là CHỮ, không phải một khối cam. Mắt
+    # xích này nằm CUỐI cùng có chủ đích: mọi gate phía trên đỏ trước nếu quầng
+    # bị xoá sạch (mất luôn tính phụ thuộc t), nên để phép đo này ở đầu sẽ ăn cắp
+    # red của gate nhịp quét / đồng hồ / bộ đếm — phản chứng đã đo ra ba vụ đó.
+    # Khop spill vì vậy ở đây chỉ là DEP PHONG; no do THAT trong --style-report
+    # (scratch/style_report_counterfactual.py: mode 'flame_no_halo').
+    leg = _flame_legibility()
+    problems = _flame_legibility_problems(leg)
+    if problems:
+        raise RuntimeError("flame_khong_khoi_dac RED (%s)" % "; ".join(problems))
+
+    return ("8 kieu -> %d anh khac nhau, lech chu thuong nhat %s=%d px, "
+            "quet %d px, export %d px, tu dang hat kieu lua con %d-%d lo "
+            "chu (fill %s-%s), 8/8 khoa tron ven qua .clinq"
+            % (len(prints), weakest[0], weakest[1],
+               diff(render("glow", 0.05), render("glow", 0.95)), export_px,
+               min(m["lo"] for m in leg.values()),
+               max(m["lo"] for m in leg.values()),
+               min(m["fill"] for m in leg.values()),
+               max(m["fill"] for m in leg.values())))
+
+
+def _project_fixture():
+    """Một file ``.clinq`` thật trong TEMP, đủ giá trị cụ thể để đối chiếu.
+
+    Dự án của người dùng không được dùng làm vật thử: báo cáo này mở project
+    thật, và mở thì có autosave đè lên.
+    """
+    import json
+    import tempfile
+    video = _report_video()
+    wav = _report_wav()
+    folder = os.path.join(tempfile.gettempdir(), "clinging_project_report")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "Kiem chung.clinq")
+    data = {
+        "project_meta": {
+            "project_id": "proj-report", "project_name": "Kiem chung mo tu file",
+            "created_at": "2026-10-18T00:00:00", "last_modified": "2026-10-18T00:00:00",
+            "resolution": {"width": 1080, "height": 1920}, "fps": 30,
+            "aspect_ratio": "9:16", "version": "1.0",
+        },
+        "assets": {
+            "a-video": {"type": "video", "path": video, "original_duration": 4.0},
+            "a-audio": {"type": "audio", "path": wav, "original_duration": 4.0},
+        },
+        "timeline": {
+            "duration": 6.0, "playhead": 0.0,
+            # Clip trên track chính phải liền mạch: ``recalculate_main_storyline``
+            # khép mọi khoảng hở ở đó, nên một khe hở 0.5 s trong file sẽ không
+            # bao giờ xuất hiện lại trong model. Khe hở thật của phép thử nằm ở
+            # track AUDIO (c-tone bắt đầu ở 1.0) — đó là chỗ phải giữ nguyên.
+            "tracks": [
+                {"track_id": "t-main", "track_type": "VIDEO", "name": "Main",
+                 "z_index": 1, "is_main_track": True, "is_locked": False,
+                 "is_visible": True, "is_muted": False, "color": "#4FC3F7",
+                 "clips": [
+                     {"clip_id": "c-one", "timeline_in": 0.0, "timeline_out": 2.0,
+                      "duration": 2.0, "source_duration": 4.0, "asset_id": "a-video",
+                      "source_path": video, "media_type": "video",
+                      "name": "probe-a.mp4", "trim_in": 0.0, "trim_out": 2.0},
+                     {"clip_id": "c-two", "timeline_in": 2.0, "timeline_out": 5.5,
+                      "duration": 3.5, "source_duration": 4.0, "asset_id": "a-video",
+                      "source_path": video, "media_type": "video",
+                      "name": "probe-b.mp4", "trim_in": 0.5, "trim_out": 4.0},
+                 ]},
+                {"track_id": "t-music", "track_type": "AUDIO", "name": "Nhac",
+                 "z_index": 0, "is_main_track": False, "is_locked": False,
+                 "is_visible": True, "is_muted": False, "color": "#81C784",
+                 "clips": [
+                     {"clip_id": "c-tone", "timeline_in": 1.0, "timeline_out": 5.0,
+                      "duration": 4.0, "source_duration": 4.0, "asset_id": "a-audio",
+                      "source_path": wav, "media_type": "audio",
+                      "name": "tone.wav", "trim_in": 0.0, "trim_out": 4.0},
+                 ]},
+            ],
+        },
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+    return path, data
+
+
+def run_project_report(argv=None):
+    """Mở project từ dòng lệnh — đo từ chính bản exe đã cài.
+
+    ``--selftest`` chỉ chứng minh module có trong bundle. Cái phải do file exe
+    cài vào máy tự đo là: đường dẫn mà Explorer trao khi nhấp đúp một
+    ``.clinq`` có thật đi tới ĐÚNG cửa dựng phim, với ĐÚNG dữ án — vì mọi lỗi
+    ở đoạn này đều im lặng: app vẫn mở, chỉ là mở nhầm trang hoặc mở rỗng.
+
+    Bốn thứ báo cáo này đo:
+      * ``core.project_storage.project_arg_from_argv`` đọc ra đúng đường dẫn từ
+        argv thật của process;
+      * ``MainController.open_project_path`` đi qua ``_on_open_project`` —
+        cùng hàm thẻ ở Home gọi — nên timeline có ĐÚNG ``(start, duration,
+        media_type, source)`` của file đang mở, thư viện có đủ tài nguyên của
+        file, tên dự án và tỉ lệ khung hình hiện đúng;
+      * một đường dẫn KHÔNG có thật phải trả False và để nguyên cửa đang mở,
+        không được thả người dùng vào một timeline trống;
+      * ảnh bằng chứng là bản sao 1:1 của cửa thật sau khi mở.
+
+    Kỳ vọng lấy từ chính file được mở (fixture chỉ là mặc định khi không có
+    argv), nên cùng một lệnh chạy được trên dự án thật của người dùng:
+    ``Clinging.exe --project-report <json> <duong-dan-clinq>``
+    """
+    argv = list(argv if argv is not None else sys.argv)
+    fixture, fixture_data = _project_fixture()
+    out = ""
+    for arg in argv[1:]:
+        if not arg.startswith("-") and arg.lower().endswith(".json"):
+            out = os.path.abspath(arg)
+    out = out or os.path.join(os.environ.get("TEMP", os.getcwd()),
+                              "clinging_project.json")
+    shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    def pump(count=10):
+        for _ in range(count):
+            app.processEvents()
+
+    from core.project_storage import project_arg_from_argv
+    # Parse argv THAT của process này, không phải một danh sách tự dựng: lỗi
+    # kiểu "mất đường dẫn vì dấu cách" chỉ tồn tại ở chuỗi Explorer gửi tới.
+    argv_with_project = list(argv)
+    if project_arg_from_argv(argv_with_project) is None:
+        argv_with_project.append(fixture)
+    parsed = project_arg_from_argv(argv_with_project)
+    # Kỳ vọng ĐỌC TỪ CHÍNH FILE được mở, không phải từ fixture: cùng một báo
+    # cáo phải nói được "Dự án 2.clinq của người dùng mở đúng", nếu không nó
+    # chỉ là một bài kiểm tra tự đóng quanh dữ liệu của mình.
+    from core.project_storage import load_project_from_file
+    data = load_project_from_file(parsed) or fixture_data
+
+    from core.project_storage import ProjectManager
+    from ui.main_controller import MainController
+    controller = MainController()
+    controller.show()
+    pump(14)
+    home_first = controller.stack.currentWidget() is controller.home_page
+
+    opened = controller.open_project_path(parsed)
+    pump(14)
+
+    editor = controller.editor_page
+    on_editor = (opened and editor is not None
+                 and controller.stack.currentWidget() is editor)
+    model = editor.timeline_panel.model if editor else None
+    clips = {}
+    kinds = set()
+    if model:
+        for track in model.tracks:
+            kinds.add(str(track.track_type))
+            for clip in track.clips:
+                clips[clip.clip_id] = (round(clip.start_time, 3),
+                                       round(clip.duration, 3),
+                                       clip.media_type,
+                                       os.path.basename(clip.source_path))
+    want = {c["clip_id"]: (c["timeline_in"], c["duration"], c["media_type"],
+                           os.path.basename(c["source_path"]))
+            for track in data["timeline"]["tracks"]
+            for c in track["clips"]}
+    resources = [(os.path.basename(r["path"]), r["type"])
+                 for r in (editor.library_panel.resource_records()
+                           if editor else [])]
+    # THU TU la thuoc tinh phai do: thu vien tai hien theo dung tay file ghi
+    # vao. Sap xep mot ben roi so voi danh sach chua sap xep o ben kia tao ra
+    # mot FAIL sai (do chinh probe installed_app_probe bat duoc lan dau).
+    want_resources = [(os.path.basename(a["path"]), a["type"])
+                      for a in data["assets"].values()]
+    title = editor.title_bar.project_name.text() if editor else ""
+    ratio = (editor.timeline_panel.header.combo_aspect_ratio.currentText()
+             if editor else "")
+    pm_path = ProjectManager().project_path
+
+    bogus = os.path.join(os.path.dirname(fixture), "khong-ton-tai.clinq")
+    before_bogus = dict(clips)
+    rejected = controller.open_project_path(bogus)
+    pump(6)
+    still_editor = (controller.stack.currentWidget() is editor
+                    and dict(clips) == before_bogus
+                    and len(model.tracks) > 0)
+
+    panel = controller.grab()
+    width = panel.width()
+    height = panel.height() + 150
+    canvas = QImage(width, height, QImage.Format_RGB32)
+    canvas.fill(QColor("#0F1014").rgb())
+    painter = QPainter(canvas)
+    # QRect theo KICH THUOC THIET BI: drawPixmap(x, y, pm) tren canvas DPR 1 co
+    # pm DPR 1.25 ep anh xuong 80% va lam mong manh net chu trong bang chung.
+    painter.drawPixmap(QRect(0, 0, panel.width(), panel.height()), panel)
+    painter.setFont(QFont("Segoe UI", 9))
+    painter.setPen(QPen(QColor("#C8CBD4")))
+    lines = [
+        "exe: %s (frozen=%s)" % (os.path.abspath(sys.argv[0]),
+                                 bool(getattr(sys, "frozen", False))),
+        "argv -> %s" % (parsed or "(khong co)"),
+        "mo = %s, dung editor = %s, tu Home = %s" % (opened, on_editor,
+                                                     home_first),
+        "clip = %d/%d khop (start, duration, kieu, nguon)" % (
+            len([k for k in want if clips.get(k) == want[k]]), len(want)),
+        "thu vien = %r, ten = %r, ti le = %r" % (resources, title, ratio),
+        "duong gia = %r (muon False), cua van nguyen = %s" % (rejected,
+                                                              still_editor),
+    ]
+    y = panel.height() + 24
+    for line in lines:
+        painter.drawText(8, y, line)
+        y += 20
+    painter.end()
+    canvas.save(shot)
+
+    colors = 0
+    if os.path.isfile(shot):
+        grabbed = QImage(shot).convertToFormat(QImage.Format_RGB32)
+        colors = len({grabbed.pixel(x_, p_)
+                      for p_ in range(0, grabbed.height(), 7)
+                      for x_ in range(0, grabbed.width(), 7)})
+
+    payload = {
+        "exe": os.path.abspath(sys.argv[0]),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "argv_duoc": parsed,
+        "mo_duoc": opened,
+        "o_editor": on_editor,
+        "khoi_dong_tu_home": home_first,
+        "project_path": pm_path,
+        "clips": {k: list(v) for k, v in sorted(clips.items())},
+        "clips_muon": {k: list(v) for k, v in sorted(want.items())},
+        "loai_track": sorted(kinds),
+        "thu_vien": resources,
+        "thu_vien_muon": want_resources,
+        "ten_du_an": title,
+        "ti_le": ratio,
+        "duong_gia": {"tra_ve": rejected, "nguyen_hien_tai": still_editor},
+        "screenshot": os.path.abspath(shot),
+        "distinct_colors": colors,
+        "lines": lines,
+    }
+    controller.close()
+    pump(8)
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    # Moi ky vong doc TREN CHINH FILE mo ra, khong phai hardcode cho fixture:
+    # cung cay do nay phai noi duoc "Du an 2.clinq cua nguoi dung mo dung",
+    # neu khong no chi la bai kiem tra tu dong quanh du lieu no tu sinh.
+    want_kinds = sorted("TrackType." + str(t.get("track_type", "")).upper()
+                        for t in data["timeline"]["tracks"])
+    ok = (opened and on_editor and home_first
+          and os.path.abspath(parsed) == os.path.abspath(str(pm_path or ""))
+          and clips == {k: tuple(v) for k, v in want.items()}
+          and sorted(kinds) == want_kinds
+          and resources == want_resources
+          and payload["ten_du_an"] == data["project_meta"]["project_name"]
+          and payload["ti_le"].startswith(data["project_meta"]["aspect_ratio"])
+          and rejected is False and still_editor
+          and colors > 40 and os.path.isfile(shot))
+    return 0 if ok else 1
+
+
+def run_startup_report(argv=None):
+    """Do duong boot cua CHINH ban nay: tung pha mat bao lau va giu bao nhieu RAM.
+
+    Ham goi thang `main._boot()` — dung duong ma nguoi dung di — nen khong co
+    "ban phat cho do" chay nhanh hon ban that: duong thu hai la loi chung minh
+    thu hai.
+
+    Phep phan biet nam trong `control`: hai viec lech nhau hang chuc lan chi phi
+    phai cho hai con so khac nhau; chung bang nhau nghia la dong ho hong,
+    khong phai app nhanh. `checks` la phan ket luan — moi dong la mot dieu ban
+    CHUA toi uu that bai (cv2 nam trong duong boot, tem RAM tra ve 0), nen xanh
+    hom nay la do do, khong phai do phep do khong the do.
+
+    Clinging.exe --startup-report <duong-dan-json>
+    """
+    argv = list(argv if argv is not None else sys.argv)
+    report = _report_path(argv).replace("clinging_selftest", "clinging_startup")
+
+    entry = sys.modules.get("__main__")
+    boot = getattr(entry, "_boot", None)
+    marks = getattr(entry, "BOOT_MARKS", None)
+    mark = getattr(entry, "_mark", None)
+    if boot is None or marks is None or mark is None:
+        with open(report, "w", encoding="utf-8") as handle:
+            json.dump({"exe": os.path.abspath(sys.argv[0]),
+                       "error": "main._boot khong co san de do"},
+                      handle, ensure_ascii=False, indent=2)
+        return 1
+
+    app, controller = boot()
+    deadline = time.time() + 10.0
+    while time.time() < deadline and not controller.isVisible():
+        app.processEvents()
+        time.sleep(0.02)
+    exposed = controller.isVisible()
+    # Khoanh do DUNG luc cua so lo ra, khong phai luc ket thuc: cv2 tro ve bo nho
+    # sau khi hang doi bia chay mot vai luot, va neu do o cuoi thi khong con phan
+    # biet duoc "boot" voi "sau boot".
+    cv2_at_window = "cv2" in sys.modules
+    mark("cua so lo ra")
+    settle_until = time.time() + 1.5
+    while time.time() < settle_until:
+        app.processEvents()
+        time.sleep(0.02)
+    mark("ngam sau 1.5s")
+    cv2_at_idle = "cv2" in sys.modules
+
+    # Phep phan biet cua dong ho: hai viec co chi phi that bai khac nhau, do
+    # bang cung mot cach. Nhe va nang ra so bang nhau nghia la dong ho hong,
+    # khong phai app nhanh. (Dung `import cv2` lam phep thu la mot loi: no da
+    # duoc nap truoc do nen luon ra 0 — do no o cv2_da_nap_luc_boot.)
+    control = {}
+    for label, size in (("nhe", 10), ("nang", 3000000)):
+        started = time.perf_counter()
+        sum(range(size))
+        control[label + "_s"] = round(time.perf_counter() - started, 4)
+    control["cv2_da_nap_luc_boot"] = cv2_at_window
+    control["cv2_luc_ngam"] = cv2_at_idle
+
+    # Bia do ho dong nap sau khi cua so da ve, nen phai kiem duoc no den noi:
+    # moi card gan day phai mang mot QPixmap that, khong phai cho nem mac dinh.
+    from ui.home_page import RecentProjectCard
+    grid = getattr(controller.home_page, "recent_grid", None)
+    cards = covers = 0
+    for i in range(grid.count() if grid else 0):
+        item = grid.itemAt(i)
+        widget = item.widget() if item else None
+        if isinstance(widget, RecentProjectCard):
+            cards += 1
+            if widget.thumb_label.pixmap() and not widget.thumb_label.pixmap().isNull():
+                covers += 1
+    shot = os.path.join(os.path.dirname(report),
+                        os.path.basename(report).rsplit(".", 1)[0] + ".png")
+    controller.grab().save(shot)
+
+    phases, previous = [], 0.0
+    for name, at, ram in marks:
+        phases.append({"name": name, "dt_s": round(at - previous, 4),
+                       "t_s": round(at, 4), "ram_kib": ram})
+        previous = at
+    payload = {"exe": os.path.abspath(sys.argv[0]),
+               "frozen": bool(getattr(sys, "frozen", False)),
+               "python": sys.version.split()[0],
+               "window_exposed": bool(exposed),
+               "window_size": [controller.width(), controller.height()],
+               "marks": [{"name": n, "t_s": round(t, 4), "ram_kib": r}
+                         for n, t, r in marks],
+               "phases": phases,
+               "boot_to_window_s": next((t for n, t, _r in marks
+                                         if n == "cua so lo ra"), 0.0),
+               "ram_at_window_kib": next((r for n, _t, r in marks
+                                          if n == "cua so lo ra"), 0),
+               "ram_idle_kib": marks[-1][2] if marks else 0,
+               "recent_cards": cards,
+               "recent_covers": covers,
+               "evidence_shot": shot,
+               "control": control}
+    try:
+        import psutil
+        maps = {}
+        for row in psutil.Process().memory_maps(grouped=True):
+            name = os.path.basename(row.path or "")
+            if name:
+                maps[name] = round(row.rss / 1024)
+        top = sorted(maps.items(), key=lambda kv: -kv[1])[:15]
+        payload["top_rss_modules"] = [{"name": n, "rss_kib": r} for n, r in top]
+    except Exception as exc:
+        payload["top_rss_modules"] = {"error": repr(exc)}
+
+    # Phan ket luan: moi dong la mot dieu ma ban TRUOC khi toi uu that bai, khong
+    # phai mot con so thoi. Boot 2s ma tem RAM tra ve 0 thi do la do khong chay,
+    # khong phai do app nhanh.
+    checks = {
+        "cua_so_lo": bool(exposed),
+        "tem_ram_con_song": payload["ram_at_window_kib"] > 0,
+        "dong_ho_phan_biet": (control["nang_s"] >= 0.05
+                              and control["nhe_s"] <= 0.005),
+        "boot_khong_cv2": not cv2_at_window,
+        "bia_duoc_ve": covers == cards,
+        "anh_chung_minh": os.path.isfile(shot),
+    }
+    payload["checks"] = checks
+    payload["ok"] = all(checks.values())
+    with open(report, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    for widget in list(app.topLevelWidgets()):
+        try:
+            widget.close()
+        except Exception:
+            pass
+    for _ in range(6):
+        app.processEvents()
+        time.sleep(0.02)
+    return 0 if payload["ok"] else 1
+
+
+def run_style_report(argv=None):
+    """Aura + lớp phủ recap + karaoke trên BẢN ĐÃ CÁI: chuột thật, pixel thật.
+
+    ``--selftest`` của exe đã cài đã đo ba đường vẽ (``aura_paint``,
+    ``recap_overlay``, ``karaoke_paint``) ngay trong bundle, nhưng nó không hề
+    bấm vào đâu cả. Ba thứ chỉ hỏng được khi có người dùng:
+      * nhóm "Aura" trong panel hiệu ứng phải có ĐỦ 8 thẻ, và một cú nhấp vào
+        thẻ phải đưa khoá aura vào clip — tên thẻ khớp EFFECT_PRESETS, lệch một
+        chữ là thẻ thành ảnh minh hoạ vô dụng mà không ai báo;
+      * vùng hình học của clip trên canvas phải là HẰNG SỐ theo hiệu ứng: bản đã
+        cài chết đứng giữa app.processEvents() chỉ vì bấm bốn thẻ aura khác nhau
+        (boundingRect nở theo clip.effects làm scene mất định vị index);
+      * nút "Lớp phủ recap" trên header phải mở được hộp thoại, bật master phải
+        làm khung hình đổi thật, và đóng hộp thoại phải để lại ĐÚNG một mục
+        lịch sử (đóng mà mất lịch sử thì Ctrl+Z kế tiếp xoá mất một nửa việc
+        của người dùng);
+      * combo "Kiểu karaoke" phải có 9 dòng (none + 8 kiểu) và chọn "Lửa" là
+        khung preview đổi màu thật — hỏng ở đây thì video xuất ra vẫn đúng,
+        nên không ai biết cho tới khi đem hai bên ra so.
+
+    Clinging.exe --style-report <duong-dan-json>
+    """
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest", "clinging_style")
+    shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+
+    import numpy as np
+    from PySide6.QtCore import QPointF, QRect
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    from core import karaoke_paint, project_storage
+    from core.aura_paint import aura_spec
+    from core.timeline_model import TrackType, track_type_for_media
+    from ui.effects_panel import CATEGORY_TABS, EffectCard
+    from ui.graphics_canvas_item import HANDLE_SIZE
+
+    # Báo cáo này thêm clip, gắn hiệu ứng và bật lớp phủ — tuyệt đối không được
+    # để _auto_save() ghi lên file autosave của người dùng.
+    project_storage.AUTO_SAVE_FILE = os.path.join(
+        os.path.dirname(os.path.abspath(shot)), "clinging_style_autosave.json")
+
+    def pump(count=10):
+        for _ in range(count):
+            app.processEvents()
+
+    FORMAT = QImage.Format.Format_ARGB32_Premultiplied
+
+    def grab(canvas):
+        return canvas.grab().toImage().convertToFormat(FORMAT)
+
+    def arr(img):
+        row = img.bytesPerLine() // 4
+        return np.frombuffer(img.constBits(), np.uint8,
+                             count=row * 4 * img.height()).reshape(
+            img.height(), row, 4)[:, :img.width(), :3].astype(int)
+
+    def moved_px(a, b, threshold=24):
+        return int((np.abs(arr(a) - arr(b)).max(axis=2) > threshold).sum())
+
+    from ui.main_window import MainWindow
+    win = MainWindow()
+    win.resize(1500, 900)
+    win.show()
+    pump(20)
+    timer = getattr(win, "_autosave_timer", None)
+    if timer is not None:
+        timer.stop()
+
+    model = win.timeline_panel.model
+    stack = win.timeline_panel.undo_stack
+    canvas = win.preview_panel.canvas
+
+    # --- 1. nền: một clip video thật để aura và lớp phủ có chỗ hiện ra -------
+    # Fixture này là cái các report khác đã dùng từ lâu (đọc được, giải mã
+    # được, không đánh thức đường ống nhập thư viện). Ảnh PNG thì khác: thêm
+    # clip ảnh làm app tự sinh proxy, và cú đó abort cả process giữa pump().
+    src = _report_video(seconds=3.0, fps=25.0, size=(320, 180))
+    track = model.add_track(track_type_for_media("video"), "Style")
+    clip = model.add_clip(track.track_id, src, "video", 0.0, 3.0, "nen")
+    if clip is None:
+        raise RuntimeError("model tu choi them clip nen (track khong nhan video)")
+    model.playhead = 1.0
+    win._sync_canvas()
+    pump(16)
+    if canvas._clip_items.get(clip.clip_id) is None:
+        raise RuntimeError("Canvas khong co item cho clip nen (%s)" % clip.clip_id)
+
+    # --- 2. Aura: 8 thẻ THAT, mot cú bam phai di het duong dan ---------------
+    if "Aura" not in CATEGORY_TABS:
+        raise RuntimeError("panel hieu ung khong co nhom Aura")
+    tab = CATEGORY_TABS.index("Aura")
+    win.effects_panel.tabs.group.buttons()[tab].click()
+    pump(6)
+    cards = win.effects_panel.stack.widget(tab).widget().findChildren(EffectCard)
+    names = [c.effect_data.get("name") for c in cards]
+    if len(cards) != 8:
+        raise RuntimeError("nhom Aura co %d the, mong 8" % len(cards))
+
+    # --- 2b. geometry cua item PHAI static ----------------------------------
+    # Day khong phai phep thu hinh thuc: boundingRect() cua clip video ma doi
+    # theo clip.effects thi scene mat ding index cua no (vung do item cache luc
+    # addToIndex, chi cap nhat qua prepareGeometryChange), va process abort
+    # giua app.processEvents() khong traceback — ban cai dat chet o the aura
+    # thu tu 4 trong mot phien. Fix: preview danh tru cho loang theo margin LON
+    # NHAT registry, khong theo hieu ung dang gay. Do THUONG XUYEN de loi do
+    # bao thanh RED co thong bao, khong phai mot process chet giua chung.
+    aura_item = canvas._clip_items[clip.clip_id]
+    empty_rect = aura_item.boundingRect()
+    cards[0].add_button.click()
+    pump(8)
+    full_rect = aura_item.boundingRect()
+    frame = aura_item.rect()
+    short = min(frame.width(), frame.height())
+    reserved = (full_rect.height() - frame.height()) / 2.0 - (HANDLE_SIZE + 4.0)
+    hit_width = aura_item.shape().boundingRect().width()
+    geometry_ok = (empty_rect == full_rect
+                   and reserved >= 0.19 * short
+                   and hit_width <= frame.width() + 2 * (HANDLE_SIZE + 4.0) + 0.5)
+    if not geometry_ok:
+        # Dừng ở đây là có lý: với rect đổi theo hiệu ứng, mọi cú click tiếp
+        # theo đều có thể abort process trước khi báo cáo kịp ghi ra đĩa (đã
+        # đo: bản cũ chết ngay trong vòng 8 thẻ). Ném rõ nguyên nhân còn hơn
+        # để probe kết luận "không có báo cáo".
+        why = ("rect_doi_theo_hieu_ung" if empty_rect != full_rect else
+               "khong_giu_cho_loang" if reserved < 0.19 * short else
+               "vung_loang_bat_chuot")
+        raise RuntimeError(
+            "aura_khong_doi_geometry RED (%s): khong=%s co=%s loang=%.1f "
+            "hit=%.1f frame=%.1f" % (why, empty_rect, full_rect, reserved,
+                                     hit_width, frame.width()))
+    for effect in list(clip.effects):
+        clip.effects.remove(effect)
+    win._sync_canvas()
+    pump(6)
+
+    plain = grab(canvas)
+    aura_shot = None
+    applied = {}
+    weakest = (10 ** 9, None)
+    for card in cards:
+        for effect in list(clip.effects):        # do tung the, khong do tong
+            clip.effects.remove(effect)
+        win._sync_canvas()
+        pump(4)
+        card.add_button.click()
+        pump(8)
+        spec = aura_spec(clip.effects)
+        if spec is None:
+            raise RuntimeError("the '%s' bam vao nhung clip khong co aura"
+                               % card.effect_data.get("name"))
+        after = grab(canvas)
+        delta = moved_px(after, plain)
+        applied[card.effect_data.get("name")] = [spec[0], delta]
+        if card.effect_data.get("name") == "Lôi Điện":
+            aura_shot = after
+        if delta < weakest[0]:
+            weakest = (delta, card.effect_data.get("name"))
+    # 8 the phai ra 8 kieu khac nhau — gate o dong "aura_du_8_khoa" duoi payload
+    # de ban ghi van chay het va file JSON ghi ra duoc, khong chet giua chung.
+    aura_ok = weakest[0] >= 200
+    for effect in list(clip.effects):
+        clip.effects.remove(effect)
+    win._sync_canvas()
+    pump(6)
+
+    # --- 3. Lop phu recap: nut header -> hop thoai -> khung doi -> 1 muc undo -
+    opening = dict(model.recap_overlay)
+    if opening.get("enabled"):
+        raise RuntimeError("mo cua da bat san lop phu, khong do duoc bang chung")
+    btn = win.timeline_panel.header.btn_recap
+    if not btn.isVisible():
+        raise RuntimeError("nut lop phu recap bi cat mat tren header")
+    btn.click()
+    pump(8)
+    dialog = getattr(win, "_recap_dialog", None)
+    if dialog is None or not dialog.isVisible():
+        raise RuntimeError("bam nut header khong mo duoc hop thoai lop phu")
+    if dialog is not win._open_recap_overlay():
+        raise RuntimeError("hop thoai lop phu khoi dong hai lan, moi lan mot cai")
+    dialog.chk_enabled.setChecked(True)
+    dialog.chk_border.setChecked(True)
+    dialog.chk_reticle.setChecked(True)
+    dialog.chk_rec.setChecked(True)
+    pump(12)
+    overlay_shot = grab(canvas)
+
+    # Lịch sử PHẢI đo trước khi tự bấm model: set_recap_overlay() trực tiếp
+    # không đi qua command, gọi sớm thì "before" của lệnh đóng hộp thoại không
+    # còn là trạng thái lúc mở cửa nữa.
+    depth = len(stack._undo_stack)
+    dialog._on_close()
+    pump(8)
+    grew = len(stack._undo_stack) - depth
+    stack.undo()
+    pump(8)
+    restored = model.recap_overlay == opening
+    stack.redo()
+    pump(8)
+
+    on_shot = overlay_shot
+    model.set_recap_overlay({"enabled": False})
+    pump(10)
+    off_shot = grab(canvas)
+    model.set_recap_overlay({"enabled": True})
+    pump(8)
+    overlay_px = moved_px(on_shot, off_shot)
+    diff = (np.abs(arr(on_shot) - arr(off_shot)).max(axis=2) > 24)
+    h, w = diff.shape
+    centre_px = int(diff[h // 2 - 26:h // 2 + 26, w // 2 - 26:w // 2 + 26].sum())
+    from core.canvas_utils import ASPECT_RATIOS
+    sw, sh = ASPECT_RATIOS.get(canvas._current_ratio_key, (1920, 1080))
+    # mapFromScene là phép chiếu scene -> pixel của viewport; transform() trả
+    # toạ độ world và cho ra số âm.
+    tl = canvas.mapFromScene(QPointF(-sw / 2, -sh / 2))
+    br = canvas.mapFromScene(QPointF(sw / 2, sh / 2))
+    top, left = int(tl.y()), int(tl.x())
+    chip = diff[top:top + max(1, int((br.y() - tl.y()) * 0.12)),
+                left:left + max(1, int((br.x() - tl.x()) * 0.25))]
+    chip_px = int(chip.sum())
+    overlay_ok = (overlay_px >= 400 and centre_px >= 20 and chip_px >= 20
+                  and grew == 1 and restored)
+
+    # --- 4. Karaoke: combo 9 dong, chon kieu la preview doi mau -------------
+    win._add_text_to_timeline()
+    pump(12)
+    text_track = [t for t in model.tracks if t.track_type == TrackType.TEXT][0]
+    tclip = text_track.clips[0]
+    tclip.name = "Xin chao buoi sang"
+    win.properties_panel.show_clip_properties(tclip)
+    pump(8)
+    editor = getattr(win.properties_panel, "current_editor", None)
+    combo = getattr(editor, "combo_text_style", None)
+    if combo is None:
+        raise RuntimeError("properties panel khong co combo kieu karaoke")
+    keys = [combo.itemData(i) for i in range(combo.count())]
+    if keys[0] != "none" or tuple(keys[1:]) != karaoke_paint.STYLE_KEYS:
+        raise RuntimeError("combo khong dung 8 khoa karaoke (duoc %s)" % (keys,))
+    model.playhead = tclip.start_time + tclip.duration * 0.5
+    win._sync_canvas()
+    pump(10)
+
+    def karaoke_shot(style):
+        combo.setCurrentIndex(max(0, combo.findData(style)))
+        pump(12)
+        if tclip.text_style != style:
+            raise RuntimeError("chon %s o combo nhung model la %s"
+                               % (style, tclip.text_style))
+        return grab(canvas)
+
+    k_none = karaoke_shot("none")
+    k_flame = karaoke_shot("flame")
+    k_neon = karaoke_shot("neon")
+    karaoke_px = {"flame": moved_px(k_flame, k_none), "neon": moved_px(k_neon, k_none)}
+    karaoke_ok = all(v >= 120 for v in karaoke_px.values())
+
+    # "Doi mau that" khong hom voi "doc duoc". Tu DANG HAT cua kieu lua la noi
+    # duy nhat trong app nguoi dung mong mot net chu BIEN DAI thanh mot khoi
+    # mau, va khoi do xanh qua moi gate so sanh anh. Do bang chinh font cua ban
+    # nay, o ca khổ preview (12-16px) lan khổ xuất (40px).
+    leg = _flame_legibility()
+    leg_bad = _flame_legibility_problems(leg)
+
+    # --- 5. bang chung do chinh file exe nay xuat ra -------------------------
+    if aura_shot is None:
+        raise RuntimeError("the 'Loi Dien' khong de lai anh nao tren bang chung")
+    tiles = [("aura (the Loi Dien)", aura_shot), ("lop phu recap", overlay_shot),
+             ("karaoke flame", k_flame), ("karaoke thuong", k_none)]
+    tile_w = min(t.width() for _, t in tiles)
+    tile_h = max(t.height() for _, t in tiles)
+    sheet = QImage(tile_w * len(tiles) + 10 * (len(tiles) + 1),
+                   tile_h + 34, FORMAT)
+    sheet.fill(QColor("#09090b"))
+    p = QPainter(sheet)
+    for i, (label, tile) in enumerate(tiles):
+        x = 10 + i * (tile_w + 10)
+        p.drawImage(QRect(x, 26, tile.width(), tile.height()), tile)
+        p.setPen(QColor("#e4e4e7"))
+        p.drawText(x, 18, label)
+    p.end()
+    sheet.save(shot)
+    if not os.path.isfile(shot) or os.path.getsize(shot) < 20000:
+        raise RuntimeError("anh chung minh khong co noi dung (%d byte)"
+                           % (os.path.getsize(shot) if os.path.isfile(shot) else 0))
+    # Doc LAI file tren dia: "da save" khong dong nghia "file co noi dung".
+    saved = QImage(shot).convertToFormat(FORMAT)
+    if saved.isNull() or saved.width() < tile_w * 2:
+        raise RuntimeError("anh chung minh doc lai bi loi (%s)" % shot)
+    colors = len({tuple(row) for row in arr(saved).reshape(-1, 3).tolist()[::61]})
+
+    checks = {
+        "aura_du_8_the": len(cards) == 8,
+        "aura_bam_duoc": len(applied) == 8,
+        # Moi the phai ghi DUNG aura cua chinh no: mot panel noi chuyen voi
+        # model qua EFFECT_PRESETS, lech mot chu la 8 the chi ra mot kieu.
+        "aura_du_8_khoa": len({v[0] for v in applied.values()}) == 8,
+        "aura_doi_khung": aura_ok,
+        "aura_khong_doi_geometry": geometry_ok,
+        "lop_phu_doi_khung": overlay_px >= 400,
+        "tam_ngam_va_REC": centre_px >= 20 and chip_px >= 20,
+        "dong_1_muc_undo": grew == 1,
+        "undo_tra_dung_trang_thai": restored,
+        "combo_du_9_dong": len(keys) == 9,
+        "karaoke_doi_khung": karaoke_ok,
+        "flame_khong_khoi_dac": not leg_bad,
+        "anh_chung_minh": os.path.getsize(shot) >= 20000,
+    }
+    payload = {
+        "exe": os.path.abspath(sys.argv[0]),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "the_aura": names,
+        "aura_applied": applied,
+        "aura_lech_nhat_px": [weakest[0], weakest[1]],
+        "boundingRect_px": [round(empty_rect.width(), 1),
+                            round(full_rect.width(), 1),
+                            round(empty_rect.height(), 1),
+                            round(full_rect.height(), 1)],
+        "aura_loang_px": round(reserved, 1),
+        "vung_chuot_px": round(hit_width, 1),
+        "khung_clip_px": [round(frame.width(), 1), round(frame.height(), 1)],
+        "lop_phu_px": [overlay_px, centre_px, chip_px],
+        "muc_undo_khi_dong": grew,
+        "combo_khoa": keys,
+        "karaoke_lech_px": karaoke_px,
+        "flame_tu_dang_hat": {str(px): [m["muc"], m["fill"], m["lo"], m["spill"]]
+                              for px, m in sorted(leg.items())},
+        "flame_loi": leg_bad,
+        "mau_trong_anh": colors,
+        "screenshot": os.path.abspath(shot),
+        "checks": checks,
+        "ok": all(checks.values()),
+    }
+    win.close()
+    pump(4)
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    return 0 if payload["ok"] else 1
+
+
+def run_import_report(argv=None):
+    """Nap MOI module cua app trong chinh bundle nay, bao cao file nao khong nap duoc.
+
+    --selftest chi co the kiem tra nhung module ma co dong do goi ten. Mot
+    module chi duoc dung khi nguoi dung mo mot hop thoai nao do la module ma
+    khong co gi chung minh no con nguyen ven trong ban cai: thieu no thi loi
+    chi no ra luc bam nut, sau khi installer bao 'thanh cong'. Sweep nay doc
+    het core/, ui/, src/ va theme/bar_measure/diagnostics, nen mot lan chay
+    tra loi cau hoi "ban nay co du thu vien moi truong chay khong" thay vi
+    tung cau hoi rieng cho tung tinh nang.
+
+    Phep phan biet: cung may moc do phai THAT BAI duoc. tkinter bi exclude khoi
+    bundle, nen neu no van import duoc trong ban da dong goi thi "0 loi" chi la
+    do sweep khong that su chay trong bundle.
+
+    Clinging.exe --import-report <duong-dan-json>
+    """
+    import importlib
+    import pkgutil
+
+    argv = list(argv if argv is not None else sys.argv)
+    report = _report_path(argv).replace("clinging_selftest", "clinging_imports")
+    packages = ("core", "ui", "src")
+    singles = ("theme", "bar_measure", "diagnostics")
+
+    names = list(singles)
+    for pkg in packages:
+        names.append(pkg)
+        try:
+            module = importlib.import_module(pkg)
+            paths = list(module.__path__)
+        except Exception:
+            continue
+        try:
+            for info in pkgutil.walk_packages(paths, pkg + "."):
+                names.append(info.name)
+        except Exception:
+            pass
+
+    loaded, failures = [], []
+    for name in sorted(set(names)):
+        try:
+            importlib.import_module(name)
+            loaded.append(name)
+        except BaseException as exc:      # SystemExit co the thoat tu import
+            failures.append({"module": name,
+                             "error": "%s: %s" % (exc.__class__.__name__, exc)})
+
+    try:
+        importlib.import_module("tkinter")
+        tkinter_present = True
+    except BaseException:
+        tkinter_present = False
+
+    payload = {"exe": os.path.abspath(sys.argv[0]),
+               "frozen": bool(getattr(sys, "frozen", False)),
+               "attempted": len(set(names)),
+               "loaded": loaded, "failures": failures,
+               "tkinter_present": tkinter_present}
+    with open(report, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    if payload["frozen"] and tkinter_present:
+        print("counterfactual fail: tkinter van import duoc trong bundle")
+        return 1
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(run_selftest())

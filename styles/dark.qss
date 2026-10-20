@@ -1,0 +1,719 @@
+/* ============================================================
+   CLINQING - DARK THEME (QSS)
+   Teal accent (#40E0D0) matching the app's interface identity
+   ============================================================ */
+
+* {
+    outline: none;
+    font-family: "Segoe UI", "Inter", "Roboto", sans-serif;
+}
+
+QWidget {
+    background-color: transparent;
+    color: #e0e0e0;
+    font-size: 13px;
+}
+
+QMainWindow, #RootWindow {
+    background-color: #141414;
+}
+
+/* ---------- Title bar ---------- */
+#TitleBar {
+    background-color: #141418;
+    border-bottom: 1px solid #2a2a30;
+}
+#TitleBarLabel {
+    color: #8a8a92;
+    font-size: 12px;
+}
+#TitleBtn {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: #8a8a92;
+    font-size: 14px;
+}
+#TitleBtn:hover {
+    background-color: #2f2f36;
+    color: #ffffff;
+}
+#TitleBtnClose:hover {
+    background-color: #c62828;
+    color: #ffffff;
+}
+
+/* ---------- Top toolbar ---------- */
+#TopToolbar {
+    background-color: #1a1a1e;
+    border-bottom: 1px solid #2a2a30;
+}
+#LogoBadge {
+    color: #40E0D0;
+    font-size: 20px;
+    font-weight: 700;
+}
+#AppName {
+    color: #e0e0e0;
+    font-size: 15px;
+    font-weight: 600;
+}
+#VersionBadge {
+    background-color: #1e1e28;
+    color: #5FF0E2;
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 600;
+}
+#ProjectLabel {
+    color: #b0b0b8;
+    font-size: 13px;
+    padding: 4px 6px;
+    background: transparent;
+}
+#IconGhostBtn {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: #8a8a92;
+    padding: 5px;
+}
+#IconGhostBtn:hover {
+    background-color: #2f2f36;
+    border: 1px solid #35353d;
+}
+#SaveButton {
+    background-color: #222228;
+    border: 1px solid #2a2a30;
+    border-radius: 6px;
+    color: #e0e0e0;
+    padding: 6px 14px;
+    font-weight: 500;
+}
+#SaveButton:hover {
+    background-color: #2f2f36;
+    border-color: #35353d;
+}
+#ExportButton {
+    background-color: #2C6E64;
+    border: none;
+    border-radius: 6px 0 0 6px;
+    color: white;
+    padding: 6px 16px;
+    font-weight: 600;
+}
+#ExportButton:hover {
+    background-color: #358577;
+}
+#ExportDropdown {
+    background-color: #2C6E64;
+    border: none;
+    border-left: 1px solid rgba(255,255,255,0.2);
+    border-radius: 0 6px 6px 0;
+    color: white;
+    padding: 6px 8px;
+    font-weight: 600;
+}
+#ExportDropdown:hover {
+    background-color: #358577;
+}
+
+/* ---------- Sidebar (left icon rail) ---------- */
+#Sidebar {
+    background-color: #141418;
+    border-right: 1px solid #2a2a30;
+}
+#SidebarButton {
+    background-color: transparent;
+    border: none;
+    border-radius: 8px;
+    color: #8a8a92;
+    padding: 6px 2px;
+    font-size: 10px;
+}
+#SidebarButton:hover {
+    background-color: #2f2f36;
+    color: #e0e0e0;
+}
+#SidebarButton:checked {
+    background-color: #123A34;
+    color: #5FF0E2;
+}
+
+/* ---------- Library / resource panel ---------- */
+#LibraryPanel {
+    background-color: #1a1a1e;
+    border-right: 1px solid #2a2a30;
+}
+#PanelTitle {
+    color: #e0e0e0;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+}
+QPushButton#LibTab {
+    background: transparent;
+    border: none;
+    color: #8a8a92;
+    padding: 6px 1px;
+    font-weight: 500;
+    font-size: 11px;
+}
+QPushButton#LibTab:hover {
+    color: #e0e0e0;
+}
+QPushButton#LibTab:checked {
+    color: #ffffff;
+}
+#TabUnderline {
+    background-color: #40E0D0;
+    border-radius: 1px;
+}
+#TabTrack {
+    background-color: #2a2a30;
+    border-radius: 1px;
+}
+#SearchBox {
+    background-color: #222228;
+    border: 1px solid #2a2a30;
+    border-radius: 10px;
+    padding: 8px 10px;
+    color: #e0e0e0;
+}
+#SearchBox[focused="true"] {
+    border: 1px solid #40E0D0;
+}
+#SearchIcon {
+    color: #8a8a92;
+    font-size: 12px;
+    background: transparent;
+}
+#SearchInput {
+    background: transparent;
+    border: none;
+    color: #e0e0e0;
+    font-size: 13px;
+}
+#PrimaryPillButton {
+    background-color: #2C6E64;
+    border: none;
+    border-radius: 20px;
+    color: white;
+    padding: 8px 20px;
+    font-weight: 700;
+}
+#PrimaryPillButton:hover {
+    background-color: #358577;
+}
+#LibFolderIcon {
+    font-size: 46px;
+    color: #505058;
+    background: transparent;
+}
+#ZoomCombo {
+    background-color: #222228;
+    border: 1px solid #2a2a30;
+    border-radius: 8px;
+    padding: 6px 10px;
+    color: #e0e0e0;
+    font-weight: 600;
+}
+#FilterBtn {
+    background-color: #222228;
+    border: 1px solid #2a2a30;
+    border-radius: 10px;
+    color: #b0b0b8;
+}
+#FilterBtn:hover {
+    border: 1px solid #40E0D0;
+    color: #ffffff;
+}
+#ResourceCard {
+    background-color: #1e1e24;
+    border: 1px solid #2a2a30;
+    border-radius: 8px;
+}
+#ResourceCard:hover {
+    border: 1px solid #40E0D0;
+    background-color: #222228;
+}
+#UploadCard {
+    background-color: #1a1a1e;
+    border: 1.5px dashed #35353d;
+    border-radius: 8px;
+    color: #8a8a92;
+}
+#UploadCard:hover {
+    border: 1.5px dashed #40E0D0;
+    color: #5FF0E2;
+}
+
+/* ---------- Preview ---------- */
+#PreviewCanvas {
+    background-color: #0a0a0c;
+    border: 1.5px solid #2a2a30;
+    border-radius: 12px;
+}
+#PreviewCanvas[dragActive="true"] {
+    border: 2px dashed #40E0D0;
+    background-color: #0F1A18;
+}
+#PreviewHint {
+    color: #606068;
+    font-size: 14px;
+}
+#PreviewIconCircle {
+    background-color: #12211F;
+    border-radius: 42px;
+    color: #40E0D0;
+    font-size: 30px;
+}
+#PlaybackBtn {
+    background-color: #222228;
+    border: 1px solid #2a2a30;
+    border-radius: 10px;
+    color: #b0b0b8;
+    font-size: 15px;
+}
+#PlaybackBtn:hover {
+    border: 1px solid #40E0D0;
+    color: #ffffff;
+}
+#PlayBtnMain {
+    background-color: #2C6E64;
+    border: none;
+    border-radius: 26px;
+    color: white;
+    font-size: 18px;
+}
+#PlayBtnMain:hover {
+    background-color: #358577;
+}
+
+/* ---------- Properties panel ---------- */
+#PropertiesPanel {
+    background-color: #1a1a1e;
+    border-left: 1px solid #2a2a30;
+}
+#PropTitle {
+    color: #e0e0e0;
+    font-size: 14px;
+    font-weight: 700;
+}
+QPushButton#PropTab {
+    background: transparent;
+    border: none;
+    color: #8a8a92;
+    padding: 6px 2px;
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+}
+QPushButton#PropTab:checked {
+    color: #ffffff;
+}
+#EmptyIconCircle {
+    background-color: #222228;
+    border-radius: 40px;
+    color: #606068;
+    font-size: 26px;
+}
+#EmptyTitle {
+    color: #e0e0e0;
+    font-size: 15px;
+    font-weight: 600;
+}
+#EmptyDesc {
+    color: #8a8a92;
+    font-size: 12px;
+}
+
+/* ---------- Timeline ---------- */
+#TimelinePanel {
+    background-color: #141414;
+    border-top: 1px solid #2a2a30;
+}
+#TimelineTitle {
+    color: #e0e0e0;
+    font-size: 13px;
+    font-weight: 700;
+}
+#BetaBadge {
+    background-color: #123028;
+    color: #40E0D0;
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 700;
+}
+#TimelineSubtitle {
+    color: #8a8a92;
+    font-size: 11px;
+}
+#TimelineIconBtn {
+    background-color: transparent;
+    border: none;
+    border-radius: 8px;
+    color: #8a8a92;
+    padding: 6px;
+}
+#TimelineIconBtn:hover {
+    background-color: #2f2f36;
+    color: #ffffff;
+}
+#TrackManagerBtn {
+    background-color: #222228;
+    border: 1px solid #2a2a30;
+    border-radius: 8px;
+    color: #e0e0e0;
+    padding: 6px 12px;
+}
+#TrackManagerBtn:hover {
+    border: 1px solid #40E0D0;
+}
+#InfoBanner {
+    background-color: #1e1e24;
+    border: 1px solid #2a2a30;
+    border-radius: 8px;
+    color: #606068;
+    font-size: 11px;
+    padding: 6px 10px;
+}
+#TimeRuler {
+    background-color: #141418;
+    border-top: 1px solid #2a2a30;
+    border-bottom: 1px solid #2a2a30;
+}
+#TracksArea {
+    background-color: #141418;
+}
+#DropZone {
+    background-color: #1e1e24;
+    border: 1.5px dashed #35353d;
+    border-radius: 12px;
+    color: #8a8a92;
+}
+#DropZone:hover {
+    border: 1.5px dashed #40E0D0;
+}
+#DropZoneIcon {
+    background-color: #123028;
+    border-radius: 20px;
+    color: #40E0D0;
+    font-size: 18px;
+}
+#TimeCounter {
+    color: #40E0D0;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: "Consolas", monospace;
+}
+#TimeCounterMuted {
+    color: #505058;
+    font-size: 12px;
+    font-family: "Consolas", monospace;
+}
+
+/* ---------- Scrollbars ---------- */
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}
+QScrollBar::handle:vertical {
+    background: #35353d;
+    border-radius: 5px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover { background: #4a4a54; }
+QScrollBar:horizontal {
+    background: transparent;
+    height: 10px;
+    margin: 2px;
+}
+QScrollBar::handle:horizontal {
+    background: #35353d;
+    border-radius: 5px;
+    min-width: 24px;
+}
+QScrollBar::add-line, QScrollBar::sub-line { width:0; height:0; }
+
+/* ---------- Tooltips ---------- */
+QToolTip {
+    background-color: #2a2a30;
+    color: #e0e0e0;
+    border: 1px solid #35353d;
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+/* ---------- Slider ---------- */
+QSlider::groove:horizontal {
+    background: #2a2a30;
+    height: 4px;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #40E0D0;
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+}
+QSlider::sub-page:horizontal {
+    background: #40E0D0;
+    border-radius: 2px;
+}
+
+/* ---------- Home Page ---------- */
+#HomePage {
+    background-color: #141414;
+}
+#HomeContent {
+    background-color: transparent;
+}
+#SystemMonitor {
+    background-color: #1a1a1e;
+    border-right: 1px solid #2a2a30;
+}
+#MonitorItem {
+    background-color: transparent;
+    padding: 4px 0;
+}
+#MonitorLabel {
+    color: #8a8a92;
+    font-size: 12px;
+    font-weight: 500;
+}
+#MonitorValue {
+    color: #e0e0e0;
+    font-size: 12px;
+    font-weight: 700;
+}
+#MonitorValueTemp {
+    color: #66bb6a;
+    font-size: 12px;
+    font-weight: 700;
+}
+#MonitorDetail {
+    color: #8a8a92;
+    font-size: 11px;
+}
+#MonitorDetailValue {
+    color: #b0b0b8;
+    font-size: 11px;
+    font-weight: 500;
+}
+#MonitorProgressContainer {
+    background-color: #2a2a30;
+    border-radius: 2px;
+}
+#MonitorProgressBar {
+    background-color: #40E0D0;
+    border-radius: 2px;
+}
+#SoftwareBy {
+    color: #8a8a92;
+    font-size: 11px;
+}
+#BrandName {
+    color: #40E0D0;
+    font-size: 12px;
+    font-weight: 700;
+}
+#ContactEmail {
+    color: #8a8a92;
+    font-size: 11px;
+}
+#WelcomeTitle {
+    color: #e0e0e0;
+    font-size: 26px;
+    font-weight: 700;
+}
+#WelcomeDesc {
+    color: #8a8a92;
+    font-size: 14px;
+}
+#NewProjectBtnFrame {
+    background-color: transparent;
+}
+#NewProjectBtn {
+    background-color: #2C6E64;
+    border: none;
+    border-radius: 8px 0 0 8px;
+    color: white;
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 600;
+}
+#NewProjectBtn:hover {
+    background-color: #358577;
+}
+#NewProjectDropdown {
+    background-color: #2C6E64;
+    border: none;
+    border-left: 1px solid rgba(255,255,255,0.2);
+    border-radius: 0 8px 8px 0;
+    color: white;
+    padding: 10px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+#NewProjectDropdown:hover {
+    background-color: #358577;
+}
+#SectionFrame {
+    background-color: transparent;
+}
+#SectionTitle {
+    color: #e0e0e0;
+    font-size: 18px;
+    font-weight: 700;
+}
+#CustomSizeBtn {
+    background-color: transparent;
+    border: 1px solid #35353d;
+    border-radius: 8px;
+    color: #e0e0e0;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 500;
+}
+#CustomSizeBtn:hover {
+    border-color: #40E0D0;
+    color: #ffffff;
+}
+#ProjectTemplateCard {
+    background-color: #1e1e24;
+    border: 1.5px solid #2a2a30;
+    border-radius: 12px;
+}
+#ProjectTemplateCard:hover {
+    border: 1.5px solid #40E0D0;
+    background-color: #222228;
+}
+#TemplateName {
+    color: #e0e0e0;
+    font-size: 12px;
+    font-weight: 600;
+}
+#TemplateRes {
+    color: #8a8a92;
+    font-size: 11px;
+}
+#TemplateDesc {
+    color: #8a8a92;
+    font-size: 10px;
+}
+#ViewToggleBtn {
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+#ViewToggleBtn:hover {
+    background-color: #2a2a30;
+}
+#SortLabel {
+    color: #8a8a92;
+    font-size: 12px;
+    padding: 6px 12px;
+    background-color: transparent;
+    border: 1px solid #35353d;
+    border-radius: 8px;
+}
+#SortLabel:hover {
+    border-color: #40E0D0;
+    color: #e0e0e0;
+}
+#EmptyState {
+    background-color: transparent;
+}
+#EmptyIcon {
+    background-color: transparent;
+}
+#EmptyTitle {
+    color: #e0e0e0;
+    font-size: 16px;
+    font-weight: 600;
+}
+#EmptyDesc {
+    color: #8a8a92;
+    font-size: 13px;
+}
+#RecentProjectCard {
+    background-color: #1e1e24;
+    border: 1.5px solid #2a2a30;
+    border-radius: 12px;
+}
+#RecentProjectCard:hover {
+    border: 1.5px solid #40E0D0;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #222228, stop:1 #1e1e24);
+}
+#ThumbContainer {
+    background-color: #2a2a30;
+    border-radius: 12px 12px 0 0;
+}
+#ThumbLabel {
+    background-color: transparent;
+}
+#CardInfo {
+    background-color: transparent;
+    border-radius: 0 0 12px 12px;
+}
+#ProjectName {
+    color: #e0e0e0;
+    font-size: 13px;
+    font-weight: 600;
+}
+#ProjectTime {
+    color: #8a8a92;
+    font-size: 11px;
+}
+#RecentScrollArea {
+    background-color: transparent;
+    border: none;
+}
+#RecentScrollArea QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 4px;
+}
+#RecentScrollArea QScrollBar::handle:vertical {
+    background: #35353d;
+    border-radius: 4px;
+    min-height: 30px;
+}
+#RecentScrollArea QScrollBar::handle:vertical:hover {
+    background: #4a4a54;
+}
+#RecentContainer {
+    background-color: transparent;
+}
+
+/* ---------- Context Menu ---------- */
+QMenu {
+    background-color: #1e1e24;
+    border: 1px solid #2a2a30;
+    border-radius: 10px;
+    padding: 6px 0;
+}
+QMenu::item {
+    color: #e0e0e0;
+    padding: 8px 24px 8px 16px;
+    margin: 2px 6px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+QMenu::item:selected {
+    background-color: #2f2f36;
+    color: #ffffff;
+}
+QMenu::separator {
+    height: 1px;
+    background-color: #2a2a30;
+    margin: 4px 12px;
+}

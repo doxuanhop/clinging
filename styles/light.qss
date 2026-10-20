@@ -1,0 +1,194 @@
+/* ============================================================
+   CLINQING - LIGHT THEME (QSS)
+   ============================================================ */
+
+* {
+    outline: none;
+    font-family: "Segoe UI", "Inter", "Roboto", sans-serif;
+}
+
+QWidget {
+    background-color: transparent;
+    color: #1C1D22;
+    font-size: 13px;
+}
+
+QMainWindow, #RootWindow {
+    background-color: #F3F4F8;
+}
+
+#TitleBar {
+    background-color: #FFFFFF;
+    border-bottom: 1px solid #E4E6EE;
+}
+#TitleBarLabel { color: #5B5E6B; font-size: 12px; }
+#TitleBtn {
+    background: transparent; border: none; border-radius: 4px;
+    color: #6E7180; font-size: 14px;
+}
+#TitleBtn:hover { background-color: #EEEFF5; color: #1C1D22; }
+#TitleBtnClose:hover { background-color: #E5484D; color: #FFFFFF; }
+
+#TopToolbar { background-color: #FFFFFF; border-bottom: 1px solid #E4E6EE; }
+#LogoBadge { color: #2C7D73; font-size: 20px; font-weight: 700; }
+#AppName { color: #14151A; font-size: 16px; font-weight: 600; }
+#VersionBadge {
+    background-color: #EFE9FF; color: #2C7D73; border-radius: 8px;
+    padding: 2px 8px; font-size: 11px; font-weight: 600;
+}
+#ProjectLabel { color: #4A4D5A; font-size: 13px; padding: 4px 6px; }
+#IconGhostBtn {
+    background-color: transparent; border: 1px solid transparent;
+    border-radius: 8px; color: #4A4D5A; padding: 6px;
+}
+#IconGhostBtn:hover { background-color: #F1F2F7; border: 1px solid #E4E6EE; }
+#SaveButton {
+    background-color: #F5F6FA; border: 1px solid #E4E6EE; border-radius: 9px;
+    color: #1C1D22; padding: 8px 16px; font-weight: 600;
+}
+#SaveButton:hover { background-color: #ECEDF3; }
+#ExportButton {
+    background-color: #2C7D73; border: none; border-radius: 9px 0 0 9px;
+    color: white; padding: 8px 18px; font-weight: 700;
+}
+#ExportButton:hover { background-color: #368F83; }
+#ExportDropdown {
+    background-color: #2C7D73; border: none;
+    border-left: 1px solid rgba(255,255,255,0.35);
+    border-radius: 0 9px 9px 0; color: white; padding: 8px 10px; font-weight: 700;
+}
+#ExportDropdown:hover { background-color: #368F83; }
+
+#Sidebar { background-color: #FAFAFD; border-right: 1px solid #E4E6EE; }
+#SidebarButton {
+    background-color: transparent; border: none; border-radius: 12px;
+    color: #6E7180; padding: 8px 4px; font-size: 11px;
+}
+#SidebarButton:hover { background-color: #F1F2F7; color: #1C1D22; }
+#SidebarButton:checked { background-color: #EFE9FF; color: #2C7D73; }
+
+#LibraryPanel { background-color: #FFFFFF; border-right: 1px solid #E4E6EE; }
+#PanelTitle { color: #14151A; font-size: 13px; font-weight: 700; letter-spacing: 0.5px; }
+QPushButton#LibTab {
+    background: transparent; border: none; color: #8A8D98;
+    padding: 6px 1px; font-weight: 600; font-size: 12px;
+}
+QPushButton#LibTab:hover { color: #1C1D22; }
+QPushButton#LibTab:checked { color: #14151A; }
+#TabUnderline { background-color: #2C7D73; border-radius: 2px; }
+#TabTrack { background-color: #E7E8EE; border-radius: 2px; }
+#SearchBox {
+    background-color: #F5F6FA; border: 1px solid #E4E6EE; border-radius: 10px;
+    padding: 8px 10px; color: #1C1D22;
+}
+#SearchBox[focused="true"] { border: 1px solid #2C7D73; }
+#SearchIcon { color: #9297A6; font-size: 12px; background: transparent; }
+#SearchInput { background: transparent; border: none; color: #1C1D22; font-size: 13px; }
+#PrimaryPillButton {
+    background-color: #2C7D73; border: none; border-radius: 20px;
+    color: white; padding: 8px 20px; font-weight: 700;
+}
+#PrimaryPillButton:hover { background-color: #368F83; }
+#LibFolderIcon { font-size: 46px; color: #C3C6D2; background: transparent; }
+#ZoomCombo {
+    background-color: #FFFFFF; border: 1px solid #E4E6EE; border-radius: 8px;
+    padding: 6px 10px; color: #1C1D22; font-weight: 600;
+}
+#FilterBtn {
+    background-color: #F5F6FA; border: 1px solid #E4E6EE; border-radius: 10px;
+    color: #4A4D5A;
+}
+#FilterBtn:hover { border: 1px solid #2C7D73; color: #14151A; }
+#ResourceCard { background-color: #FAFAFD; border: 1px solid #E4E6EE; border-radius: 12px; }
+#ResourceCard:hover { border: 1px solid #2C7D73; }
+#ResourceCardIcon {
+    background-color: #EFE9FF; border-radius: 10px; color: #2C7D73; font-size: 20px;
+}
+#ResourceCardLabel { color: #4A4D5A; font-size: 11px; }
+#UploadCard {
+    background-color: #FBFBFD; border: 1.5px dashed #D8DAE4; border-radius: 12px; color: #9297A6;
+}
+#UploadCard:hover { border: 1.5px dashed #2C7D73; color: #2C7D73; }
+
+#PreviewPanel { background-color: #EDEEF4; }
+#RatioCombo {
+    background-color: #FFFFFF; border: 1px solid #E4E6EE; border-radius: 8px;
+    padding: 6px 10px; color: #1C1D22; font-weight: 600;
+}
+#ZoomLabel {
+    background-color: #FFFFFF; border: 1px solid #E4E6EE; border-radius: 8px;
+    padding: 6px 10px; color: #4A4D5A;
+}
+#PreviewCanvas { background-color: #FFFFFF; border: 2px dashed #CDD0DC; border-radius: 18px; }
+#PreviewCanvas[dragActive="true"] { border: 2px dashed #40E0D0; background-color: #F6F3FF; }
+#PreviewHint { color: #8A8D98; font-size: 14px; }
+#PreviewIconCircle {
+    background-color: #EFE9FF; border-radius: 42px; color: #2C7D73; font-size: 30px;
+}
+#PlaybackBtn {
+    background-color: #FFFFFF; border: 1px solid #E4E6EE; border-radius: 10px;
+    color: #4A4D5A; font-size: 15px;
+}
+#PlaybackBtn:hover { border: 1px solid #2C7D73; color: #14151A; }
+#PlayBtnMain { background-color: #2C7D73; border: none; border-radius: 26px; color: white; font-size: 18px; }
+#PlayBtnMain:hover { background-color: #368F83; }
+
+#PropertiesPanel { background-color: #FFFFFF; border-left: 1px solid #E4E6EE; }
+#PropTitle { color: #14151A; font-size: 14px; font-weight: 700; }
+QPushButton#PropTab {
+    background: transparent; border: none; color: #8A8D98;
+    padding: 6px 2px; font-weight: 700; font-size: 12px; letter-spacing: 0.5px;
+}
+QPushButton#PropTab:checked { color: #14151A; }
+#EmptyIconCircle { background-color: #F1F2F7; border-radius: 40px; color: #9297A6; font-size: 26px; }
+#EmptyTitle { color: #1C1D22; font-size: 15px; font-weight: 600; }
+#EmptyDesc { color: #9297A6; font-size: 12px; }
+
+#TimelinePanel { background-color: #FFFFFF; border-top: 1px solid #E4E6EE; }
+#TimelineTitle { color: #14151A; font-size: 13px; font-weight: 700; }
+#BetaBadge {
+    background-color: #EFE9FF; color: #2C7D73; border-radius: 6px;
+    padding: 1px 6px; font-size: 10px; font-weight: 700;
+}
+#TimelineSubtitle { color: #9297A6; font-size: 11px; }
+#TimelineIconBtn {
+    background-color: transparent; border: none; border-radius: 8px;
+    color: #6E7180; padding: 6px;
+}
+#TimelineIconBtn:hover { background-color: #F1F2F7; color: #14151A; }
+#TrackManagerBtn {
+    background-color: #F5F6FA; border: 1px solid #E4E6EE; border-radius: 8px;
+    color: #1C1D22; padding: 6px 12px;
+}
+#TrackManagerBtn:hover { border: 1px solid #2C7D73; }
+#InfoBanner {
+    background-color: #F8F8FB; border: 1px solid #ECEDF3; border-radius: 8px;
+    color: #8A8D98; font-size: 11px; padding: 6px 10px;
+}
+#TimeRuler { background-color: #FAFAFD; border-top: 1px solid #E4E6EE; border-bottom: 1px solid #E4E6EE; }
+#TracksArea { background-color: #FAFAFD; }
+#DropZone {
+    background-color: #FBFBFD; border: 1.5px dashed #D8DAE4; border-radius: 12px; color: #9297A6;
+}
+#DropZone:hover { border: 1.5px dashed #2C7D73; }
+#DropZoneIcon { background-color: #EFE9FF; border-radius: 20px; color: #2C7D73; font-size: 18px; }
+#TimeCounter { color: #2196C9; font-size: 12px; font-weight: 600; font-family: "Consolas", monospace; }
+#TimeCounterMuted { color: #B5B8C4; font-size: 12px; font-family: "Consolas", monospace; }
+
+QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+QScrollBar::handle:vertical { background: #D8DAE4; border-radius: 5px; min-height: 24px; }
+QScrollBar::handle:vertical:hover { background: #C3C6D2; }
+QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
+QScrollBar::handle:horizontal { background: #D8DAE4; border-radius: 5px; min-width: 24px; }
+QScrollBar::add-line, QScrollBar::sub-line { width:0; height:0; }
+
+QToolTip {
+    background-color: #1C1D22; color: #F5F6FA; border: 1px solid #2A2C38;
+    padding: 4px 8px; border-radius: 6px;
+}
+
+QSlider::groove:horizontal { background: #E4E6EE; height: 4px; border-radius: 2px; }
+QSlider::handle:horizontal {
+    background: #2C7D73; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px;
+}
+QSlider::sub-page:horizontal { background: #2C7D73; border-radius: 2px; }

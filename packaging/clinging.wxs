@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Clinging - ban dong goi MSI (Windows Installer), song song voi clinging.iss.
+
+  Cach build: python packaging\make_msi.py
+      heat dir dist\Clinging  ->  build\msi\files.wxs
+      candle + light          ->  build\installer\ClingingSetup-<version>.msi
+
+  VI SAO LA MSI RIENG, KHONG PHAI .EXE cua Inno: mot file .msi cai bang
+  `msiexec /i` (ke ca phan phoi qua GPO/SCCM) va Windows tu quan ly vong doi
+  product, khong can trinh chay tro.
+
+  VI SAO PER-USER (InstallScope=perUser + InstallPrivileges=limited):
+  giong het sach Inno `PrivilegesRequired=lowest`. Toan bo duong dan la thu muc
+  trong profile (LocalAppDataFolder / ProgramMenuFolder / DesktopFolder) va moi
+  khoa registry la HKCU, nen khong UAC va khong vi pham ICE80/ICE57.
+  Doi voi may: `msiexec /i x.msi ALLUSERS=1` se bi tu choi vi Package khong khai
+  bao `both` - co tinh, de ban chay tren may khong co quyen admin.
+
+  LUU Y VE HAI LOAI INSTALLER CUNG MUC TIEU: MSI chi theo doi 404 file do
+  chinh no ghi ra. Nhung file ma ban Inno de lai trong cung thu muc se khong bi
+  MSI xoa. Vi vay khi chuyen tu ban Inno sang ban MSI phai go ban Inno truoc
+  (Add/Remove Programs), khong cai de len nhau.
+
+  Ba phep kiem ICE danh rieng cho package per-user (ICE38/ICE64/ICE91) bi tat
+  trong make_msi.py, co ly do ghi day du o do. ICE80/ICE57 van bat: thu muc va
+  khoa registry cua ban nay that su nam trong profile.
+
+  String hien thi trong MSI phai ASCII: package dung codepage 1252 (Language
+  1033), dau tieng Viet bi mat khi dong goi. Comment XML thi UTF-8 thoai mai.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Clinging" Language="1033"
+           Version="$(var.AppVersion)" Manufacturer="Qeafivels Software"
+           UpgradeCode="{322A4294-D740-42B3-9414-555BA07FDB88}">
+
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"
+             InstallPrivileges="limited" Platform="x64"
+             Description="Clinging video editor"
+             Comments="Installs Clinging for the current user only." />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- KHONG duoc publish `ALLUSERS`: WiX 3.11 ghi gia tri "{}" cua
+         Property/@Value thang thanh chu nghia den, va Windows Installer doi mot
+         ALLUSERS khong rong thanh `1` -> chuyen sang cai per-machine, chay
+         trong dich vu LocalSystem va that bai voi Error 1925 ("sufficient
+         privileges to complete this installation for all users"). Do la thu da
+         do cua lan cai dau tien. Package khai bao InstallScope=perUser thi mac
+         dinh da la per-user; chi can MSIINSTALLPERUSER de shell khong doi UAC. -->
+    <Property Id="MSIINSTALLPERUSER" Value="1" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <Property Id="ARPCONTACT" Value="dxhop96@gmail.com" />
+
+    <MajorUpgrade AllowDowngrades="no"
+                  DowngradeErrorMessage="A newer version of Clinging is already installed." />
+
+    <Icon Id="AppIcon.ico" SourceFile="$(var.IconPath)" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="PROGRAMSFOLDER" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="Clinging" />
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="STARTMENUAPPFOLDER" Name="Clinging" />
+      </Directory>
+      <Directory Id="DesktopFolder" Name="Desktop" />
+    </Directory>
+
+    <!-- Shortcut: moi thu muc dich la thu muc trong profile (ICE80 yeu cau
+         package perUser khong dung thu muc may). -->
+    <ComponentGroup Id="ClingingShortcuts">
+      <Component Id="CMP_StartMenuShortcut" Directory="STARTMENUAPPFOLDER"
+                 Guid="*">
+        <Shortcut Id="LNK_StartMenu" Name="Clinging"
+                  Target="[INSTALLFOLDER]Clinging.exe"
+                  WorkingDirectory="INSTALLFOLDER" Icon="AppIcon.ico" />
+        <RegistryValue Root="HKCU" Key="Software\Qeafivels\Clinging"
+                       Name="StartMenuShortcut" Type="integer" Value="1"
+                       KeyPath="yes" />
+      </Component>
+      <Component Id="CMP_DesktopShortcut" Guid="*" Directory="DesktopFolder">
+        <Shortcut Id="LNK_Desktop" Name="Clinging"
+                  Target="[INSTALLFOLDER]Clinging.exe"
+                  WorkingDirectory="INSTALLFOLDER" Icon="AppIcon.ico" />
+        <RegistryValue Root="HKCU" Key="Software\Qeafivels\Clinging"
+                       Name="DesktopShortcut" Type="integer" Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Nhap kep file .clinq phai vao thang cua dung phim, giong [Registry]
+         trong clinging.iss: HKCU\Software\Classes (khong phai HKCR) vi per-user
+         write HKCR bi tu choi va keo theo rollback. -->
+    <ComponentGroup Id="ClingingRegistry" Directory="INSTALLFOLDER">
+      <Component Id="CMP_ClinqExtension" Guid="*">
+        <RegistryKey Root="HKCU" Key="Software\Classes\.clinq">
+          <RegistryValue Value="Clinging.Project" Type="string" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+      <Component Id="CMP_ClinqProgId" Guid="*">
+        <RegistryKey Root="HKCU" Key="Software\Classes\Clinging.Project">
+          <RegistryValue Value="Clinging Project" Type="string" KeyPath="yes" />
+          <RegistryKey Key="DefaultIcon">
+            <RegistryValue Value="[INSTALLFOLDER]Clinging.exe,0" Type="string" />
+          </RegistryKey>
+          <RegistryKey Key="shell\open\command">
+            <RegistryValue Value="&quot;[INSTALLFOLDER]Clinging.exe&quot; &quot;%1&quot;"
+                           Type="string" />
+          </RegistryKey>
+        </RegistryKey>
+      </Component>
+
+      <!-- Add/Remove Programs: ban nay PHAI tu ghi. Do bang chung, khong phai
+           phong xa: lan cai per-user dau tien chay `msiexec /qn` va log cho thay
+           MSI xoa MSIINSTALLPERUSER, RegisterProduct tra ve 1, nhung khong co
+           key Clinging nao xuat hien o HKCU, HKLM lan hive S-1-5-18. Nghia la
+           Windows Installer khong tu dang ki ARP cho package nay va nguoi dung
+           mat nut go trong Settings. Ghi thu cong vung HKCU cung noi ma cac
+           component khac da ghi, nen uninstall don no nhu moi vet khac. -->
+      <Component Id="CMP_ArpRegistration" Guid="*">
+        <RegistryKey Root="HKCU"
+                     Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\[ProductCode]">
+          <RegistryValue Name="DisplayName" Value="Clinging" Type="string"
+                         KeyPath="yes" />
+          <RegistryValue Name="DisplayVersion" Value="$(var.AppVersion)"
+                         Type="string" />
+          <RegistryValue Name="Publisher" Value="Qeafivels Software"
+                         Type="string" />
+          <RegistryValue Name="Contact" Value="dxhop96@gmail.com"
+                         Type="string" />
+          <RegistryValue Name="InstallLocation" Value="[INSTALLFOLDER]"
+                         Type="string" />
+          <RegistryValue Name="InstallSource" Value="[SOURCEDIR]"
+                         Type="string" />
+          <RegistryValue Name="DisplayIcon" Value="[INSTALLFOLDER]Clinging.exe"
+                         Type="string" />
+          <RegistryValue Name="UninstallString"
+                         Value="msiexec.exe /x [ProductCode] /q"
+                         Type="string" />
+          <RegistryValue Name="QuietUninstallString"
+                         Value="msiexec.exe /x [ProductCode] /qn"
+                         Type="string" />
+          <RegistryValue Name="WindowsInstaller" Value="1" Type="integer" />
+          <RegistryValue Name="NoModify" Value="1" Type="integer" />
+          <RegistryValue Name="NoRepair" Value="1" Type="integer" />
+          <RegistryValue Name="EstimatedSize" Value="$(var.EstimatedSizeKb)"
+                         Type="integer" />
+        </RegistryKey>
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="ClingingFeature" Title="Clinging" Level="1"
+             Absent="disallow" AllowAdvertise="no"
+             ConfigurableDirectory="INSTALLFOLDER">
+      <ComponentGroupRef Id="ClingingFiles" />
+      <ComponentGroupRef Id="ClingingShortcuts" />
+      <ComponentGroupRef Id="ClingingRegistry" />
+    </Feature>
+
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <UIRef Id="WixUI_InstallDir" />
+  </Product>
+</Wix>
