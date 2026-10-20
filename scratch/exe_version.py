@@ -1,4 +1,4 @@
-"""Doc ban version cua mot .exe qua version.dll — dung API Explorer dung.
+"""Doc ban version cua mot .exe qua version.dll -- dung API Explorer dung.
 
     python scratch/exe_version.py [--expect 1.0.1] <duong-dan-exe> [...]
 
@@ -9,7 +9,7 @@ cho mot lan bump version.
 
 Vi sao phai liet ke VarFileInfo\Translation thay vi hardcode 040904b0: Inno Setup
 ghi ban string cua setup.exe duoi khoa 000004b0, nen khoa cu tra ve NULL cho moi
-truong. Gate cu in ra "None" het va van tra rc = 0 (None != None la False) — mot
+truong. Gate cu in ra "None" het va van tra rc = 0 (None != None la False) -- mot
 gate luon xanh thi khong dung lam canh. Nay thi thong tin version thieu la do
 rieng, va --expect bien mot lan bump thanh mot su that do duoc.
 """
@@ -81,7 +81,7 @@ def read(path):
             p = ctypes.c_void_p()
             l = ctypes.wintypes.UINT()
             if v.VerQueryValueW(buf, key + name, ctypes.byref(p), ctypes.byref(l)):
-                # Inso pad moi String den chieu dai toi da cua bang (FileVersion
+                # Inno pad moi String den chieu dai toi da cua bang (FileVersion
                 # cua setup.exe la 20 ky tu trang hoan toan), nen phai rstrip
                 # truoc khi so sanh - neu khong thi "--expect" luon do sai.
                 val = ctypes.wstring_at(p.value).rstrip()
