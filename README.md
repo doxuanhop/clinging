@@ -14,7 +14,9 @@ layer âm thanh từng clip). Tài liệu đang đúng:
   phản chứng, ảnh chứng minh, đọc rc thật.
 - `docs/glyph-icons.md` — bộ vẽ icon Font Awesome cục bộ (đã thay qtawesome) và
   các cổng đi kèm.
-- `docs/release-1.0.1.md` — bản cài đặt, SHA-256, trạng thái artifact so với nguồn.
+- `docs/release-1.0.2.md` — bản cài đặt đang phát hành: SHA-256, thay đổi so với 1.0.1.
+- `docs/release-1.0.1.md` — bản 1.0.1 (bundle còn qtawesome) và bài học "cùng tên,
+  khác payload".
 - `docs/import_project.md` — định dạng file dự án `.clinq` và đường nhập dự án.
 
 Chạy thử:

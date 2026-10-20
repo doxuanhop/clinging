@@ -92,14 +92,17 @@ nhưng không một pixel nào. Đừng bao giờ gate bằng `isNull()`.
 Ảnh chứng minh: `scratch/icon_parity.png` (ta vs qtawesome, cùng tên cùng cỡ),
 `scratch/icon_sheet.png`, `scratch/fonticon_{home,editor,toolbar,dialog,menu,...}.png`.
 
-## Trạng thái artifact (2026-10-20)
+## Trạng thái artifact (2026-10-20, chốt cho 1.0.2)
 
-`dist\Clinging` và hai installer vẫn mang bản **trước** hai sửa đổi nhỏ ở nguồn:
-xóa một dòng `import QPainter` thừa (vo nghia — đã chứng minh bằng SHA-256 trên
-byte RGBA của 1402 tên × 16/24/32 px, cùng dấu `dd4ab2c944327ae2` hai bên) và thêm
-dòng kiểm tên sớm (chỉ đổi đường lỗi). Nghĩa là không có gì nhìn khác nhau trong
-bản đã phát hành, nhưng **đường báo lỗi chỉ tồn tại trong nguồn cho tới lần dựng
- lại**. Release v1.0.1 trên GitHub vẫn là bundle chứa qtawesome.
+`dist\Clinging` và hai installer 1.0.2 **đã mang đúng nguồn hiện tại**: không còn
+qtawesome trong payload (bảng File của MSI đọc ngược ra từ file `.msi`, đối từng
+tên với `dist` — `scratch/msi_payload_check.py`), icon do `widgets/fontawesome.py`
+vẽ từ TTF, và đường báo lỗi tên glyph sớm cũng nằm trong bundle. Hai sửa đổi nguồn
+làm sau bản 1.0.1 local (xóa một dòng `import QPainter` thừa — vo nghia, đã chứng
+minh bằng SHA-256 trên byte RGBA của 1402 tên × 16/24/32 px, cùng dấu
+`dd4ab2c944327ae2` hai bên; và thêm dòng kiểm tên sớm) nay đã được dựng thật.
+Release v1.0.1 trên GitHub vẫn là bundle chứa qtawesome; bản không-có-qtawesome đầu
+tiên phát hành là v1.0.2.
 
 ## Liên quan
 

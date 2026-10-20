@@ -27,9 +27,12 @@ cặp local mang **đúng tên đó nhưng byte khác**:
 | `ClingingSetup-1.0.1.exe` | 141.088.365 B | `ec3c3716e37b2cf410e35a31ba6bc3482e79b2c2c934be1acf88d6fceca888aa` |
 | `ClingingSetup-1.0.1.msi` | 160.634.393 B | `ab5cc8000a684bd93b303138abadbed7f5ea85a2c7ed581267e36eb9bf0c503f` |
 
-Hai bản local này **chưa** được đẩy lên Release, và vẫn chậm nguồn đúng một sửa đổi
-(kiểm tra tên glyph sớm, `widgets/fontawesome.py:191` — chỉ ảnh hưởng đường báo lỗi,
-không đổi pixel). Quy tắc: không sửa bảng trên khi asset chưa thực sự thay lên
+Hai bản local này **không bao giờ** được đẩy lên Release: chiều cùng ngày toàn bộ
+sửa đổi sau mốc đó (bỏ qtawesome, kiểm tên glyph sớm ở `widgets/fontawesome.py`,
+MRU chỉ đọc) được đóng gói thành **1.0.2** và phát hành ở `docs/release-1.0.2.md`.
+Bản 1.0.2 vẫn chậm hơn bản 1.0.1 local đúng một sửa đổi nhỏ nữa — cặp local này vì
+thế không còn giá trị phát hành, chỉ còn là bằng chứng cho quy tắc bên dưới.
+Quy tắc: không sửa bảng trên khi asset chưa thực sự thay lên
 GitHub, và không tin tên file — cùng tên `1.0.1` là hai payload khác nhau, chỉ
 SHA-256 phân biệt được.
 

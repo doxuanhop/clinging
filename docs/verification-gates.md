@@ -100,6 +100,12 @@ python scratch/gate_discrimination_probe.py
 # 5) Chụp lại rồi diff: phải ra 0 THEM / 0 MAT / 0 DOI
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json
 python scratch/user_data_snapshot.py diff scratch/_snap_before.json scratch/_snap_after.json
+
+# 6) Chỉ khi phát hành: metadata PE/MSI đọc từ chính file tải về, và payload
+#    MSI đối chiếu từng tên file với dist (KHONG can cai dat)
+python scratch/release_meta.py build/installer/ClingingSetup-<ver>.msi \
+                               build/installer/ClingingSetup-<ver>.exe
+python scratch/msi_payload_check.py
 ```
 
 Nguồn không được sandbox `APPDATA`: `site-packages` của user trên máy này nằm ở
