@@ -104,7 +104,16 @@ minh bằng SHA-256 trên byte RGBA của 1402 tên × 16/24/32 px, cùng dấu
 Release v1.0.1 trên GitHub vẫn là bundle chứa qtawesome; bản không-có-qtawesome đầu
 tiên phát hành là v1.0.2.
 
+**Kiểm lại ngày 2026-10-21 cho bundle 1.0.3** (`dist\Clinging` 362 file, đã dựng lại
+từ nguồn có bốn nhóm A/B/C/D): `scratch/msi_payload_check.py` 10/10 PASS — bảng File
+của `ClingingSetup-1.0.3.msi` khớp từng tên với cây `dist`, payload có
+`fontawesome6-solid-6.7.2.ttf` + `fontawesome6-solid-charmap.json` và **không** có
+`qtawesome`; `scratch/installed_app_probe.py` chạy trên bản đã cài còn do thêm
+`_internal\assets\icons\LICENSE.txt` tồn tại và dòng selftest `font icon` vẽ ra pixel
+thật. Không có thay đổi nào cho bộ glyph từ 1.0.2, nên các số đo ở mục trên vẫn đúng.
+
 ## Liên quan
 
 - `docs/verification-gates.md` — quy tắc gate / phản chứng / ảnh / rc.
 - `docs/release-1.0.1.md` — đường dựng và cách xác minh artifact đã cài.
+- `docs/release-1.0.3.md` — bản phát hành gần nhất và hai installer đã kiểm.

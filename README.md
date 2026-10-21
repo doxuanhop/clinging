@@ -5,16 +5,21 @@ bạn cung cấp, viết bằng **PySide6** (Qt for Python).
 
 ## 0. Tài liệu hiện hành
 
-Các mục 3–6 bên dưới mô tả thời kỳ dựng skeleton UI và **đã cũ**: ứng dụng hiện
-chạy engine video thật (giải mã tuần tự, xuất MP4 qua ffmpeg, ASR, chuyển cảnh,
-layer âm thanh từng clip). Tài liệu đang đúng:
+Các mục 3–6 bên dưới mô tả thời kỳ dựng skeleton UI và **đã cũ**: ứng dụng hiện chạy
+engine video thật — giải mã tuần tự + cache ảnh/sóng ra đĩa, xuất MP4 qua ffmpeg kèm
+layer âm thanh từng clip, ASR tự làm phụ đề, chuyển cảnh, đồ thị đường cong keyframe,
+cắt file hàng loạt, trích thumbnail hàng loạt, lớp phủ recap, karaoke, aura, chỉnh màu
+và style chữ. Tài liệu đang đúng:
 
 - `AGENTS.md` — hợp đồng làm việc trong repo: ràng buộc, lệnh, bẫy của máy build.
 - `docs/verification-gates.md` — thế nào là "xong": gate trên đường production,
   phản chứng, ảnh chứng minh, đọc rc thật.
 - `docs/glyph-icons.md` — bộ vẽ icon Font Awesome cục bộ (đã thay qtawesome) và
   các cổng đi kèm.
-- `docs/release-1.0.2.md` — bản cài đặt đang phát hành: SHA-256, thay đổi so với 1.0.1.
+- `CHANGELOG.md` — mục lục các nhóm tính năng theo từng bản.
+- `docs/release-1.0.3.md` — bản cài đặt đang phát hành: SHA-256, bốn nhóm A/B/C/D so
+  với 1.0.2, và bẫy `INSTALLFOLDER` khi cài bản `.msi`.
+- `docs/release-1.0.2.md` — bản 1.0.2 (qtawesome ra khỏi bundle, boot 0,84–0,95 s).
 - `docs/release-1.0.1.md` — bản 1.0.1 (bundle còn qtawesome) và bài học "cùng tên,
   khác payload".
 - `docs/import_project.md` — định dạng file dự án `.clinq` và đường nhập dự án.
@@ -23,7 +28,7 @@ Chạy thử:
 
 ```bash
 python main.py                                  # mo app
-python main.py --selftest --report st.json      # 28 dong cong, xem key "failed"
+python main.py --selftest --report st.json      # 34 dong cong, xem key "failed"
 python scratch/icon_name_audit.py               # ten glyph dung trong UI
 ```
 
