@@ -150,6 +150,11 @@ python scratch/chroma_key_evidence.py             # -> 54 OK / 0 FAIL
 python scratch/chroma_cost_probe.py               # -> 16 OK / 0 FAIL: chi phi/frame
                                                   # qua composer that, do xen ke 1 vong
 
+# 4i) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
+#     chung (lat _internal/styles, an core/ cua tree nguon) + do boot
+python scratch/frozen_bundle_probe.py             # -> ALL PASS (0 fail), rc=0
+dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json
+
 # 5) Chụp lại rồi diff: phải ra 0 THEM / 0 MAT / 0 DOI
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json
 python scratch/user_data_snapshot.py diff scratch/_snap_before.json scratch/_snap_after.json
@@ -511,6 +516,38 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
   (`Kiem karaoke` 5, `Kiem recap` 1) — vòng quay keep-5 của ảnh phục hồi, không
   phải mất dữ liệu: `DOI: 0` và tổng số file không đổi.
 
+**Xác minh bản đóng gói (bundle `dist\Clinging`, dựng lại từ đúng tree chroma).**
+`Clinging.exe` 6.911.780 B (bản 1.0.3 là 6.890.990 B), dựng bằng
+`python -m PyInstaller ClingingQt.spec --noconfirm`, log `scratch/pyinstaller_chroma.log`,
+`Build complete` sau 204 s.
+
+* `scratch/frozen_bundle_probe.py`: **ALL PASS, 0 fail, rc=0, 40,2 s** — trong đó
+  selftest chạy **bên trong exe đóng gói** là 35 dòng, `failed = []`, `frozen = True`,
+  `_MEIPASS` trỏ vào `dist\Clinging\_internal` (85 entry), và dòng chroma OK với
+  `matte 256 px (lech 0.0000 so voi do day du tai 640x360)` — tức cv2 5.0.0 có mặt
+  trong PYZ và cạnh thu nhỏ matte chạy thật trong bundle, không chỉ ở tree nguồn.
+* Hai phản chứng của bundle: (1) lật `_internal\styles` → selftest `rc=1` và đúng
+  mục fail `styles/*.qss + theme`; (2) **đổi tên `core/` của tree nguồn** trong lúc
+  exe chạy → selftest vẫn `rc=0`, `failed = []`, dòng chroma vẫn OK và **chi tiết
+  giống baseline từng byte**. Đó là bằng chứng code đến từ PYZ chứ không vay từ
+  `D:\Programming\clinging\core`; thư mục được trả lại trong `finally` và
+  `git status` sạch sau phép thử.
+* Boot của bundle (hai lần, `--startup-report`): **0,58 s** và **0,55 s** tới lúc
+  cửa sổ lộ, working set 61,8–62,0 MB lúc `MainController()` xong, 68,8 MB lúc cửa
+  sổ hiện, 82,3–82,6 MB lúc ngắm; tám check của báo cáo đều `true`
+  (`cua_so_lo`, `tem_ram_con_song`, `dong_ho_phan_biet`, `boot_khong_cv2`,
+  `boot_khong_keo_trang_dung`, `boot_khong_psutil`, `bia_duoc_ve`, `anh_chung_minh`).
+  Không so được với `scratch/dist_startup_final.json` (1,42 s / 102 MB) vì baseline
+  đó dựng trước khi bỏ qtawesome — chỉ kết luận được là chroma không thêm gì vào
+  đường boot: không import mới, và `control.cv2_da_nap_luc_boot = false`.
+  Ảnh `scratch/dist_startup_chroma2.png` đã mở ra xem: Home đủ chữ, icon Font
+  Awesome không tofu, hai bìa dự án gần đây được vẽ, monitor CPU/RAM/GPU sống.
+* Snapshot quanh ba lần selftest trong bundle + hai lần boot: **1774 → 1774 file,
+  `THEM: 10 / MAT: 10 / DOI: 0`** — mười thêm và mười mất đều là ảnh phục hồi
+  keep-5 của đúng hai fixture selftest (`Kiem karaoke`, `Kiem recap`).
+* **Chưa** dựng lại installer, **chưa** cài đè, **chưa** đụng Release: chroma key
+  mới tồn tại ở tree nguồn + bundle local, chờ duyệt phát hành.
+
 ---
 
 ## Thất bại đã ghi (để không lặp)
@@ -528,6 +565,9 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
 | Phản chứng đỏ **mà source không đổi gì** | Gate assert `rc == 3221226505`, trong khi Qt-abort lần ra 0xC0000409 lần ra rc=1 (đo 6 lần: 2 abort / 1 rc=1 cho cùng một đầu vào) | Bất biến phải là nội dung log (`Error calling Python override of ...`), mã exit chỉ in ra để đọc — assert trên TẬP {1, 0xC0000409} |
 | `chroma_cost_probe` FAIL `thue bo sung <= 22.0 ms/frame` dù code đã nhanh hết mức | Ngưỡng bịa từ chi phí bộ lọc thuần, quên rằng MỌI thẻ pixel phải trả round-trip QImage→numpy→QImage (65-85 ms/frame lúc 720p) trước khi phép lọc chạy | So thẻ mới với thẻ ĐÃ SHIP chạy qua cùng composer (ngưỡng tương đối) và đặt ngưỡng tuyệt đối chỉ trên hàm toán thuần |
 | Hai phép phản chứng đầu tiên của chroma đỏ vì đúng lý do nhưng SAI dòng | Cạnh 640×360 mới thêm đặt TRƯỚC các assertion QImage cũ nên nó nuốt lỗi của phép thử khác | Mỗi phép đổi byte phải chỉ làm đỏ CỬA CỦA NÓ — đặt assertion mới SAU các assertion đã tồn tại trong cùng giai đoạn, rồi chạy lại 19/19 |
+| `frozen_bundle_probe.py` chết giữa bảng, `UnicodeEncodeError: 'charmap' codec` ở dòng in `row["detail"]` | Probe in chi tiết selftest có dấu ("Trang chủ 5 nut/1 menu…") ra console cp1252, và bảng dừng ở dòng 12/35 — hai đoạn counterfactual phía sau KHÔNG chạy mà vẫn có người tưởng probe đã xong | Probe nào in bảng cũng phải `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` ở đầu file; rc của probe phải đọc bằng `subprocess.run`, không đọc bằng mắt |
+| Cửa `bundle khong kem ffmpeg/ffprobe` FAIL trên một bundle đúng | Check viết từ 1.0.1 khi app gọi ffmpeg bản PATH; `ClingingQt.spec` nay đóng cả cặp vào `_internal/tools` nên "không kèm" là sai hợp đồng | Cửa "có/không tài nguyên" phải lấy spec + `dist` làm chuẩn và so **từng file với bản trên đĩa** (102.856.192 B / 102.652.416 B), không so với hằng số hay với trí nhớ |
+| `--selftest` xanh nhưng stdout in `Loi luu du an: Object of type QColor is not JSON serializable` | Đó là fixture cố ý của dòng `luu du an atomic` (`diagnostics.py:523` đưa payload không serialize được để chứng minh file thật không bị chạm; `:535` ghi JSON cắt đôi cho đường đọc) | Trước khi gọi một dòng stdout "trông như lỗi" là regression, quy nó về ĐÚNG dòng: chạy từng hàm `_ok` trong subprocess riêng rồi xem dòng nào in ra |
 
 ## Liên quan
 

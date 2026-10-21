@@ -64,6 +64,9 @@ python scratch/chroma_cost_probe.py             # low-spec: duong tat 0 ms; thue
 python scratch/boot_low_spec_probe.py           # 5 vong xuyen tat: boot/WS/private + seam icon (may phai yen)
 python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
 python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile
+python scratch/frozen_bundle_probe.py           # gate TRONG exe dong goi: 35 dong + 2 phan chung
+                                                # (lat _internal/styles, an core/ cua tree nguon)
+dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json  # boot cua ban dong goi
 python scratch/user_data_snapshot.py capture scratch/_snap_before.json  # truoc khi do
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json   # sau khi do
 python scratch/user_data_snapshot.py diff scratch/_snap_before.json scratch/_snap_after.json
