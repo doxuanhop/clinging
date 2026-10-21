@@ -34,13 +34,13 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
 
 ```bash
 python main.py                                  # chay app binh thuong
-python main.py --selftest                       # 37 dong cong, bao JSON co "failed"
+python main.py --selftest                       # 38 dong cong, bao JSON co "failed"
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
 python scratch/icon_name_audit.py               # ten glyph + tham so tren toan bo nguon
 python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi dung ly do
-python scratch/boot_laziness_counterfactual.py  # phan chung: boot khong duoc keo trang dung phim/psutil
+python scratch/boot_laziness_counterfactual.py  # phan chung: boot khong duoc keo trang dung phim/psutil/hop thoai nen
 python scratch/save_atomic_counterfactual.py    # phan chung: 4 phep doi byte o duong luu du an
 python scratch/media_locator_counterfactual.py  # phan chung: 6 phep doi byte o chieu dinh vi media
 python scratch/save_atomic_evidence.py          # anh + JSON: ban cu duoc quay, lan ghi hong khong pha file
@@ -65,6 +65,9 @@ python scratch/detach_audio_counterfactual.py   # phan chung: 10 phep doi byte -
 python scratch/detach_audio_evidence.py         # anh + JSON: TimelineScene that, RMS wav do tu render_audio
 python scratch/trim_counterfactual.py           # phan chung: 12 phep doi byte -> the Cat in/out do dung ly do
 python scratch/trim_evidence.py                 # anh + JSON: FrameComposer 4 trang thai, wav do first_loud + RMS
+python scratch/compress_counterfactual.py       # phan chung: 17 phep doi byte -> cua nen tep do dung ly do
+python scratch/compress_evidence.py             # anh: menu card video -> hop thoai that, byte/atom do lan chay nay
+python scratch/compress_cost_probe.py           # do chi phi 10 cau hinh preset/codec tren ffmpeg dong goi
 python scratch/boot_low_spec_probe.py           # 5 vong xuyen tat: boot/WS/private + seam icon (may phai yen)
 python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
 python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile
@@ -129,6 +132,13 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
 - **Wall clock giữa hai lần chạy nói dối** trên HDD: cache drift, import bị hoist,
   layout shift khi icon rỗng đều bịa ra "tiết kiệm". Chỉ tin đồng hồ đặt trong
   `main._boot()` và control chạy cùng lần.
+- **Một cửa laziness chỉ chứng điều đúng tên nó nhìn.** `boot_khong_keo_trang_dung`
+  xanh KHÔNG nghĩa là boot sạch: đo 21/10/2026, kéo tay
+  `import ui.compress_dialog` lên đầu một module đường boot thì `ui.main_window`
+  vẫn vắng, hai cửa cũ vẫn xanh, mà boot chậm thêm **0,428 s** và RAM lúc cửa sổ
+  thêm 1 MiB. Tính năng mới có module riêng phải thêm cửa đo `sys.modules` trên
+  đúng tên module đó (`boot_khong_keo_nen`) rồi bắt nó đỏ bằng
+  `boot_laziness_counterfactual.py`.
 - **Mọi thẻ pixel đều trả phí round-trip, không chỉ phí bộ lọc.** Chuỗi chung
   `apply_color_effects` (QImage→numpy→proxy 640 px→QImage) tự nó ngốn 65–85
   ms/frame ở 720p/1080p — đo 21/10/2026 qua `FrameComposer`: không thẻ 30 ms,

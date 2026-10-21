@@ -1,17 +1,22 @@
-"""Phan chung cho hai cua moi cua `--startup-report`.
+"""Phan chung cho ba cua moi cua `--startup-report`.
 
     python scratch/boot_laziness_counterfactual.py
 
-Hai check `boot_khong_keo_trang_dung` va `boot_khong_psutil` xanh hom nay chua
-co nghia gi neu chung la loai luan luon xanh. Probe nay chay CUNG duong boot
-that (`main._boot` + `diagnostics.run_startup_report`) hai lan:
+Ba check `boot_khong_keo_trang_dung`, `boot_khong_psutil` va `boot_khong_keo_nen`
+xanh hom nay chua co nghia gi neu chung la loai luan luon xanh. Probe nay chay
+CUNG duong boot that (`main._boot` + `diagnostics.run_startup_report`) hai lan:
 
-  * SACH     — khong lam gi them: ca hai phai True, rc 0.
-  * DOC NHIEM — nap lai hai thu ma ban cu nap: `import ui.main_window` (dong
-    `from ui.main_window import MainWindow` o dau ui/main_controller.py) va
-    `system_stats.psutil_or_none()` (psutil bi keo vong khoi dong). Ca hai phai
-    False, rc 1, VA `boot_khong_cv2` van phai True — neu do red ca cv2 thi
-    phep thu da pha mot thu khac chu khong phai phan chung dieu can chung.
+  * SACH     — khong lam gi them: ca ba phai True, rc 0.
+  * DOC NHIEM — nap lai ba thu ma ban cu nap: `import ui.main_window` (dong
+    `from ui.main_window import MainWindow` o dau ui/main_controller.py),
+    `system_stats.psutil_or_none()` (psutil bi keo vong khoi dong), va
+    `import ui.compress_dialog` (hop thoai Nen). Ca ba phai False, rc 1, VA
+    `boot_khong_cv2` van phai True — neu do red ca cv2 thi phep thu da pha mot
+    thu khac chu khong phai phan chung dieu can chung.
+
+Vet thu ba nay sinh ra tu mot that bai do duoc 21/10/2026: hai dong dau XANH
+het trong luc hop thoai nen bi keo len duong boot va boot cham them 0,428 s,
+bo do phan biet cua chung.
 """
 import json
 import os
@@ -28,8 +33,11 @@ import main
 
 if __POISON__:
     # Cach viet cua ban cu: trang dung phim nam trong lan boot cua trang Home,
-    # va psutil duoc nap de do CPU/RAM truk khi cua so kip ve.
+    # va psutil duoc nap de do CPU/RAM truk khi cua so kip ve. Vet thu ba la
+    # hop thoai Nen bi keo len dau file cua mot module duong boot — ke ca khi
+    # `ui.main_window` van vang no van nam trong cay import.
     import ui.main_window  # noqa: F401
+    import ui.compress_dialog  # noqa: F401
     from core import system_stats
     system_stats.psutil_or_none()
 
@@ -70,7 +78,8 @@ def main():
         for path in (CHILD, clean, dirty):
             if os.path.isfile(path):
                 os.remove(path)
-    keys = ("boot_khong_keo_trang_dung", "boot_khong_psutil")
+    keys = ("boot_khong_keo_trang_dung", "boot_khong_psutil",
+            "boot_khong_keo_nen")
     print("SACH  rc=%d %s boot=%.3f ram=%d"
           % (rc_clean, {k: d_clean["checks"][k] for k in keys},
              d_clean["boot_to_window_s"], d_clean["ram_at_window_kib"]))
@@ -87,7 +96,7 @@ def main():
     ram = d_dirty["ram_at_window_kib"] - d_clean["ram_at_window_kib"]
     print("chen lai ban cu: boot %+.3f s, RAM luc cua so %+d KiB" % (do, ram))
     print(("PASS " if ok else "FAIL ")
-          + "hai cua do RED vi dung ly do, khong phai RED vien")
+          + "ba cua do RED vi dung ly do, khong phai RED vien")
     return 0 if ok else 1
 
 

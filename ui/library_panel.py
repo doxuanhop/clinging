@@ -180,6 +180,7 @@ class SearchField(QFrame):
 class ResourceCard(QFrame):
     thumbnailsRequested = Signal(str)
     splitRequested = Signal(str)
+    compressRequested = Signal(str)
 
     def __init__(self, filename, kind="video", full_path="", parent=None):
         super().__init__(parent)
@@ -302,6 +303,14 @@ class ResourceCard(QFrame):
                                     "Cắt thành nhiều đoạn…")
             action.triggered.connect(
                 lambda _checked=False: self.splitRequested.emit(self.full_path))
+        if self.kind == "video":
+            # Chi video: anh khong co gi de nen lai, con audio thi container
+            # cua no khong co moov de day len dau — bao "da toi uu" la noi do.
+            action = menu.addAction(font_icon("fa6s.compress"),
+                                    "Nén / tối ưu tệp…")
+            action.triggered.connect(
+                lambda _checked=False: self.compressRequested.emit(
+                    self.full_path))
         if not menu.actions():
             return None
         return menu
@@ -405,6 +414,7 @@ class LibraryPanel(QWidget):
     resourcesChanged = Signal(list)
     thumbnailExportRequested = Signal(str)
     mediaSplitRequested = Signal(str)
+    mediaCompressRequested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -584,6 +594,7 @@ class LibraryPanel(QWidget):
         card = ResourceCard(filename, kind, full_path)
         card.thumbnailsRequested.connect(self.thumbnailExportRequested.emit)
         card.splitRequested.connect(self.mediaSplitRequested.emit)
+        card.compressRequested.connect(self.mediaCompressRequested.emit)
         self._items.append(card)
         self._apply_filter()
         if emit_change:

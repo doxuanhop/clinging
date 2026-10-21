@@ -1383,6 +1383,181 @@ def _media_split_ok():
     return "2 doan ghi ra that, tong span = nguon, ffprobe doc lai duoc"
 
 
+def _media_compress_ok():
+    """Mot dong trong --selftest: nen / toi uu MOT file tren dia, do bang so that.
+
+    Khong trung lap scratch/compress_cost_probe.py (do chi phi), o day hoi bon
+    dieu ma nguoi dung chi phat hien ra khi da mat video: (1) `remux` that su
+    DI MOOV LEN DAU — do la toan bo loi ich cua "toi uu khong mat chat", va
+    fixture phai CHUA faststart tu truoc khi chay neu khong dong nay xanh boi
+    an; (2) moi loi phai tra ve mot cau doc duoc truoc khi kip lay lenh ffmpeg
+    chua chay; (3) thang tien trinh doc duoc ca ba cach ffmpeg in moc thoi
+    gian; (4) that bai thi khong de lai file ru mang duoi .mp4.
+    """
+    import subprocess
+    import tempfile
+
+    from core import external_tools
+    from core import media_compress as compress
+
+    ffmpeg = external_tools.find("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError(external_tools.missing_message("ffmpeg"))
+    for mode in compress.MODES:
+        encoder = compress.ENCODER_OF.get(mode)
+        if encoder and not compress.encoder_present(encoder, ffmpeg):
+            raise RuntimeError("ffmpeg cua bundle nay khong co %s (%s)"
+                               % (encoder, mode))
+    folder = tempfile.mkdtemp(prefix="clinging_compress_")
+    numbers = {}
+    try:
+        src = os.path.join(folder, "nguon.mp4")
+        subprocess.run(
+            [ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+             "testsrc2=size=160x120:rate=25:duration=2",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+             "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+            check=False, creationflags=0x08000000)
+        facts = compress.source_facts(src)
+        if not facts["exists"] or facts["bytes"] <= 0:
+            raise RuntimeError("khong dung duoc fixture 2s")
+        if facts["video_codec"] != "h264":
+            raise RuntimeError("fixture khong phai h264: %r"
+                               % facts["video_codec"])
+        # Canary: fixture PHAI chua faststart. Mot file da faststart thi
+        # `is_faststart(out)` xanh ma khong can remux lam gi.
+        if compress.is_faststart(src):
+            raise RuntimeError("fixture da faststart san — dong nay khong "
+                               "phan biet duoc gi")
+        numbers["src_bytes"] = facts["bytes"]
+        numbers["src_atoms"] = [name for name, _ in
+                                compress.top_level_atoms(src)]
+
+        out = os.path.join(folder, "ra_remux.mp4")
+        remux = compress.compress_file(src, out, mode=compress.MODE_REMUX)
+        if not remux["ok"]:
+            raise RuntimeError("remux that bai: %s" % remux["error"])
+        if not compress.is_faststart(out):
+            raise RuntimeError("remux xong ma moov van nam cuoi file")
+        probe = compress.source_facts(out)
+        if abs(probe["duration"] - facts["duration"]) > 0.05:
+            raise RuntimeError("remux an/doi noi dung: %.3f vs %.3f"
+                               % (probe["duration"], facts["duration"]))
+        numbers["remux_bytes"] = remux["output_bytes"]
+        numbers["remux_atoms"] = [name for name, _ in
+                                  compress.top_level_atoms(out)]
+
+        encoded = os.path.join(folder, "ra_x264.mp4")
+        run = compress.compress_file(src, encoded, mode=compress.MODE_X264,
+                                     crf=28, preset="ultrafast")
+        if not run["ok"]:
+            raise RuntimeError("x264 that bai: %s" % run["error"])
+        if abs(compress.source_facts(encoded)["duration"]
+               - facts["duration"]) > 0.1:
+            raise RuntimeError("x264 doi thoi luong: %.3f" % facts["duration"])
+        numbers["x264_bytes"] = run["output_bytes"]
+
+        # --- loi phai la mot cau, khong phai mot lenh da chay nua ---
+        gone = compress.compress_file(os.path.join(folder, "khong_ton_tai.mp4"),
+                                      os.path.join(folder, "a.mp4"))
+        if gone["ok"] or not gone["error"]:
+            raise RuntimeError("nguon khong ton tai ma van 'ok'")
+        same = compress.compress_file(src, src, mode=compress.MODE_REMUX)
+        if same["ok"] or "trùng file nguồn" not in same["error"]:
+            raise RuntimeError("file ket qua trung file nguon: %r"
+                               % same["error"])
+        blocked = compress.compress_file(src, os.path.join(folder, "a.webm"),
+                                         mode=compress.MODE_X264)
+        if blocked["ok"] or "webm" not in blocked["error"].lower():
+            raise RuntimeError("x264 ghi duoc vao webm: %r" % blocked["error"])
+        wrong_mode = compress.compress_file(src, os.path.join(folder, "b.mp4"),
+                                            mode="khong_co_thuc")
+        if wrong_mode["ok"] or not wrong_mode["error"]:
+            raise RuntimeError("kieu khong hop le ma khong bao loi")
+
+        # --- that bai / dung giua chung thi khong de lai file rac ---
+        junk = os.path.join(folder, "rac.mp4")
+        with open(junk, "wb") as handle:
+            handle.write(b"day la van ban, khong phai video")
+        partial = os.path.join(folder, "ket_qua.mp4")
+        failed = compress.compress_file(junk, partial)
+        if failed["ok"] or not failed["error"]:
+            raise RuntimeError("nguon rac ma bao thanh cong")
+        if os.path.exists(partial):
+            raise RuntimeError("that bai nhung de lai file do %s" % partial)
+        cancelling = os.path.join(folder, "dang_chay.mp4")
+        stop = compress.compress_file(src, cancelling, mode=compress.MODE_X264,
+                                      crf=28, preset="ultrafast",
+                                      should_cancel=lambda: True)
+        if not stop["cancelled"] or not stop["error"]:
+            raise RuntimeError("Huy khong duoc bao cao: %r" % stop)
+        if os.path.exists(cancelling):
+            raise RuntimeError("dung giua chung van con file do %s" % cancelling)
+
+        # --- codec/do duoi: dieu ma build_command cu se sinh ra lenh vo nghia --
+        vp9 = compress.build_command(ffmpeg, src, os.path.join(folder, "v.webm"),
+                                     compress.MODE_VP9)
+        text = " ".join(vp9)
+        if "-preset" in text:
+            raise RuntimeError("vp9 nhan -preset: ffmpeg bao 'Invalid preset'")
+        if "-cpu-used" not in text or "-b:v 0" not in text:
+            raise RuntimeError("vp9 thieu -cpu-used hoac -b:v 0: %s" % text)
+        if "-c:a libopus" not in text:
+            raise RuntimeError("webm ma mang aac: %s" % text)
+        if not compress.suggest_output(
+                src, compress.MODE_VP9).lower().endswith(".webm"):
+            raise RuntimeError("goi y file cho vp9 khong doi duoi .webm")
+        if compress.container_choices(compress.MODE_VP9) != [".mkv", ".webm"]:
+            raise RuntimeError("bang container cua vp9 bi lech: %r"
+                               % compress.container_choices(compress.MODE_VP9))
+        if compress.pair_error(os.path.join(folder, "r.webm"),
+                               compress.MODE_REMUX, "h264") == "":
+            raise RuntimeError("remux video h264 ra webm khong bi chan")
+        try:
+            compress.build_command(ffmpeg, src, os.path.join(folder, "x.webm"),
+                                   compress.MODE_X264)
+            raise RuntimeError("build_command khong chan x264 trong webm")
+        except ValueError:
+            pass
+        clamped = " ".join(compress.build_command(ffmpeg, src,
+                                                  os.path.join(folder, "c.mp4"),
+                                                  compress.MODE_X264, crf=99))
+        if "-crf %d" % compress.CRF_MAX not in clamped:
+            raise RuntimeError("CRF 99 khong bi chan ve CRF_MAX")
+        low = " ".join(compress.build_command(ffmpeg, src,
+                                              os.path.join(folder, "c.mp4"),
+                                              compress.MODE_X264, crf=1))
+        if "-crf %d" % compress.CRF_MIN not in low:
+            raise RuntimeError("CRF 1 khong bi chan ve CRF_MIN")
+        hevc = " ".join(compress.build_command(ffmpeg, src,
+                                               os.path.join(folder, "h.mp4"),
+                                               compress.MODE_X265))
+        if "-tag:v hvc1" not in hevc or "-movflags +faststart" not in hevc:
+            raise RuntimeError("hevc trong mp4 thieu tag hvc1/faststart")
+
+        # --- thang tien trinh: ba cach ffmpeg in moc thoi gian ---
+        if compress.read_progress("out_time_us=1500000", 3.0) != 50:
+            raise RuntimeError("khong doc duoc out_time_us")
+        if compress.read_progress("out_time_ms=1500000", 3.0) != 50:
+            raise RuntimeError("khong doc duoc out_time_ms (ban cu)")
+        if compress.read_progress("out_time=00:00:01.500000", 3.0) != 50:
+            raise RuntimeError("khong doc duoc out_time=HH:MM:SS")
+        if compress.read_progress("frame= 12 fps=0.0 q=28.0", 3.0) != -1:
+            raise RuntimeError("dong khong phai moc bi hieu nham la tien do")
+        if compress.estimate_seconds(compress.MODE_REMUX, 60.0) != 0.0:
+            raise RuntimeError("remux duoc bao la ton thoi gian ma hoa")
+    finally:
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+    return ("nguon %d B moov-cuoi -> remux %d B moov-dau (%s), x264 %d B; "
+            "5 loi hop-le + nguon rac/lenh Huy khong de lai file do; vp9 "
+            "-cpu-used/-b:v 0/libopus; 3 cach doc tien do" %
+            (numbers["src_bytes"], numbers["remux_bytes"],
+             ">".join(numbers["remux_atoms"]), numbers["x264_bytes"]))
+
+
 def _detach_audio_ok():
     """Mot dong trong --selftest: tach tieng clip video thanh clip audio rieng.
 
@@ -2002,6 +2177,8 @@ def run_selftest(argv=None):
     col.check("cat file thanh N doan ra dia", _media_split_ok)
     col.check("tach tieng video thanh clip audio rieng", _detach_audio_ok)
     col.check("the Cat in/out trong bang thuoc tinh", _trim_card_ok)
+    col.check("nen toi uu tep video: moov + codec-hop-container",
+              _media_compress_ok)
     col.check("thanh tien do Auto Captions 8px", _captions_strip_ok)
     col.check("thu muc du lieu nguoi dung", _writable_ok)
     col.check("ffmpeg + ffprobe tim thay", _ffmpeg_note)
@@ -5343,6 +5520,8 @@ def run_startup_report(argv=None):
     cv2_at_window = "cv2" in sys.modules
     editor_at_window = "ui.main_window" in sys.modules
     psutil_at_window = "psutil" in sys.modules
+    nen_at_window = ("ui.compress_dialog" in sys.modules
+                     or "core.media_compress" in sys.modules)
     mark("cua so lo ra")
     settle_until = time.time() + 1.5
     while time.time() < settle_until:
@@ -5430,6 +5609,13 @@ def run_startup_report(argv=None):
         # 102 ms cum trong luc mo app chi de do CPU/RAM sau khi cua so da ve.
         "boot_khong_keo_trang_dung": not editor_at_window,
         "boot_khong_psutil": not psutil_at_window,
+        # `boot_khong_keo_trang_dung` XANH KHONG chung minh duoc dieu nay: do
+        # 21/10/2026, nap tay `ui.compress_dialog` o dau mot module duong boot
+        # thi `ui.main_window` van vang (hop thoai nen goi lazy trong
+        # MainWindow._open_media_compress) nen ca hai dong cu van True, trong
+        # khi boot them 0,428 s va RAM luc cua so them 1 MiB. Do la 40% cua
+        # ngan sach 1,083 s ma ban 1.0.3 dang chay tren may nay.
+        "boot_khong_keo_nen": not nen_at_window,
         "bia_duoc_ve": covers == cards,
         "anh_chung_minh": os.path.isfile(shot),
     }

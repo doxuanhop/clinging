@@ -103,6 +103,8 @@ class MainWindow(QWidget):
             self._open_thumbnail_export)
         self.library_panel.mediaSplitRequested.connect(
             self._open_media_split)
+        self.library_panel.mediaCompressRequested.connect(
+            self._open_media_compress)
 
         # VSplitter chia vùng làm việc chính (ở trên) và Timeline (ở dưới)
         work_splitter.addWidget(horizontal_splitter)
@@ -1475,6 +1477,24 @@ class MainWindow(QWidget):
         if dialog is None:
             dialog = SplitDialog(self)
             self._split_dialog = dialog
+        dialog.prepare(initial_path)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _open_media_compress(self, initial_path=""):
+        """Hộp thoại nén / tối ưu MỘT file trên đĩa — một instance duy nhất.
+
+        Non-modal vi mot lan ma hoa lai co the keo hang chuc phut tren may cau
+        hinh thap; modal thi thanh tien trinh va nut Huy chi de xem khi editor
+        da bi khoa lai.
+        """
+        from ui.compress_dialog import CompressDialog
+        dialog = getattr(self, "_compress_dialog", None)
+        if dialog is None:
+            dialog = CompressDialog(self)
+            self._compress_dialog = dialog
         dialog.prepare(initial_path)
         dialog.show()
         dialog.raise_()

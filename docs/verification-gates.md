@@ -89,7 +89,7 @@ python scratch/user_data_snapshot.py capture scratch/_snap_before.json
 # 1) Audit tên icon + tham số color= trên toàn bộ nguồn
 python scratch/icon_name_audit.py
 
-# 2) Selftest 37 dòng trên tree nguồn
+# 2) Selftest 38 dòng trên tree nguồn
 python main.py --selftest
 
 # 3) Đo khởi động (bao gồm control cùng lần, xem mục dưới đây)
@@ -98,7 +98,8 @@ python main.py --startup-report
 # 4) Phản chứng của các cổng đã sửa gần đây (34 check)
 python scratch/gate_discrimination_probe.py
 
-# 4b) Phản chứng riêng cho hai check "cái gì KHÔNG được nạp lúc boot"
+# 4b) Phản chứng riêng cho ba check "cái gì KHÔNG được nạp lúc boot"
+#     (trang dung phim / psutil / hop thoai nen — xem nhom I duoi day)
 python scratch/boot_laziness_counterfactual.py
 
 # 4c) Độ trễ NGƯỜI DUNG thấy (Popen -> cửa sổ hiện) + tham do UI thread
@@ -164,7 +165,14 @@ python scratch/trim_evidence.py                   # -> 23/23 phep do PASS
                                                   # -> scratch/trim_evidence.png
                                                   # -> scratch/trim_evidence.json
 
-# 4k) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
+# 4k) Nen / toi uu tep video (cong thuc port tu compressO, chi dung ffmpeg cua
+#     bundle): remux that su day moov len dau, codec khop container o CA HAI chieu
+python scratch/compress_counterfactual.py         # -> 17/17 do dung ly do, byte ve nguyen ban
+python scratch/compress_evidence.py               # -> menu video/audio phan biet, 3 grab day pixel
+                                                  # -> scratch/_compress_ev_evidence.png
+python scratch/compress_cost_probe.py             # -> bang chi phi preset/codec do xen ke 1 vong
+
+# 4l) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
 #     chung (lat _internal/styles, an core/ cua tree nguon) + do boot
 python scratch/frozen_bundle_probe.py             # -> ALL PASS (0 fail), rc=0
 dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json
@@ -728,6 +736,130 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
   chạy 35 dòng — thẻ Cắt (cũng như tách tiếng và chroma key) mới tồn tại ở tree
   nguồn, chờ duyệt phát hành.
 
+## Cổng "nén / tối ưu tệp" (nhóm I, 2026-10-21)
+
+Nguồn ý tưởng: `github.com/codeforreal1/compressO` (repo người dùng đưa ra,
+`doxuanhop/compressO` không tồn tại). **Không** lấy code và **không** lấy binary
+của nó: chỉ port công thức ffmpeg vào `core/media_compress.py`, chạy bằng đúng
+`tools\ffmpeg\ffmpeg.exe` mà app đã có. Không thêm file thực thi nào, không thêm
+MB nào vào bundle.
+
+| Dòng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `nen toi uu tep video: moov + codec-hop-container` | Bốn kiểu (`remux`, `x264`, `x265`, `vp9`) và mọi lời chặn phải là **số đo được**, không phải lời hứa. `remux` `-c copy -movflags +faststart`: bằng chứng duy nhất là tự đi đọc lại 8-byte header của file ra và so **thứ tự atom** (`top_level_atoms` / `is_faststart`) — nếu không có hai hàm đó thì `-movflags` là một dòng chữ vô nghĩa. `encoder_present()` hỏi **chính ffmpeg của bundle** (`-encoders`), không hard-code: bundle này không có AV1/VP8 nên hai codec đó không được hiện trong menu. `pair_error()` chặn **CẢ HAI chiều**: kiểu nén không ghi được vào container không chứa nó, và `remux` một nguồn `h264` ra `.webm` cũng bị chặn (nguồn không tự đổi codec). `.webm` buộc `libopus` (aac trong webm là file hỏng), `.mp4` + hevc buộc `-tag:v hvc1` (không thì QuickTime/Apple không đọc), vp9 buộc `-cpu-used` + `-b:v 0` và **cấm** `-preset` (libvpx không nhận). `estimate_seconds(remux) == 0.0` vì copy stream không mã hoá lại. `compress_file()` phải **xóa file dở** khi lỗi hoặc khi người dùng bấm Huy — ffmpeg đã kịp tạo file thì một nửa file vẫn nằm trên đĩa người dùng. Ba cách đọc tiến độ (`out_time_ms`, `out_time_us`, `out_time=HH:MM:SS`) vì ffmpeg đổi cách viết giữa các bản | `compress_counterfactual.py`: 17 phép đổi byte trên `core/media_compress.py`, mỗi phép chỉ làm đỏ đúng dòng 38 |
+
+Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
+
+* `--selftest`: **38 dòng, `failed = []`**, `rc=0 (0x00000000)`, 32,3 s cho cả
+  38 dòng (chạy trên đúng tree commit). Chi tiết dòng 38:
+  `nguon 51122 B moov-cuoi -> remux 51122 B moov-dau (ftyp>moov>free>mdat), x264
+  76982 B; 5 loi hop-le + nguon rac/lenh Huy khong de lai file do; vp9
+  -cpu-used/-b:v 0/libopus; 3 cach doc tien do`. Fixture 51.122 B là mp4 cố ý
+  **không** faststart (canary `ftyp>free>mdat>moov`), dựng bằng ffmpeg của bundle
+  trong `%TEMP%`, không đụng video người dùng.
+* 17 phép phản chứng, **mỗi phép chạy lại `python main.py --selftest <json>`
+  THẬT**; kết quả `17/17 PHAN BIET` + `khoi_phuc_xanh PASS rc=0 rows=38
+  failed=[]`, `ALL PASS`, **rc đọc từ chính probe = 0**, `elapsed=377,2 s` (lần
+  chạy trước cùng probe đó là 551,5 s — hai con số chỉ khác nhau vì đọc đĩa,
+  không phải vì code). `sha256[:16]` của `core/media_compress.py`
+  (`6ae2023120eb0167`) giống hệt trước, giữa và sau hai vòng: probe phục hồi
+  byte thật, không để lại vệt.
+
+  | Phép đổi byte | Lý do gate đỏ (nguyên văn từ selftest) |
+  | --- | --- |
+  | `remux_khong_movflags` — bỏ `-movflags +faststart` | `remux xong ma moov van nam cuoi file` |
+  | `encoder_present_luon_false` — hàm trả `False` mòn | `ffmpeg cua bundle nay khong co libx264 (x264)` |
+  | `video_codec_khong_luu_vao_facts` — `source_facts` không ghi `video_codec` | `fixture khong phai h264: ''` |
+  | `remux_khong_chan_container` — `remux` không xét codec của nguồn | `remux video h264 ra webm khong bi chan` |
+  | `is_faststart_dao_nguoc` — hàm đảo kết quả | `fixture da faststart san — dong nay khong phan biet duoc gi` |
+  | `vp9_di_nhanh_preset` — vp9 dùng `-preset` như x264 | `vp9 nhan -preset: ffmpeg bao 'Invalid preset'` |
+  | `vp9_thieu_bv0` — bỏ `-cpu-used`/`-b:v 0` | `vp9 thieu -cpu-used hoac -b:v 0: <lenh>` |
+  | `webm_van_aac` — `.webm` vẫn gắn `aac` | `webm ma mang aac: <lenh>` |
+  | `suggest_giu_duoi_nguon` — gợi ý tên file giữ đuôi nguồn | `goi y file cho vp9 khong doi duoi .webm` |
+  | `container_choices_tu_bang` — `container_choices` trả mọi đuôi | `bang container cua vp9 bi lech: ['.m4v', '.mkv', '.mov', '.mp4', '.webm']` |
+  | `build_command_khong_raise` — dựng lệnh mà không chặn cặp hợp lệ | `build_command khong chan x264 trong webm` |
+  | `crf_khong_chan` — bỏ clamp CRF | `CRF 99 khong bi chan ve CRF_MAX` |
+  | `hevc_khong_tag_hvc1` — bỏ `-tag:v hvc1` | `hevc trong mp4 thieu tag hvc1/faststart` |
+  | `progress_bo_out_time_ms` — chỉ đọc cách viết mới | `khong doc duoc out_time_ms (ban cu)` |
+  | `progress_bo_dinh_dang_hms` — chỉ đọc số nguyên µs | `khong doc duoc out_time=HH:MM:SS` |
+  | `khoi_xoa_file_do` — bỏ `_drop()` file dở | `dung giua chung van con file do <duong dan>` |
+  | `remux_bao_ton_gio_ma_hoa` — `estimate_seconds(remux)` tính như mã hoá | `remux duoc bao la ton thoi gian ma hoa` |
+
+* `scratch/compress_evidence.py` → `scratch/_compress_ev_evidence.png`
+  (1560×1290, 266,7 KB): **34/34 chân PASS**, `rc=0`, 50,8 s. Ảnh có năm bảng và
+  đã được mở ra xem: (A) ba `CompressDialog` **thật** grab từ cửa sổ thật —
+  remux mặc định, vp9 (thang tốc độ đổi nhãn thành `cpu-used 5`, gợi ý file
+  `.webm`), và cặp bị chặn in nguyên văn lời chặn; (B) stat + ffprobe trước/sau
+  của ba lần chạy thiệt; (C) năm lệnh do `build_command` sinh nguyên văn; (D) menu
+  chuột của **card video có hành "Nén / tối ưu tệp…", card audio thì không**;
+  (E) ba grab đều 487.500 pixel có nội dung. Bảng B:
+
+  | Lần chạy thật | Kích thước | Δ | atom / faststart | wall |
+  | --- | --- | --- | --- | --- |
+  | nguồn (x264 CRF 23) | 1,9 MB | — | `ftyp>free>mdat>moov`, faststart=False | — |
+  | `remux` copy | 1,9 MB | **+0,0 %** | `ftyp>moov>free>mdat`, faststart=**True** | 0,74 s |
+  | `x264` CRF 28 veryfast | 879,6 KB | **−53,8 %** | faststart=True, 6,000→6,000 s | 4,16 s |
+  | `vp9` CRF 33 cpu-used 5 | 1,9 MB | **+2,4 %** | `n/a (webm khong co moov)` | 31,80 s |
+
+  `remux` copy từng bit nên byte không đổi; **chỉ khác thứ tự atom** — đó là toàn
+  bộ lợi ích của nó, và cũng là lý do cột cuối là wall clock đo trên máy này
+  trong vòng chạy, không lấy từ bảng chi phí.
+* Bảng chi phí (`scratch/compress_cost_probe.py` → `_compress_cost.json`, fixture
+  6 s 1280×720 `testsrc2` = 1.951.137 B, 8 CPU logich, **đo xen kẽ một vòng**):
+  x264 CRF 28: `ultrafast` 1,45 s / **3.115.218 B (+59,7 %)** · `veryfast` 2,59 s /
+  819.239 B · `fast` 4,67 s / 926.532 B · `medium` 4,66 s / 895.248 B · `slow`
+  7,02 s / 905.301 B. x265 CRF 30: `veryfast` 12,29 s / 914.070 B · `fast` 12,64 s /
+  934.980 B. vp9 CRF 33: `cpu-used 8` 29,68 s / 1.861.055 B · `cpu-used 5` 26,45 s /
+  **cùng 1.861.055 B** · mặc định ("good") 51,15 s / 1.804.780 B.
+  Ba kết luận rút ra từ số, không từ lời khen: (1) **`ultrafast` không phải để
+  tiết kiệm** — nó ra file NẶNG HƠN nguồn 59,7 %; (2) `-preset slow` mà compressO
+  gọi là "ironclad" tốn thêm 4,43 s chỉ để đổi 86 KB so với `veryfast` → máy cấu
+  hình thấp không có quyền trả, ship `veryfast` (trùng preset `media_splitter` đã
+  bán); (3) **`-cpu-used 8` vừa chậm hơn vừa ra đúng số byte như `5`** — libvpx
+  kẹp tham số tốc độ, nên mặc định là `5` và hộp thoại không được gợi ý `8`.
+* Kết quả **âm, phải nói thẳng**: trên fixture 6 s này `vp9 CRF 33` ra file
+  **+2,4 % so với nguồn** (và 31,8 s), trong khi `x264 CRF 28` ra **−53,8 %**
+  (4,16 s). VP9 không phải thắng về dung lượng cho clip ngắn; fixture lại là
+  `testsrc2` tổng hợp — nhiễu nhân tạo là thứ VP9 ăn tốt nhất, nên số thật trên
+  video quay còn tệ hơn. Hộp thoại vẫn để vp9 vì nó bán được thứ x264 không có:
+  WebM mở và không bằng sáng chế.
+* Lệch có chủ ý so với compressO: giữ dải CRF của repo (16–35) thay vì thang
+  36→24 của nó — thang đó không với tới các CRF 20/22 app đã dùng ở đường xuất;
+  không lấy slider "quality" một chiều vì bốn kiểu có bốn thang khác nhau; không
+  lấy AV1/VP8 vì ffmpeg của bundle không có encoder (`encoder_present` trả
+  `False`, và dòng đó được chặn hiện trong menu).
+* Máy cấu hình thấp — **có gate mới**: `--startup-report` thêm
+  `boot_khong_keo_nen` (đo `ui.compress_dialog` + `core.media_compress` có nằm
+  trong `sys.modules` đúng lúc cửa sổ hiện). Lý do thêm dòng: `ui.library_panel`
+  (nơi menu "Nén" sống) chỉ được nạp qua `ui/main_window.py:20` nên tưởng là
+  `boot_khong_keo_trang_dung` đã bao phong, nhưng phép thử cho thấy **không**:
+  kéo tay `import ui.compress_dialog` lên đầu một module đường boot thì
+  `ui.main_window` vẫn vắng, hai dòng cũ vẫn xanh, mà boot chậm thêm
+  **0,428 s** và RAM lúc cửa sổ thêm **1 MiB** — tức 40 % của 1,083 s mà bản
+  1.0.3 đang chạy. Sau khi thêm dòng, `boot_laziness_counterfactual.py` chạy
+  SACH/DOC NHIEM trên ba module: `SACH rc=0 {trang_dung: True, psutil: True,
+  nen: True} boot=1,249 ram=68648` / `DOC rc=1 {False, False, False} boot=1,661
+  ram=80552` → `chen lai ban cu: boot +0,412 s, RAM +11904 KiB`, `PASS ba cua do
+  RED vi dung ly do`. Cây sạch hiện tại: `boot_khong_keo_nen = True`,
+  `boot_khong_cv2 = True`, `ok = True`, cửa sổ hiện lúc 1,083–1,741 s / 66–67 MiB
+  (lệch giữa hai lần chạy chỉ vì đọc đĩa). Giá thật của tính năng khi mở hộp
+  thoại: một import lazy, 0 s boot, 0 MB thường trú.
+* Snapshot dữ liệu người dùng quanh toàn bộ vòng gate
+  (`_snap_before.json` → `_snap_after.json`, **1835 → 1835 file**):
+  `THEM: 7 / MAT: 7 / DOI: 0`. Bảy thêm và bảy mất nằm trọn trong
+  `~\.clinqing\recovery\` và chỉ mang hai stem fixture của `--selftest`
+  (`Kiem karaoke` 5, `Kiem recap` 2) — vòng quay keep-5 đã giải trình ở nhóm G
+  và H. `recent_projects.json`, các `.clinq` thật và `Clinging_Projects\`:
+  **`DOI: 0`**, không có thêm/mất nào khác.
+* Ảnh chứng minh **có thật** và đã mở ra xem hai lần: lần xem đầu bắt ra ba lỗi
+  hiển thị (`.webm` bị đọc header MP4 in ra tên atom rác → đổi thành
+  `n/a (webm khong co moov)`; một câu trộn hai dấu phân cách `1,9 MB · 6.0s` →
+  `_fmt_seconds` đổi sang dấu phẩy; chân vp9 dùng con số đã đo tệ hơn → chuyển về
+  mặc định `5`). Ảnh hiện tại là lần chạy SAU ba sửa đổi đó.
+* **Chưa** dựng lại bundle cho nhóm này: `dist\Clinging` vẫn dựng từ tree chroma
+  nên chạy 35 dòng — nén tệp (cũng như thẻ Cắt, tách tiếng, chroma key) mới tồn
+  tại ở tree nguồn, chờ duyệt phát hành.
+
 ## Thất bại đã ghi (để không lặp)
 
 | Hiện tượng | Nguyên nhân thật | Hệ quả thành quy tắc |
@@ -747,6 +879,12 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
 | Cửa `bundle khong kem ffmpeg/ffprobe` FAIL trên một bundle đúng | Check viết từ 1.0.1 khi app gọi ffmpeg bản PATH; `ClingingQt.spec` nay đóng cả cặp vào `_internal/tools` nên "không kèm" là sai hợp đồng | Cửa "có/không tài nguyên" phải lấy spec + `dist` làm chuẩn và so **từng file với bản trên đĩa** (102.856.192 B / 102.652.416 B), không so với hằng số hay với trí nhớ |
 | `--selftest` xanh nhưng stdout in `Loi luu du an: Object of type QColor is not JSON serializable` | Đó là fixture cố ý của dòng `luu du an atomic` (`diagnostics.py:523` đưa payload không serialize được để chứng minh file thật không bị chạm; `:535` ghi JSON cắt đôi cho đường đọc) | Trước khi gọi một dòng stdout "trông như lỗi" là regression, quy nó về ĐÚNG dòng: chạy từng hàm `_ok` trong subprocess riêng rồi xem dòng nào in ra |
 | Phản chứng `in_min_khong_nhan_speed` của thẻ Cắt KHÔNG đỏ dù đã bỏ `* speed` | Fixture duy nhất có `in_point < start_time*speed`, nên `max(0.0, ...)` clamp kết quả về 0,0 trước khi số hạng bị đổi kịp lộ ra — đầu vào bị cắt cụt, không phải code đúng | Một mutation chỉ được coi là đã gate khi có fixture mà số hạng đó **quyết định đầu ra**; thêm fixture `start 0,5 / in 3,0 / speed 2,0` rồi chạy lại đủ 12/12 |
+| `compress_counterfactual.py` báo `SyntaxError: bytes can only contain ASCII literal characters` và **không chạy nổi một phép nào** | Needle của mutation `webm_van_aac` chép nguyên dòng có dấu tiếng Việt vào `b'...'` | Needle byte trong probe phản chứng phải ASCII-only (dòng nguồn thật có dấu thì chép phần không dấu quanh nó); một probe không chạy được là probe im lặng, không phải probe đỏ |
+| Mutation `khoi_xoa_file_do` không đỏ trên chân "nguồn rác" | Với đầu vào là một đoạn văn bản mang đuôi `.mp4`, ffmpeg fail TRƯỚC khi kịp tạo file ra, nên bỏ `_drop()` cũng chẳng còn file mà kiểm — do 21/10/2026 | Mỗi mutation phải có một đầu vào mà file dở THỰC SỰ tồn tại; ở đây là chân bấm Huy giữa chừng, và lý do gate đỏ được viết lại thành `dung giua chung van con file do` |
+| Ảnh bằng chứng in ra `atom \x1a\x43\x42...` cho dòng `.webm` | `top_level_atoms` đi theo header 8 byte kiểu MP4; áp nó lên EBML thì đọc thẻ ra toàn tên rác — mà ảnh vẫn "có chữ" nên nhìn qua không thấy sai | Hàm giải mã theo container phải tự khai nó chỉ đúng với container nào (`FASTSTART_CONTAINERS`), và ảnh phải MỞ RA XEM chứ không đếm pixel không |
+| Probe dựng fixture chết ở dòng `fixture video loi rc=0` dù ffmpeg đã báo lỗi từ trước | Guard viết `fmt_bytes(size).endswith("B")` — luôn đúng, vì "1.9 MB" cũng kết thúc bằng "B" | Kiểm đầu vào bằng ngưỡng số (`getsize >= 100_000`), không kiểm bằng hình thức chuỗi; một guard luôn đúng còn tệ hơn không có guard |
+| Hai cửa `boot_khong_keo_trang_dung` và `boot_khong_psutil` **xanh** trong khi hộp thoại nén bị kéo lên đường boot, boot chậm thêm 0,428 s | Hai cửa đó chỉ nhìn `ui.main_window` và `psutil`; `ui.compress_dialog` đi vào bằng một module đường boot khác thì không ai thấy | Cửa laziness chỉ chứng điều đúng tên nó nhìn: module mới phải có cửa đo `sys.modules` trên chính tên nó (`boot_khong_keo_nen`) |
+| Bảng chi phí đo `cpu-used 8` rồi chân vp9 của ảnh bằng chứng cũng dùng `8` | Probe lấy con số đang thử thay vì mặc định bản ra; trên máy này `8` ra ĐÚNG số byte của `5` nhưng lâu hơn 3,2 s | Ảnh/dòng kiểm phải chạy đúng cấu hình ship ra (`preset=None` để `build_command` tự lấy `DEFAULT_PRESET`), không phải cấu hình đang dò |
 
 ## Liên quan
 
