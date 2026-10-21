@@ -54,6 +54,9 @@ python scratch/text_styling_evidence.py         # anh FrameComposer: vien/bong/b
 python scratch/color_grading_ui_probe.py        # 8 cua chinh mau tren MainWindow that (nut LUT, keo, Ctrl+Z, .clinq)
 python scratch/color_grading_counterfactual.py  # phan chung: 13 phep doi byte -> cua chinh mau do dung ly do
 python scratch/color_grading_evidence.py        # anh FrameComposer + the panel: hue/lift/gamma/gain/LUT ve ra that
+python scratch/popart_project_build.py          # du an .clinq Pop Art + xuat mp4 that, moi cua do tren FILE
+python scratch/popart_project_counterfactual.py # phan chung: 6 phep doi byte, moi phep chay CA HAI gate
+python scratch/boot_low_spec_probe.py           # 5 vong xuyen tat: boot/WS/private + seam icon (may phai yen)
 python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
 python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile
 python scratch/user_data_snapshot.py capture scratch/_snap_before.json  # truoc khi do

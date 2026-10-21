@@ -127,6 +127,13 @@ python scratch/color_grading_counterfactual.py  # -> 13/13 do dung ly do, byte v
 python scratch/color_grading_evidence.py        # -> scratch/color_grading_evidence.png
                                                 # -> scratch/color_grading_card_evidence.png
 
+# 4f) Du an Pop Art: gate do TREN FILE mp4 da xuat + 6 phep phan chung (moi phep
+#     chay CA HAI gate: --selftest 34 dong va gate file)
+python scratch/popart_project_build.py              # -> ALL PASS, ~5 ban render 720p
+CLINGING_POPART_REUSE=1 python scratch/popart_project_build.py  # do lai khong xuat lai
+python scratch/popart_project_counterfactual.py     # -> 6/6 do dung ly do, byte ve nguyen ban
+                                                    # -> scratch/popart_project_counterfactual.png
+
 # 5) Chụp lại rồi diff: phải ra 0 THEM / 0 MAT / 0 DOI
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json
 python scratch/user_data_snapshot.py diff scratch/_snap_before.json scratch/_snap_after.json
@@ -165,6 +172,22 @@ mở app" thì không.
 | `--startup-report` 3 lần, median `boot_to_window_s` | **1,645 → 1,204 s** sau khi lazify |
 | RAM lúc cửa sổ hiện | **78,4 → 68,4 MB** (−10,0 MB) |
 | `boot_laziness_counterfactual.py` | SACH rc=0 / DOC rc=1, hai check lật đúng chiều, `boot_khong_cv2` vẫn True |
+
+Đo lại **2026-10-21** trên tree nguồn, máy không có render nào chạy cạnh tranh
+(vì cả hai công cụ đều đọc wall-clock): `scratch/boot_low_spec_probe.py` rc=0, 5
+vòng sau 3 lần warmup — baseline **0,658 s** median (min 0,548), working set
+**70.780 KiB**, private **40.164 KiB**, 119 widget, **10/10** icon có điểm ảnh,
+`qtawesome`/`qtpy`/`QtOpenGL` đều `False`. Chiều tiết kiệm xác định bằng cặp từng
+vòng: `force_qtawesome` **1,090 s**, chậm hơn baseline **+0,542 s** median
+`[1,013 / 1,132 / 0,384 / 0,388 / 0,542]`, private **+30.540 KiB**. Đồng hồ đặt
+NGAY TRONG lần boot nói cùng một chuyện: `import qtawesome` một mình 0,414 s, cả
+seam 0,564 s, còn bộ vẽ glyph cục bộ **0,028 s** (nạp font 0,008 + vẽ 0,019 cho 13
+lần gọi) → không còn gì để cắt. Chế độ `stub_renderer` (seam trả icon rỗng) vẽ
+**0/10** icon và làm bố cục lệch (`geo` khác) — được ghi lại để cấm dùng nó làm
+gate, vì tiết kiệm của nó là tiết kiệm giả. `python main.py --startup-report` rc=0,
+`ok=True`, 8/8 check: `boot_to_window` **1,038 s**, RAM lúc cửa sổ hiện **68.664
+KiB**, lúc nghỉ 1,5 s sau đó **83.420 KiB**, `cv2_da_nap_luc_boot=False`, control
+nặng 0,263 s (chứng minh đồng hồ phân biệt được).
 
 Cùng lúc đó `wall_to_window_probe.py` đo từ **bên ngoài** app: trên exe 1.0.2 đã
 cài, `Popen() → cửa sổ hiện` là **1,34–1,39 s** (lần đầu tiên sau reinstall 2,26 s)
@@ -304,6 +327,85 @@ bằng `--startup-report` của chính nó: **1,02 s** tới cửa sổ, working
 lúc cửa sổ hiện, `cv2_da_nap_luc_boot=False`. Snapshot sau toàn bộ khâu cài + do:
 `MAT: 0 / DOI: 0`, `THEM: 41` và CẢ 41 đều nằm dưới `cache\image\` (bộ nhớ đệm thumbnail
 ra đĩa, sinh ra vì app vừa mở dự án), không có file dữ liệu nào khác thay đổi.
+
+---
+
+## Cổng "dự án Pop Art" (nhóm E, 2026-10-21)
+
+Sản phẩm giao: `C:\Users\doxuanhop\Clinging_Projects\Pop Art Demo\Exports\pop_art_demo.mp4`
+— 11,50 s, h264 1280×720@24 + AAC stereo 48 kHz, 8.962.919 B, ffprobe đọc trực tiếp
+trên file. Dự án `Pop Art Demo.clinq` (9.728 B) và hai fixture `Assets\fixture_gradient.mp4`
+/ `fixture_pattern.mp4` do chính `scratch/popart_project_build.py` sinh: không có
+video, bài hát hay dự án nào của người dùng làm nguyên liệu (`Dự án 2` untouched).
+
+| Dòng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `du an pop art: lap bang lenh cua app` | Model dựng bằng đúng sáu lệnh người dùng gọi — `AddClipCommand`, `ApplyEffectCommand`, `SetGradingCommand`, `SetClipAudioCommand`, `SetClipTextCommand`, `SetTransitionCommand` — trên `UndoStack`, không có bản vẽ phái sinh; lưu bằng `project_storage.save_project_to_file`, mở lại bằng `restore_model_from_clinq(media_roots=[...])`; round-trip phải giữ thời lượng, bộ thẻ hiệu ứng, 12 khoá mỗi clip (volume/speed/fade_in/fade_out + 8 khoá chữ/font), chuyển tiếp, đúng HAI thẻ "Chinh mau" (5 khoá), và `clip_id` không đổi | `popart_project_counterfactual.py`: 6 phép đổi byte trên `core/clip_effects.py`, `core/commands.py`, `core/project_storage.py`, mỗi phép chạy CẢ HAI gate (selftest 34 dòng + gate file) |
+| `san pham mp4 do tren FILE` | Render bằng đúng `ui.export_dialog.RenderWorker` mà người dùng bấm, mọi ngưỡng tính trên mp4 đã giải mã (ffprobe + ffmpeg xuất frame + PCM), không tính trên frame trong bộ nhớ | 7 cua build PHAI xanh o ca 6 phep thu: thoi luong dung, RMS, 2 kenh, am thanh khong ngan hon file, khong loi xuat, phoi `finished_ok` |
+| `the Pop Art doi anh sau khi encode` | So `chuan` với `khong_popart` (ĐÃ có chữ + hoạt ảnh + chuyển tiếp + chỉnh màu, chỉ thiếu thẻ Pop Art) — so với `goc` thì lệch trọn cả ba lớp và vẫn xanh khi thẻ Pop Art bị gỡ | 35,39 / 20,88 / 26,94 ở ba mốc (ngưỡng 10,0) |
+| `luoi 6 px` | Nâng luma trung bình trên ô 6 px ĐO Ở NGOÀI dải chữ, lấy max over 36 pha ô: Ben-Day chấm MUC/GIAY (`rgb*0.30+8` / `rgb*1.06+26`) chỉ hiện ra ở đây | 44,01 (ngưỡng 25,0): ban Pop Art 131,1/48,9/71,7 vs ban bo the 0,5/4,9/5,6 |
+| `bo chinh mau (gain 1.10) lam sang file` | Median độ chênh luma ba mốc của `chuan` so với `khong_grade`, đo SAU encode | 2,479 (ngưỡng 1,0) |
+| `chu ve ra file` | % điểm ảnh trong dải chữ đổi >30 giữa `chuan` và `khong_chu` — không dùng tổng ink vì con chữ in đậm làm pixel tối đi, tổng ink TĂNG khi bỏ chữ | 8,61 / 15,45 / 15,68 % (ngưỡng 3,0) |
+| `chi phi xuat` | Ngưỡng lấy TỪ SỐ ĐO chứ không phải đoán: trần 1,20 s/frame chỉ bật ở chế độ đầy đủ (ban ngan 0,626 s/frame vì bộ giải mã + pipe ffmpeg chưa kip amortize) | 0,285 s/frame, peak working set 217.356 KiB (< 400 MiB) |
+
+Số đo thật của lần kiểm (2026-10-21):
+
+* `python scratch/popart_project_build.py` (đủ dự án, 5 bản render): **ALL PASS,
+  rc=0**. `python scratch/popart_project_counterfactual.py`: baseline `rc=(0,0)`
+  (cả hai gate xanh trước), **6/6 phép đổi byte đỏ ĐÚNG cửa, 0 cửa đỏ oan**, sau
+  khi khôi phục byte hai gate xanh lại, `rc=0`.
+* F1 `halftone` trả thẳng ảnh (không vẽ chấm) → đỏ `selftest: phong cach pop art`,
+  `the Pop Art doi anh`, `luoi 6 px`, `bo chinh mau (gain 1.10)`. Cửa cuối là phát
+  hiện thật: bỏ lưới chấm thì posterize 4 bậc nuốt luôn mức sáng +10 % của gain
+  (luma đo được tụt 2,479 → 0,33), tức hai lớp màu ĐÀ nhau trên file.
+* F2 `x**1/g * gain` → `* 1.0` → đỏ `selftest: chinh mau: ...` + `bo chinh mau`.
+* F3 `ApplyEffectCommand` lấy `params=dict(preset)` → `params={}` → đỏ HAI cửa build
+  (`the Pop Art doi anh` và `luoi 6 px` cùng nhận **0,0**), selftest 34 dòng **vẫn
+  xanh**: dòng `phong cach pop art` kiểm tên khoá của preset và gọi hàm trực tiếp, nó
+  không đọc đường preset → command. Ghi lại để lần sau không tưởng selftest đã chạm
+  giá trị preset.
+* F4 serialiser bỏ `text_style` → đỏ `selftest: 8 kieu karaoke` + `mo lai:
+  POP ART!.text_style`; dòng `style chu: vien/bong/hop nen/can le` vẫn xanh vì nó
+  đo trường khác.
+* F5 `serialize_effects` lọc bỏ thẻ "Chinh mau" → đỏ 6 cửa: 1 selftest
+  (`chinh mau: hue/lift-gamma-gain/LUT .cube`) + 5 round-trip (`mo lai: dung HAI the
+  Chinh mau`, `bo chinh mau con nguyen 5 khoa`, `gain van la 1.1`,
+  `fixture A/B dung hieu ung`).
+* F6 `posterize lv = 255` (không nén bậc) → đỏ DUY NHẤT `selftest: phong cach pop
+  art`, cả gate file xanh. Đây là phép thử NGUOC co y: ảnh `.png` chưa encode phân
+  biệt được số bậc, nhưng sau h264 + lưới Ben-Day + bộ resampler của `FrameComposer`
+  thì không. Posterize/halftone/outline/contrast vì vậy do unit gate giữ
+  (`diagnostics.py:_popart_ok`: đúng số bậc 2/4/8, vùng tối >0,30 và lệch vùng sáng
+  >0,25, viền trên vùng phẳng, spread >1,05), gate file giữ đường phối hợp + persistence.
+* Snapshot dữ liệu người dùng quanh vòng này (`_snap_before_pop.json` 09:32 →
+  `_snap_after_pop.json` 11:20, 1.744 → 1.758 file): `THEM: 24 / MAT: 10 / DOI: 1`.
+  Giải trình hết 35 dòng: 4 file là dự án thật vừa tạo (`Pop Art Demo.clinq`, hai
+  fixture trong `Assets\`, `Exports\pop_art_demo.mp4`), 1 là `recent_projects.json`
+  (đăng ký MRU chủ đích), 1 là thumbnail cache ra đĩa, và 19 mới + 10 cũ bị xoá đều
+  nằm trong `~\.clinqing\recovery\` của bốn stem: `Pop Art Demo` (4 mới),
+  `Pop Art CF` (5 mới, bản của probe SHORT), `Kiem karaoke` (5 mới/5 cũ),
+  `Kiem recap` (5 mới/5 cũ). Hai stem cuối KHÔNG phải dự án của người dùng — đó là
+  fixture mà `--selftest` tự dựng trong `%TEMP%\clinging_*_report\`. Cơ chế đúng là
+  cơ chế đã gate ở nhóm A2: `core/project_storage.py:207 _rotate_recovery_copy` copy
+  bản đang có vào `recovery/` TRƯỚC khi ghi đè lên một `.clinq` đã tồn tại, rồi
+  `_prune_recovery` giữ 5 bản — nên mỗi lần app mở rồi lưu lại fixture tạm là hàng
+  cũ của chính fixture đó bị đẩy ra. Nội dung bị đẩy là bản chụp fixture tạm, không
+  phải công sức người dùng: `Clinging_Projects\Dự án 2` không có dòng nào trong diff.
+* Defect THẬT mà cổng này bắt được (mới ghi, chưa sửa vì RULE "chi thay giao dien,
+  giu logic"): buoc ghep trong `ui/export_dialog.py:877` dung `-shortest`, nên khi
+  clip chữ chạy sau clip audio cuối, mp4 bị **cắt đuôi im lặng** — model báo
+  `duration` 1,9 s mà file ra 1,6 s, `--selftest` không biết. Probe buộc fixture
+  kết chữ trong phạm vi audio; sản phẩm thật (11,5 s) không bị ảnh hưởng.
+
+* Ảnh: `scratch/popart_project_evidence.png` (1316×638, 5 cột `goc` / `bo the Pop
+  Art` / `bo chinh mau` / `bo clip chu` / `SAN PHAM` × 3 mốc thời gian, footer ghi
+  đủ số đo) và `scratch/popart_project_counterfactual.png` (624×1608, 8 hàng: frame
+  `chuan` của vòng baseline cạnh frame của vòng đã đổi byte). Hàng `baseline` lệch
+  **0,0**/màu vì hai ô là cùng một ảnh; các hàng F1–F6 lệch 6,3–45,8 và F1/F3 mất
+  hẳn lưới chấm Ben-Day nhìn thấy được. Hàng `final` (byte đã khôi phục, render
+  lại từ đầu) vẫn lệch baseline **7,5**/màu: hai lần xuất CÙNG một model không cho
+  hai file bằng nhau trên máy này, nên mọi ngưỡng file ở trên đều so hai bản render
+  trong CÙNG một vòng, không so xuyên vòng.
 
 ---
 

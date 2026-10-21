@@ -23,7 +23,25 @@ def roots():
     proj = os.path.join(os.path.expanduser("~"), ".clinq")
     if os.path.exists(proj):
         out.append(proj)
+    # ~/.clinqing chua autosave.json + recovery/*.clinq: mot probe ghi vao day
+    # ma root khong cover thi diff van in ra "0 THEM / 0 MAT / 0 DOI".
+    # project_dir (mac dinh ~/Clinging_Projects) la noi file .clinq va Assets/
+    # cua du an that nam, nen phai chup duoc no.
+    core = core_dirs()
+    out += [core["clinqing"], core["project_dir"]]
     return [r for r in out if r and os.path.isdir(r)]
+
+
+def core_dirs():
+    """Duong dan cua ~/.clinqing va thu muc du an, doc tu nguồn that."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    # DUUNG nhu core.project_storage.APP_DIR va core.settings.DEFAULTS — khong
+    # phong nen duong dan, neu khong diff do mot cay khac.
+    from core.project_storage import APP_DIR
+    from core.settings import DEFAULTS
+    return {"clinqing": APP_DIR, "project_dir": DEFAULTS["project_dir"]}
 
 
 def fingerprint(r):
