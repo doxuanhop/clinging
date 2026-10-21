@@ -134,6 +134,13 @@ CLINGING_POPART_REUSE=1 python scratch/popart_project_build.py  # do lai khong x
 python scratch/popart_project_counterfactual.py     # -> 6/6 do dung ly do, byte ve nguyen ban
                                                     # -> scratch/popart_project_counterfactual.png
 
+# 4g) Anh chung minh cua so THAT (ban da cai mo du an Pop Art): PrintWindow ->
+#     assets/uiux/pop-art-project.png, 6 cua + 3 phep phan chung tren anh
+python scratch/popart_window_shot.py                # -> ALL PASS, mo anh ra XEM
+python scratch/popart_window_shot.py --selfcheck    # duong dan exe sai -> rc=1
+python scratch/popart_window_shot.py --pixels       # khung den DO, anh that XANH,
+                                                    # boi preview DO vi mat noi dung
+
 # 5) Chụp lại rồi diff: phải ra 0 THEM / 0 MAT / 0 DOI
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json
 python scratch/user_data_snapshot.py diff scratch/_snap_before.json scratch/_snap_after.json
@@ -406,6 +413,31 @@ Số đo thật của lần kiểm (2026-10-21):
   lại từ đầu) vẫn lệch baseline **7,5**/màu: hai lần xuất CÙNG một model không cho
   hai file bằng nhau trên máy này, nên mọi ngưỡng file ở trên đều so hai bản render
   trong CÙNG một vòng, không so xuyên vòng.
+
+### Ảnh cửa sổ thật của bản đã cài (`scratch/popart_window_shot.py`)
+
+Bức `assets/uiux/pop-art-project.png` (1500×1000) là cửa sổ của **bản Inno đã cài**
+mở đúng dự án Pop Art (`Clinging.exe <duong dan .clinq>`), không phải ảnh
+`grabWidget()` hay frame tự dựng. Sáu cửa: tìm thấy cửa sổ của **đúng pid vừa
+khởi động**; ảnh không đen (luma > 8); vùng preview 320×180 có > 400 màu; hai lần
+chup lệch ≤ 1 %; cửa sổ nằm trọn trong màn hình; PNG ghi xong mở lại đúng kích
+thước.
+
+* Số đo lần chạy 21/10/2026: `man hinh: 1920x1080`, `bat anh: PrintWindow
+  (rc=1 getdibits=1000)`, `kich thuoc 1500x1000 luma 34.7 preview 571 mau lech hai
+  lan 0.00%`, **ALL PASS rc=0** (12,3 s).
+* Bài học về thứ tự: lần đầu gọi `PrintWindow` ngay sau 2,5 s chờ trả về **toàn
+  đen** (`luma 0.0`, 1 màu) dù `rc=1`. Probe vì vậy chỉ nhận ảnh khi đã sáng, poll
+  mỗi 1,5 s trong 25 s — ảnh chụp "lúc app còn đang boot" không phải bằng chứng.
+* `--selfcheck` (đường dẫn exe bịa) → `rc=1`, đỏ vì "exe khong ton tai".
+  `--pixels` ba phép lật trên CHÍNH hàm cổng ảnh: khung đen 1500×1000 đỏ 2 cửa
+  (`khung den`, `preview khong co noi dung`), ảnh đã lưu xanh 0 cửa, ảnh bị bôi đen
+  đúng vùng preview đỏ ĐÚNG cửa preview (571 → 1 màu).
+* Snapshot dữ liệu người dùng quanh phép chụp: 1.758 → 1.774 file,
+  **THEM 16 / MAT 0 / DOI 0**. Cả 16 dòng là `cache\image\` (14) và `cache\wave\`
+  (2) — thumbnail + waveform của hai fixture Pop Art vừa được tính lại. Không có
+  dòng nào ở `recent_projects.json`, `.clinq`, hay `~\.clinqing\recovery\`: đóng
+  app mà model không bẩn thì không có gì được lưu.
 
 ---
 

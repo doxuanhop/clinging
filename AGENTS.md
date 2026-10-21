@@ -56,6 +56,8 @@ python scratch/color_grading_counterfactual.py  # phan chung: 13 phep doi byte -
 python scratch/color_grading_evidence.py        # anh FrameComposer + the panel: hue/lift/gamma/gain/LUT ve ra that
 python scratch/popart_project_build.py          # du an .clinq Pop Art + xuat mp4 that, moi cua do tren FILE
 python scratch/popart_project_counterfactual.py # phan chung: 6 phep doi byte, moi phep chay CA HAI gate
+python scratch/popart_window_shot.py            # anh cua so THAT cua ban da cai mo du an Pop Art (PrintWindow)
+python scratch/popart_window_shot.py --pixels   # phan chung tren anh: khung den do, anh that xanh, boi preview do
 python scratch/boot_low_spec_probe.py           # 5 vong xuyen tat: boot/WS/private + seam icon (may phai yen)
 python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
 python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile
