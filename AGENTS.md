@@ -34,7 +34,7 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
 
 ```bash
 python main.py                                  # chay app binh thuong
-python main.py --selftest                       # 34 dong cong, bao JSON co "failed"
+python main.py --selftest                       # 35 dong cong, bao JSON co "failed"
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
@@ -58,6 +58,9 @@ python scratch/popart_project_build.py          # du an .clinq Pop Art + xuat mp
 python scratch/popart_project_counterfactual.py # phan chung: 6 phep doi byte, moi phep chay CA HAI gate
 python scratch/popart_window_shot.py            # anh cua so THAT cua ban da cai mo du an Pop Art (PrintWindow)
 python scratch/popart_window_shot.py --pixels   # phan chung tren anh: khung den do, anh that xanh, boi preview do
+python scratch/chroma_key_counterfactual.py     # phan chung: 19 phep doi byte -> cua duc nen do dung ly do
+python scratch/chroma_key_evidence.py           # anh FrameComposer: cat nen xanh, giu chu the, vien mong + chong am
+python scratch/chroma_cost_probe.py             # low-spec: duong tat 0 ms; thue chroma < the Pop Art da ban
 python scratch/boot_low_spec_probe.py           # 5 vong xuyen tat: boot/WS/private + seam icon (may phai yen)
 python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
 python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile
@@ -119,6 +122,16 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
 - **Wall clock giữa hai lần chạy nói dối** trên HDD: cache drift, import bị hoist,
   layout shift khi icon rỗng đều bịa ra "tiết kiệm". Chỉ tin đồng hồ đặt trong
   `main._boot()` và control chạy cùng lần.
+- **Mọi thẻ pixel đều trả phí round-trip, không chỉ phí bộ lọc.** Chuỗi chung
+  `apply_color_effects` (QImage→numpy→proxy 640 px→QImage) tự nó ngốn 65–85
+  ms/frame ở 720p/1080p — đo 21/10/2026 qua `FrameComposer`: không thẻ 30 ms,
+  `grading hue 45` 76–84, chroma 88–98, Pop Art 195–230. Nên ràng buộc
+  "≤ 22 ms/frame cho 30 fps" trên đường xuất là **không thẻ nào đạt được**, kể
+  cả thẻ đã bán: phải so với thẻ đã ban, và đo RIÊNG hàm tính
+  (`chroma_key_rgb` tại 640×360: 54 ms khi tính đầy đủ, 13 ms khi matte rút về
+  256 px — vì `atan2` một mình là 11,8 ms/230k phần tử trên CPU chỉ có X86_V2).
+  Hai cấu hình muốn so phải đo **xen kẽ trong cùng một vòng**: hai vòng riêng
+  lẻ lệch nhau 8–12 ms chỉ vì drift đọc đĩa.
 - **`QT_QPA_PLATFORM=offscreen` ở đây không có font nào** (`QFontDatabase` trả 0
   family): ảnh offscreen luôn là tofu, chỉ phán bố cục.
 - **Inno chỉ ghi đè file nó biết**, nên bản nâng cấp giữ file lạ trong `_internal`;

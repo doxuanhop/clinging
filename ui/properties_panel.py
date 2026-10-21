@@ -6,7 +6,7 @@ Hỗ trợ đặt Keyframe (Hình thoi viên kim cương) và Auto-Keyframe chu�
 """
 
 from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget,
     QLineEdit, QDoubleSpinBox, QSlider, QFormLayout, QFrame, QScrollArea, QPushButton,
@@ -562,6 +562,53 @@ class ClipPropertiesWidget(QWidget):
             clip_model.media_type in ("video", "image", "sticker"))
         self._sync_grading_card()
 
+        # Card 7: Chroma key — dục nền cho clip đè lên clip dưới/canvas. Cung
+        # cach dien the chinh card Chinh mau: moi num di qua SetChromaCommand,
+        # khong co duong tat ghi thang vao clip.effects.
+        self.card_chroma = QFrame()
+        self.card_chroma.setObjectName("PropertyCard")
+        layout_chroma = QFormLayout(self.card_chroma)
+        layout_chroma.setSpacing(8)
+        layout_chroma.setContentsMargins(12, 12, 12, 12)
+        lbl_chroma_title = QLabel("Dục nền (Chroma key)")
+        lbl_chroma_title.setObjectName("CardTitle")
+        layout_chroma.addRow(lbl_chroma_title)
+
+        key_row = QWidget()
+        key_layout = QHBoxLayout(key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.setSpacing(6)
+        self.btn_key_color = QPushButton()
+        self.btn_key_color.setObjectName("TransitionClearBtn")
+        self.btn_key_color.setFixedSize(64, 26)
+        self.btn_key_color.setCursor(Qt.PointingHandCursor)
+        self.btn_key_color.clicked.connect(self._on_key_color_clicked)
+        self.lbl_key_name = QLabel("(mặc định: xanh lá)")
+        self.lbl_key_name.setStyleSheet("color: #A0A0A0; font-size: 11px;")
+        key_layout.addWidget(self.btn_key_color)
+        key_layout.addWidget(self.lbl_key_name, 1)
+        layout_chroma.addRow("Màu nền:", key_row)
+
+        self._chroma_widgets = {}
+        for key, label_text, vmin, vmax, unit, fmt in self.CHROMA_CONTROLS:
+            row, slider, value_label = self._create_audio_slider(
+                vmin, vmax, int(round(self._chroma_scalar(key) / unit)))
+            slider.valueChanged.connect(
+                lambda v, k=key, u=unit: self._push_chroma(**{k: v * u}))
+            self._chroma_widgets[key] = (slider, value_label, fmt, unit)
+            layout_chroma.addRow(label_text, row)
+
+        self.btn_chroma_reset = QPushButton("Về mặc định")
+        self.btn_chroma_reset.setObjectName("TransitionClearBtn")
+        self.btn_chroma_reset.setFixedHeight(26)
+        self.btn_chroma_reset.setCursor(Qt.PointingHandCursor)
+        self.btn_chroma_reset.clicked.connect(self._reset_chroma)
+        layout_chroma.addRow(self.btn_chroma_reset)
+
+        self.card_chroma.setVisible(
+            clip_model.media_type in ("video", "image", "sticker"))
+        self._sync_chroma_card()
+
         # Ẩn/hiện dựa trên media_type
         is_text = clip_model.media_type == "text"
         self.card_text.setVisible(is_text)
@@ -572,6 +619,7 @@ class ClipPropertiesWidget(QWidget):
         scroll_layout.addWidget(self.card_motion)
         scroll_layout.addWidget(self.card_style)
         scroll_layout.addWidget(self.card_grading)
+        scroll_layout.addWidget(self.card_chroma)
         scroll_layout.addStretch(1)
 
         scroll_area.setWidget(scroll_content)
@@ -1282,6 +1330,94 @@ class ClipPropertiesWidget(QWidget):
             "fa6s.cube", "#40E0D0" if path else "#8a8a92"))
         self._block_signals = blocked
 
+    # (khoá, nhãn, min, max, buoc thuc cua mot nac, dinh dang nhan) — cung kieu
+    # voi GRADING_CONTROLS: slider chi biet so nguyen nen can he so quy doi.
+    # key_color khong co o day vi no la mau, khong phai num keo.
+    CHROMA_CONTROLS = (
+        ("tolerance", "Dung sai:", 0, 100, 0.01, "%.2f"),
+        ("feather", "Viền mềm:", 0, 100, 0.01, "%.2f"),
+        ("spill", "Chống ám:", 0, 100, 0.01, "%.2f"),
+    )
+
+    def _chroma_params(self) -> dict:
+        """Đọc bộ dục nền trên clip; chưa có thì trả về bộ trung tính."""
+        from core.clip_effects import CHROMA_EFFECT_NAME, CHROMA_IDENTITY
+        for effect in getattr(self._clip(), "effects", None) or []:
+            if effect.name == CHROMA_EFFECT_NAME:
+                merged = dict(CHROMA_IDENTITY)
+                merged.update(effect.params or {})
+                return merged
+        return dict(CHROMA_IDENTITY)
+
+    def _chroma_scalar(self, key) -> float:
+        from core.clip_effects import CHROMA_IDENTITY
+        try:
+            return float(self._chroma_params().get(key))
+        except (TypeError, ValueError):
+            return float(CHROMA_IDENTITY[key])
+
+    def _push_chroma(self, **changes):
+        """Một núm đổi = một SetChromaCommand; giống hệt hợp đồng của _push_grading."""
+        if self._block_signals:
+            return
+        current = self._chroma_params()
+        requested = {}
+        for key, value in changes.items():
+            old = current.get(key)
+            if isinstance(value, str):
+                if str(old or "").lower() == value.lower():
+                    continue
+            elif abs(float(old) - float(value)) < 0.005:
+                continue
+            requested[key] = value
+        if not requested:
+            return
+        from core.commands import SetChromaCommand
+        main_window = self._find_main_window()
+        model = self._model()
+        if main_window is None or model is None:
+            return
+        main_window.timeline_panel.undo_stack.push(
+            SetChromaCommand(model, self.clip_id, requested))
+        self._sync_chroma_card()
+        self._refresh_canvas()
+
+    def _on_key_color_clicked(self):
+        from PySide6.QtWidgets import QColorDialog
+        current = str(self._chroma_params().get("key_color") or "")
+        picked = QColorDialog.getColor(QColor(current), self, "Chọn màu nền")
+        if picked.isValid():
+            self._push_chroma(key_color=picked.name())
+
+    def _reset_chroma(self):
+        from core.clip_effects import CHROMA_IDENTITY
+        self._push_chroma(**dict(CHROMA_IDENTITY))
+
+    def _sync_chroma_card(self):
+        """Đọc lại ba núm + ô màu từ model — Ctrl+Z không tự sửa widget."""
+        clip = self._clip()
+        if clip is None or clip.media_type not in ("video", "image", "sticker"):
+            self.card_chroma.setVisible(False)
+            return
+        self.card_chroma.setVisible(True)
+        blocked = self._block_signals
+        self._block_signals = True
+        for key, (slider, label, fmt, unit) in self._chroma_widgets.items():
+            value = self._chroma_scalar(key)
+            slider.setValue(int(round(value / unit)))
+            label.setText(fmt % value)
+        from core.clip_effects import CHROMA_IDENTITY, key_color_rgb
+        spec = str(self._chroma_params().get("key_color") or "").strip()
+        if not QColor(spec).isValid():
+            spec = CHROMA_IDENTITY["key_color"]
+        self.btn_key_color.setStyleSheet(
+            "QPushButton { background-color: %s; border: 1px solid #555566; "
+            "border-radius: 4px; }" % spec)
+        r, g, b = key_color_rgb(spec)
+        self.lbl_key_name.setText("%s  (%d,%d,%d)" % (spec.upper(), r, g, b))
+        self.lbl_key_name.setToolTip("Nhấp để chọn màu nền cần dục")
+        self._block_signals = blocked
+
     def update_values(self, clip_model):
         """Cập nhật các ô nhập liệu từ Model (khi tương tác kéo trên Canvas)."""
         self._block_signals = True
@@ -1317,7 +1453,8 @@ class ClipPropertiesWidget(QWidget):
         self._sync_transition_card()
         self._sync_audio_card()
         self._sync_grading_card()
-        
+        self._sync_chroma_card()
+
         # Cập nhật màu các nút kim cương
         self.update_keyframe_buttons_ui()
 

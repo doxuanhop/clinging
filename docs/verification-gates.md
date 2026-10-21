@@ -89,7 +89,7 @@ python scratch/user_data_snapshot.py capture scratch/_snap_before.json
 # 1) Audit tên icon + tham số color= trên toàn bộ nguồn
 python scratch/icon_name_audit.py
 
-# 2) Selftest 34 dòng trên tree nguồn
+# 2) Selftest 35 dòng trên tree nguồn
 python main.py --selftest
 
 # 3) Đo khởi động (bao gồm control cùng lần, xem mục dưới đây)
@@ -128,7 +128,7 @@ python scratch/color_grading_evidence.py        # -> scratch/color_grading_evide
                                                 # -> scratch/color_grading_card_evidence.png
 
 # 4f) Du an Pop Art: gate do TREN FILE mp4 da xuat + 6 phep phan chung (moi phep
-#     chay CA HAI gate: --selftest 34 dong va gate file)
+#     chay CA HAI gate: --selftest 35 dong va gate file)
 python scratch/popart_project_build.py              # -> ALL PASS, ~5 ban render 720p
 CLINGING_POPART_REUSE=1 python scratch/popart_project_build.py  # do lai khong xuat lai
 python scratch/popart_project_counterfactual.py     # -> 6/6 do dung ly do, byte ve nguyen ban
@@ -140,6 +140,15 @@ python scratch/popart_window_shot.py                # -> ALL PASS, mo anh ra XEM
 python scratch/popart_window_shot.py --selfcheck    # duong dan exe sai -> rc=1
 python scratch/popart_window_shot.py --pixels       # khung den DO, anh that XANH,
                                                     # boi preview DO vi mat noi dung
+
+# 4h) Chroma key (duc nen theo goc hue + despill + matte ha do phan giai):
+#     19 phep doi byte tren 4 file nguon, moi phep do DUNG mot dong cua no
+python scratch/chroma_key_counterfactual.py       # -> 19/19 do, byte ve nguyen ban
+python scratch/chroma_key_evidence.py             # -> 54 OK / 0 FAIL
+                                                  # -> scratch/chroma_key_evidence.png
+                                                  # -> scratch/chroma_key_card_evidence.png
+python scratch/chroma_cost_probe.py               # -> 16 OK / 0 FAIL: chi phi/frame
+                                                  # qua composer that, do xen ke 1 vong
 
 # 5) Chụp lại rồi diff: phải ra 0 THEM / 0 MAT / 0 DOI
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json
@@ -441,6 +450,69 @@ thước.
 
 ---
 
+## Cổng "dục nền chroma key" (nhóm F, 2026-10-21)
+
+| Dòng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `duc nen chroma key: goc hue + alpha qua chuoi loc` | Một `EffectData("Chroma key")` mỗi clip, bốn khoá `{key_color, tolerance, feather, spill}` nằm NGOÀI `PIXEL_KEYS`/`GRADING_KEYS` nên cổng "thẻ ma" không đổi. Matte đo bằng **GÓC hue trên mặt phẳng Cb/Cr (BT.601)**, tuyệt đối không dùng khoảng cách: trắng cách nền `#00B140` tới 83,7 đơn vị bão hoà nên bản "distance" khoét chủ thể trước khi khoét nền. Ngưỡng bão hoà `CHROMA_MAG_FLOOR = 20,0` **cố định** (sàn không được phình theo núm, nếu không núm rộng lại ăn màu nhạt). `tolerance = 0` → `apply_color_effects` trả về ĐÚNG object QImage. Matte tính **MỘT lần trước** vòng lọc màu nên thứ tự thẻ không đổi được kết quả; despill chỉ động kênh nóng nhất của màu khoá và không được chạm alpha. `SetChromaCommand` gom trong `MERGE_WINDOW_S = 0.75`, khác khoá thì không gom, về `CHROMA_IDENTITY` thì tỉa hẳn thẻ | `chroma_key_counterfactual.py`: 19 phép đổi byte trên `core/clip_effects.py`, `core/commands.py`, `ui/properties_panel.py`, `core/timeline_model.py` |
+| (cùng dòng) `matte 256 px` | `CHROMA_MATTE_MAX = 256`: mặt phẳng matte tính trên plate thu nhỏ (`cv2.INTER_AREA` xuống, `INTER_LINEAR` lên) rồi nhân vào alpha; despill vẫn chấm RGB ở độ phân giải làm việc. Phải đo được CẢ HAI chiều: cạnh thu nhỏ **thật sự chạy** ở 640×360 (không thì cổng xanh vì nhánh bị vô hiệu hoá), và **không đổi quyết định** trong vùng đồng nhất — chỉ được làm lệch đường biên | hai phép cuối của `chroma_key_counterfactual.py`: `if long_side <= CHROMA_MATTE_MAX:` → `if True:` (tắt cạnh) phải đỏ vì `branch thu nho matte khong chay`, và `size = (round(w*scale), round(h*scale))` → `(w//64, h//64)` (plate quá ran) phải đỏ vì `thu nho matte an chu the` |
+
+Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
+
+* `--selftest`: **35 dòng, `failed = []`, rc=0, 19,2 s**. Chi tiết dòng chroma:
+  `nen 0.000 moi dung sai, la-cay 19.8 do alpha 1.000->0.303->0.000 theo num
+  0.05/0.15/0.30, lan 40.8 do cat tu 0.50, 4 mau trung tinh con 1.000 o tolerance
+  1.0 (ke ca 0.0 do mag 16.7), bien mong la-cay tai tolerance 0.02, feather 0->1
+  lam mong 1.000->0.030, spill 177->61 khong doi matte, matte 256 px (lech 0.0000
+  so voi do day du tai 640x360), 4 nac = 1 buoc undo, 6 seam, round-trip 1 the`.
+* 19 phép phản chứng đều đỏ ĐÚNG lý do, rc=0, **437,3 s**, ví dụ: sàn bão hoà về 0
+  → `tolerance 1.0 duc ca mau trung tinh (trang alpha nan)`; span núm dung sai về 0
+  → `tolerance 0.15 khong mo vong toi la cay (alpha 1.000)`; span viền mềm về 0 →
+  `vien mem khong lam mong bien`; đảo dấu span → `mau cua chinh bo khoa van con
+  o alpha 0.998`; despill tắt → `spill 0.8 khong keo kenh xanh cua nen (177 -> 177)`;
+  despill cả ba kênh → `spill dong luon kenh khac cua nen`; pre-pass tắt →
+  `nen con alpha 255 trong QImage`; matte đảo → `trang bi duc o QImage that (alpha 0)`;
+  thẻ trung tính vẫn mở numpy → `the chroma trung tinh van chay chuoi loc`; màu đọc
+  không được → `mau doc khong duoc ('') khong tra ve nen mac dinh`; khoá lẫn
+  `PIXEL_KEYS` → `CHROMA_KEYS trung khoa khac`; hai luật gom undo →
+  `keo 4 nac dung sai thanh 4 buoc undo` / `num khac khoa bi gom chung`; tắt tỉa thẻ
+  → `tha het ve trung tinh ma the chroma van con (1 the)`; hai seam panel →
+  `update_values thieu _sync_chroma_card` / `_push_chroma thieu SetChromaCommand`;
+  presetBo loc dùng khoá chroma → `Bo loc se duc nen luong bat`.
+* Ảnh `scratch/chroma_key_evidence.png` (8 ô `FrameComposer` 640×360, đúng đường
+  xuất, mọi bo số đẩy qua `SetChromaCommand`/`SetGradingCommand` trên `UndoStack`
+  thật): ô 0 nguyên nền xanh; ô 1-2 cắt hết caro, giữ 8 ô màu; ô 3-4 viền mềm làm
+  mong biên; ô 5 chống ám kéo kênh xanh của ô nhiễm ám 127 → 99 mà không đụng
+  đỏ/lục (lệch 0,0); ô 6 khoá màu ĐỎ cắt đúng đỏ-da-cam và để nguyên nền xanh;
+  ô 7 chroma + chỉnh màu hue +90 vẫn cắt nền (239,239,60) và xoay đỏ đi 163.
+  Ảnh `scratch/chroma_key_card_evidence.png`: thẻ "Dục nền (Chroma key)" grab từ
+  `ClipPropertiesWidget` thật (400×235, 22.138 điểm alpha), nhãn đọc lại đúng
+  `0.30 / 0.25 / 0.00` và hex `#00B140 (0,177,64)`. Probe: **54 OK / 0 FAIL, rc=0,
+  4,3 s**, hai ảnh được `PIL.Image.open` mở lại và đếm màu (7.747 và 210 màu).
+* `scratch/chroma_cost_probe.py` (ràng buộc "máy cấu hình thấp") — **16 OK / 0 FAIL,
+  rc=0, 41,5 s**:
+  * Đường tắt: không thẻ và thẻ `tolerance 0` trả về **đúng object QImage**
+    (`0,015 ms/frame`), nên clip không dục nền không phải trả giá numpy.
+  * Thuê qua `FrameComposer` (20 frame median): 720p — không thẻ 30,1 ms, chroma
+    98,4, `grading hue 45` 76,0, Pop Art 195,0; 1080p — 31,7 / 87,7 / 62,2 / 190,6.
+    **Phần cứng nói dối nếu đo hai vòng riêng**: cùng một cấu hình, hai vòng liền
+    lệch 8-12 ms vì drift đọc đĩa, nên cặp núm dung sai/viền mềm phải đo **xen kẽ
+    trong cùng một vòng** — kết quả 117,5 vs 120,0 ms (720p) và 102,6 vs 103,6 ms
+    (1080p), tức núm không nhân chi phí vì matte chỉ tính một lần.
+  * RIêng hàm `chroma_key_rgb` tại 640×360: **13,4 ms** khi matte rút về 256 px,
+    20,2 ms kèm despill, so với **54,0 ms** khi tính đầy đủ — `atan2` một mình hết
+    11,8 ms/230k phần tử trên CPU chỉ có X86_V2. Despill viết lại theo lerp một
+    kênh: 8,8 → 6,4 ms, kết quả bằng nhau tới 0,0/255.
+  * RAM: 20 frame 1080p làm working set 72,6 → 73,4 MB (**+0,8 MB**), không thêm
+    module nặng nào vào import đầu (numpy/cv2 đã nạp sẵn cho các thẻ khác).
+* Snapshot dữ liệu người dùng quanh `--selftest`: **1774 → 1774 file,
+  `THEM: 6 / MAT: 6 / DOI: 0`**. Sáu dòng thêm và sáu dòng mất cùng nằm trong
+  `~\.clinqing\recovery\` và trùng đúng hai stem fixture của selftest
+  (`Kiem karaoke` 5, `Kiem recap` 1) — vòng quay keep-5 của ảnh phục hồi, không
+  phải mất dữ liệu: `DOI: 0` và tổng số file không đổi.
+
+---
+
 ## Thất bại đã ghi (để không lặp)
 
 | Hiện tượng | Nguyên nhân thật | Hệ quả thành quy tắc |
@@ -454,6 +526,8 @@ thước.
 | selftest xanh, exe crash khi mở | Probe để window sống tới lúc teardown | Probe phải đóng theo thứ tự rồi pump event |
 | `--report` treo khi build `console=False` | Exception không bắt biến thành hộp thoại modal | Chế độ headless phải ghi error payload và return khác 0 |
 | Phản chứng đỏ **mà source không đổi gì** | Gate assert `rc == 3221226505`, trong khi Qt-abort lần ra 0xC0000409 lần ra rc=1 (đo 6 lần: 2 abort / 1 rc=1 cho cùng một đầu vào) | Bất biến phải là nội dung log (`Error calling Python override of ...`), mã exit chỉ in ra để đọc — assert trên TẬP {1, 0xC0000409} |
+| `chroma_cost_probe` FAIL `thue bo sung <= 22.0 ms/frame` dù code đã nhanh hết mức | Ngưỡng bịa từ chi phí bộ lọc thuần, quên rằng MỌI thẻ pixel phải trả round-trip QImage→numpy→QImage (65-85 ms/frame lúc 720p) trước khi phép lọc chạy | So thẻ mới với thẻ ĐÃ SHIP chạy qua cùng composer (ngưỡng tương đối) và đặt ngưỡng tuyệt đối chỉ trên hàm toán thuần |
+| Hai phép phản chứng đầu tiên của chroma đỏ vì đúng lý do nhưng SAI dòng | Cạnh 640×360 mới thêm đặt TRƯỚC các assertion QImage cũ nên nó nuốt lỗi của phép thử khác | Mỗi phép đổi byte phải chỉ làm đỏ CỬA CỦA NÓ — đặt assertion mới SAU các assertion đã tồn tại trong cùng giai đoạn, rồi chạy lại 19/19 |
 
 ## Liên quan
 

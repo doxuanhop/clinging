@@ -28,7 +28,7 @@ Chạy thử:
 
 ```bash
 python main.py                                  # mo app
-python main.py --selftest --report st.json      # 34 dong cong, xem key "failed"
+python main.py --selftest --report st.json      # 35 dong cong, xem key "failed"
 python scratch/icon_name_audit.py               # ten glyph dung trong UI
 ```
 

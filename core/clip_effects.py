@@ -6,7 +6,8 @@ Pipeline hiệu ứng DÙNG CHUNG cho cả Preview (CanvasClipItem) lẫn Export
 Tách ra khỏi ui/graphics_canvas_item.py để "xuất video giống hệt xem trước":
     - apply_color_effects(image, effects): lọc màu theo pixel (brightness,
       contrast, saturation, color_temp, blur, vignette, grain, sharpen,
-      posterize, halftone, outline, chromatic, lens_flare).
+      posterize, halftone, outline, chromatic, lens_flare) và dục nền chroma
+      key — nhánh duy nhất trong hàm này viết vào kênh alpha.
     - compute_animation_offsets(effects, t): tính dịch chuyển/scale/opacity của
       các hiệu ứng chuyển động theo thời gian t (giây).
 
@@ -17,7 +18,7 @@ tường minh nên preview và export luôn cho cùng kết quả.
 import math
 from collections import namedtuple
 
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtCore import Qt
 
 from core import anim_engine
@@ -85,6 +86,190 @@ def grading_is_identity(params) -> bool:
         except (TypeError, ValueError):
             return False   # gia tri sai kieu tu file .clinq cu: giu EffectData, khong boc
     return True
+
+
+# ── CHROMA KEY (duc nen) ─────────────────────────────────────────────────────
+# Tach khoi PIXEL_KEYS ly do nhu GRADING_KEYS: khong phai the mot-nhap, ma la
+# mot EffectData do panel thuoc tinh quan ly, nen gate "the ma"
+# (_effect_liveness_ok) khong doi.
+CHROMA_KEYS = ("key_color", "tolerance", "feather", "spill")
+CHROMA_EFFECT_NAME = "Chroma key"
+
+# trung tinh = khong duc: tolerance 0 thi matte o doc 100% va
+# apply_color_effects bo qua han phep tinh.
+CHROMA_IDENTITY = {"key_color": "#00B140", "tolerance": 0.0, "feather": 0.25,
+                   "spill": 0.0}
+
+# Num thuc cua ba num 0..1. Do theo GOC hue trong mat phang Cb/Cr (BT.601),
+# khong theo khoang cach den mau nen: khoang cach do mau trung tinh (trang/xam,
+# Cb=Cr=0) dung cach mau nen nguyen chat bang do bao hoa cua chinh mau nen
+# (#00B140 la 83,7), nen tolerance cao se duc luon chu the khong mau.
+CHROMA_TOL_MIN_DEG = 4.0     # tolerance 0,01 = cat sat quanh hue cua nen
+CHROMA_TOL_SPAN_DEG = 76.0   # tolerance 1,0 = 80 do — rong hon moi nen thuc
+CHROMA_SOFT_MIN_DEG = 2.0    # bien mo goc khi feather 0 (tranh rac cung)
+CHROMA_SOFT_SPAN_DEG = 40.0
+CHROMA_MAG_FLOOR = 20.0      # duoi nguong bao hoa nay thi pixel la trung tinh
+CHROMA_MAG_RAMP = 0.5        # mau co do bao hoa < floor*(1+RAMP) bi giam dan
+
+# Mat phang matte chay o do dai canh <= gia tri nay roi phong lai. Do 21/10/2026
+# tren may nay (numpy 2.4.6, chi co SIMD X86_V2): toan bo phep tinh matte o
+# 640x360 = 54 ms/frame, trong do rieng atan2 11,8 ms/230k phan tu — vuot qua
+# ca mot the chinh mau da ban (27 ms). Tai 256 px thi matte = 11,2 ms, bon 250
+# lan it hon so pixel cua khung: chu the gia dinh rong hon 256 px tren plate
+# moi thay doi bien, ma bien cua chroma key luon mo san bang num feather.
+CHROMA_MATTE_MAX = 256
+
+
+def chroma_is_identity(params) -> bool:
+    """True khi bo nut chroma khong con lam trong khung hinh nao.
+
+    feather/spill KHONG duoc tinh: chung chi co nghia khi tolerance > 0, nen
+    mot the tolerance 0 bi boc ke ca khi nguoi dung da dinh san hai num ay.
+    """
+    values = params or {}
+    try:
+        return abs(float(values.get("tolerance", 0.0))) <= 1e-6
+    except (TypeError, ValueError):
+        return False
+
+
+def key_color_rgb(spec):
+    """'#00B140' -> (0.0, 177.0, 64.0). Mau doc khong duoc thi ve nen xanh.
+
+    Khong nem exception: file .clinq cu co the ghi chu sai, va mot phep duc nen
+    theo mau rac con te hon mot phep duc theo mau mac dinh.
+    """
+    color = QColor(str(spec or "").strip())
+    if not color.isValid():
+        color = QColor(CHROMA_IDENTITY["key_color"])
+    return (float(color.red()), float(color.green()), float(color.blue()))
+
+
+def _smoothstep(x):
+    """smoothstep tren 0..1: bien mo lien, khong rac nhu nguong cung."""
+    t = np.clip(x, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def chroma_angles_rgb(rgb, key):
+    """(goc lech so voi hue cua nen [rad], do bao hoa Cb/Cr) — bo qua do sang.
+
+    Thanh Y bi loai hoan toan: Cb/Cr chi con hai toa do mau, nen nen xanh sang
+    va nen xanh toi nam CUNG mot huong va cung bi duc. Pixel trung tinh co do
+    bao hoa ~ 0 nen huong cua no khong xac dinh — vi the can tra ca mag de
+    chroma_key_rgb giu lai, khong duc.
+    """
+    r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    cb = -0.168736 * r - 0.331264 * g + 0.5 * b
+    cr = 0.5 * r - 0.418688 * g - 0.081312 * b
+    kcb = -0.168736 * key[0] - 0.331264 * key[1] + 0.5 * key[2]
+    kcr = 0.5 * key[0] - 0.418688 * key[1] - 0.081312 * key[2]
+    dot = cb * kcb + cr * kcr
+    cross = cb * kcr - cr * kcb
+    angle = np.abs(np.arctan2(cross, dot)).astype(np.float32)
+    mag = np.sqrt(cb * cb + cr * cr).astype(np.float32)
+    return angle, mag
+
+
+def despill_rgb(rgb, key, weight):
+    """Keo kenh manh nhat cua mau nen ve trung binh hai kenh con lai.
+
+    Day la lop "xanh boi sang" ma phep duc mot minh alpha de lai: toc cua
+    nguoi dung dat truoc nen xanh van nhiem xanh. weight 0 -> khong cham vao
+    dau, va chi kenh nong cua nen moi bi dong.
+
+    Viet theo lerp mot kenh (c = c + (mean_other - c)*w) thay vi ghep
+    `c*(1-w) + mean_other*w`: cung ket qua (do max lech 0.0/255 tren plate
+    640x360) nhung it hon hai vong bo nho — 6,4 ms so voi 8,8 ms tai 640x360,
+    ma 2,1 ms trong do la rgb.copy() khong the bo.
+    """
+    if weight is None or not np.any(weight):
+        return rgb
+    chans = [rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]]
+    hot = int(max(range(3), key=lambda i: key[i]))
+    others = [c for i, c in enumerate(chans) if i != hot]
+    w = np.clip(weight, 0.0, 1.0)
+    out = rgb.copy()
+    delta = (others[0] + others[1]) * 0.5
+    dst = out[:, :, hot]
+    np.subtract(delta, dst, out=delta)
+    delta *= w
+    dst += delta
+    return out
+
+
+def _matte_plate(rgb):
+    """(plate de tinh matte, kich thuoc can phong lai hoac None).
+
+    Thu anh bang INTER_AREA (lay trung binh, khong bot rac nhu INTER_NEAREST)
+    roi khi phong len dung INTER_LINEAR — do la bien mo san cua feather. May
+    khong co cv2 thi tinh truc tiep tren plate lam viec: slow hon nhung dung.
+    """
+    if cv2 is None:
+        return rgb, None
+    h, w = rgb.shape[:2]
+    long_side = max(h, w)
+    if long_side <= CHROMA_MATTE_MAX:
+        return rgb, None
+    scale = float(CHROMA_MATTE_MAX) / long_side
+    size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
+    plate = cv2.resize(np.ascontiguousarray(rgb), size,
+                       interpolation=cv2.INTER_AREA)
+    return plate, (w, h)
+
+
+def chroma_key_rgb(rgb, params):
+    """Duc nen: tra (rgb_da_despill, alpha 0..1) hoac (rgb, None) neu tat.
+
+    Alpha 0 = trong suot hoan toan. Phep tinh chi chay MOT LAN tren plate lam
+    viec cua chuoi loc (xem apply_color_effects), de matte khong bi doi khi clip
+    mang them the sac thai/loc mau nao. Rieng matte rut ve do dai canh
+    CHROMA_MATTE_MAX roi phong ve dung kich thuoc plate; despill van cham RGB
+    o do day du vi no sua mau, khong phai duong cat.
+    """
+    tolerance = float(params.get("tolerance", 0.0) or 0.0)
+    if tolerance <= 1e-6:
+        return rgb, None
+    key = key_color_rgb(params.get("key_color"))
+    plate, upscale_to = _matte_plate(rgb)
+    angle, mag = chroma_angles_rgb(plate, key)
+    tol_rad = math.radians(CHROMA_TOL_MIN_DEG + tolerance * CHROMA_TOL_SPAN_DEG)
+    soft_rad = math.radians(CHROMA_SOFT_MIN_DEG
+                            + float(params.get("feather", 0.0) or 0.0)
+                            * CHROMA_SOFT_SPAN_DEG)
+    # keyed 1 = hoan toan la nen; confidence 0 = pixel trung tinh, khong co
+    # hue de ma duc theo, nen gi nguyen.
+    keyed = 1.0 - _smoothstep((angle - tol_rad) / soft_rad)
+    # Nguong bao hoa CO DINH, khong phong theo tolerance. Lenh day: pixel gan
+    # trung tinh co huong Cb/Cr la nhieu (atan2 tren so ~0), nen phai giu bang
+    # confidence; nhung neu floor cung tang theo tolerance thi num rong ra lai
+    # LAM MAT nhung mau nhat — do 21/10/2026: xanh nhat (120,180,140) alpha
+    # 0,363 o tolerance 0,25 nhung nhay len 0,974 o 0,9, nguoc ban chat keyer.
+    floor = CHROMA_MAG_FLOOR
+    confidence = _smoothstep((mag - floor) / (floor * CHROMA_MAG_RAMP))
+    matte = (keyed * confidence).astype(np.float32)
+    if upscale_to is not None:
+        matte = cv2.resize(matte, upscale_to,
+                           interpolation=cv2.INTER_LINEAR).astype(np.float32)
+    alpha = 1.0 - matte
+    spill = float(params.get("spill", 0.0) or 0.0)
+    out = rgb
+    if spill > 1e-6:
+        out = despill_rgb(rgb, key, matte * spill)
+    return out, alpha.astype(np.float32)
+
+
+def _opens_pixels(effect) -> bool:
+    """True khi thẻ bắt buộc phải mở numpy; thẻ rỗng thì ảnh trả nguyên object.
+
+    Chroma khác hai họ kia ở chỗ này: một thẻ tolerance 0 không dục nổi một
+    pixel, nên phải được tính là rỗng. SetChromaCommand đã boc thẻ khi ve
+    trung tinh, phep do nay chi can khi file .clinq tay sua hoac ban cu con lai.
+    """
+    params = getattr(effect, "params", None) or {}
+    if any(k in PIXEL_KEYS or k in GRADING_KEYS for k in params):
+        return True
+    return any(k in CHROMA_KEYS for k in params) and not chroma_is_identity(params)
 
 
 def _qimage_to_rgba(image: QImage):
@@ -351,8 +536,7 @@ def apply_color_effects(image: QImage, effects) -> QImage:
     # nguyên bản: round-trip numpy + proxy 640px dưới đây tự nó làm đổi vài
     #/channel, nên chỉ cần một hiệu ứng phi-pixel cũng đủ làm clip xỉn màu.
     # Đây cũng là đường tắt cho máy cấu hình thấp — khỏi mở numpy khi không vẽ gì.
-    if not any(k in PIXEL_KEYS or k in GRADING_KEYS
-               for e in effects for k in (getattr(e, "params", None) or {})):
+    if not any(_opens_pixels(e) for e in effects):
         return image
 
     output_size = image.size()
@@ -363,6 +547,19 @@ def apply_color_effects(image: QImage, effects) -> QImage:
     arr, w, h = _qimage_to_rgba(work)
     rgb = arr[:, :, :3]
     alpha = arr[:, :, 3:4]
+
+    # ── Chroma key: TINH TRUOC vong lap hieu ung ──
+    # Matte phai do tren plate nguyen ban. De no nam trong vong lap thi thu tu
+    # danh sach effects quyet dinh mau cua nen: cung mot clip, dat the "Bo loc"
+    # (sat thi nen xanh thanh nen vang) truoc hay sau the Chroma cho hai ket qua
+    # khac nhau — preview va export se khong bao gio trung nhau mot cach tin cay.
+    # Despill cung nam o day vi no sua RGB, khong phai alpha.
+    for effect in effects:
+        params = getattr(effect, "params", None) or {}
+        if "tolerance" in params:
+            rgb, matte = chroma_key_rgb(rgb, params)
+            if matte is not None:
+                alpha = alpha * matte[:, :, None]
 
     for effect in effects:
         intensity = effect.intensity

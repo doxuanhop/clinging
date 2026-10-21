@@ -692,6 +692,95 @@ class SetGradingCommand(Command):
         return ("Chỉnh màu: " + ", ".join(parts)) if parts else "Chỉnh màu"
 
 
+class SetChromaCommand(Command):
+    """Đổi một núm của bộ dục nền: màu khoá / tolerance / feather / spill.
+
+    Anh em sinh đôi với SetGradingCommand nhưng KHÔNG kế thừa chung: bản đó đã
+    được ba probe đổi-byte bám vào từng dòng (color_grading_counterfactual.py),
+    nên gộp thành một base sẽ làm chúng khập khiễng vì lý do kỹ thuật chứ không
+    phải vì lỗi thật. Hợp đồng giữ nguyên: một clip đúng một EffectData
+    "Chroma key", kéo trượt trong MERGE_WINDOW_S gom thành một bước undo, và
+    thả về trung tính thì boc thẻ — tolerance 0 mà để thẻ lại thì
+    apply_color_effects mở numpy tính matte vô ích mỗi frame.
+    """
+
+    MERGE_WINDOW_S = 0.75
+    LABELS = {"key_color": "màu nền", "tolerance": "dung sai",
+              "feather": "viền mềm", "spill": "chống ám màu"}
+
+    def __init__(self, model, clip_id: str, params: dict):
+        from core.clip_effects import CHROMA_KEYS
+        self._model = model
+        self._clip_id = clip_id
+        self._requested = {key: value for key, value in (params or {}).items()
+                           if key in CHROMA_KEYS and value is not None}
+        self._before = None          # (index, EffectData|None, params|None)
+        self._at = time.monotonic()
+
+    @staticmethod
+    def _index(clip, name) -> int:
+        for i, effect in enumerate(clip.effects):
+            if effect.name == name:
+                return i
+        return -1
+
+    def execute(self):
+        from core.clip_effects import (CHROMA_EFFECT_NAME, CHROMA_IDENTITY,
+                                       chroma_is_identity)
+        from core.timeline_model import EffectData
+        clip = self._model.get_clip(self._clip_id)
+        if clip is None or not self._requested:
+            return
+        index = self._index(clip, CHROMA_EFFECT_NAME)
+        old = clip.effects[index] if index >= 0 else None
+        self._before = (index, old, dict(old.params) if old else None)
+        merged = dict(CHROMA_IDENTITY)
+        merged.update(old.params if old is not None else {})
+        merged.update(self._requested)
+        if chroma_is_identity(merged):
+            if index >= 0:
+                clip.effects.pop(index)
+        elif old is not None:
+            old.params = merged
+        else:
+            clip.effects.append(EffectData(
+                name=CHROMA_EFFECT_NAME, category=CHROMA_EFFECT_NAME,
+                intensity=1.0, params=merged))
+        self._model.clipUpdated.emit(self._clip_id)
+
+    def undo(self):
+        from core.clip_effects import CHROMA_EFFECT_NAME
+        clip = self._model.get_clip(self._clip_id)
+        if clip is None or self._before is None:
+            return
+        index, old, old_params = self._before
+        current = self._index(clip, CHROMA_EFFECT_NAME)
+        if current >= 0:
+            clip.effects.pop(current)
+        if old is not None:
+            old.params = old_params
+            clip.effects.insert(min(index, len(clip.effects)), old)
+        self._model.clipUpdated.emit(self._clip_id)
+
+    def merges_with(self, other: "Command") -> bool:
+        if not isinstance(other, SetChromaCommand):
+            return False
+        if other._clip_id != self._clip_id:
+            return False
+        keys = set(self._requested)
+        if keys != set(other._requested) or not keys:
+            return False
+        return other._at - self._at <= self.MERGE_WINDOW_S
+
+    def absorb(self, other: "SetChromaCommand"):
+        self._requested = dict(other._requested)
+        self._at = other._at
+
+    def description(self) -> str:
+        parts = [self.LABELS.get(key, key) for key in sorted(self._requested)]
+        return ("Dục nền: " + ", ".join(parts)) if parts else "Dục nền"
+
+
 class SetTransitionCommand(Command):
     """Gắn/xóa chuyển tiếp ở mép trái clip.
 

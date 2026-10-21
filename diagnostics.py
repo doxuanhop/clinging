@@ -1580,6 +1580,7 @@ def run_selftest(argv=None):
     col.check("clipboard clip Ctrl+C/V", _clipboard_copy_paste_ok)
     col.check("style chu: vien/bong/hop nen/can le", _text_styling_ok)
     col.check("chinh mau: hue/lift-gamma-gain/LUT .cube", _color_grading_ok)
+    col.check("duc nen chroma key: goc hue + alpha qua chuoi loc", _chroma_key_ok)
     col.check("doc MRU khong ghi du lieu nguoi dung", _recent_readonly_ok)
     col.check("giai ma tuan tu + cache dia", _decode_cache_ok)
     col.check("xem truoc = xuat: moc thoi gian cuc bo dung mot ham", _local_time_ok)
@@ -4195,6 +4196,446 @@ def _color_grading_ok():
                 "4 nac = %d buoc undo, 6 seam nguyen"
                 % (gap_after, lift_out[1], lift_out[3], gam_out[2], gain_out,
                    id_err, sw_err, ramp[1], stack.undo_count))
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _chroma_key_ok():
+    """Một dòng --selftest: bộ dục nền (chroma key) phải cắt theo GÓC hue của màu
+    khoá, giữ pixel trung tính ở MỌI dung sai, và để lại alpha trên đúng QImage
+    mà preview lẫn export cùng vẽ.
+
+    Ba cái bẫy đã trả giá khi viết bản đầu, nay thành bất biến (số đo ghi trong
+    comment của core/clip_effects.py):
+      (1) Khoảng cách Cb/Cr tới màu khoá KHÔNG thể là dung sai. Màu trắng cách
+          nền xanh #00B140 những 83.7 đơn vị bão hoà — bản "distance" khoét luôn
+          chủ thể ngay khi người dùng kéo núm; bản này PHẢI trả alpha 255 cho
+          trắng/xám ở tolerance 1,0.
+      (2) Núm rộng ra KHÔNG được làm mất màu nhạt: ngưỡng bão hoà phải CỐ ĐỊNH.
+      (3) Matte phải đo TRƯỚC chuỗi lọc màu, nếu không thứ tự thẻ quyết định kết
+          quả và preview lệch export theo cách không tài nào tái.
+    feather/spill/undo/persistence: mọi ngưỡng dưới đây lấy từ chính bảng đo của
+    hàm thật, không có số nào tự bày.
+    """
+    import os
+    import shutil
+    import tempfile
+    import numpy as np
+    from PySide6.QtGui import QImage
+    from core import project_storage
+    from core.clip_effects import (CHROMA_EFFECT_NAME, CHROMA_IDENTITY,
+                                   CHROMA_KEYS, CHROMA_MATTE_MAX,
+                                   GRADING_EFFECT_NAME, GRADING_KEYS,
+                                   PIXEL_KEYS, apply_color_effects,
+                                   chroma_is_identity, chroma_key_rgb,
+                                   key_color_rgb)
+    from core.commands import SetChromaCommand, UndoStack
+    from core.frame_composer import FrameComposer
+    from core.timeline_model import (EFFECT_PRESETS, EffectData, TimelineModel,
+                                     TrackType)
+    from ui.graphics_canvas_item import CanvasClipItem
+    from ui.properties_panel import ClipPropertiesWidget
+
+    if set(CHROMA_KEYS) & (set(PIXEL_KEYS) | set(GRADING_KEYS)):
+        raise RuntimeError("CHROMA_KEYS trung khoa khac: mot the doi hai chuc nang")
+    if CHROMA_EFFECT_NAME in EFFECT_PRESETS:
+        raise RuntimeError("Chroma nam trong EFFECT_PRESETS: cua the ma cua "
+                           "_effect_liveness_ok chua biet cach do no")
+    stolen = sorted(name for name, params in EFFECT_PRESETS.items()
+                    if set(CHROMA_KEYS) & set(params))
+    if stolen:
+        raise RuntimeError("preset %s dung khoa chroma:Bo loc se duc nen luong bat"
+                          % ", ".join(stolen))
+
+    KEY = "#00B140"
+    PLATE = (("nen", (0.0, 177.0, 64.0)),          # 0.0 do: chinh mau nen
+             ("la-cay", (60.0, 200.0, 60.0)),      # 19.8 do
+             ("lan", (60.0, 190.0, 200.0)),        # 40.8 do
+             ("xanh-nhat", (120.0, 180.0, 140.0)),  # 1.7 do nhung bao hoa thap
+             ("trang", (245.0, 245.0, 245.0)),
+             ("xam", (130.0, 130.0, 130.0)),
+             ("den-xam", (40.0, 40.0, 40.0)),
+             # 0.0 do (collinear Cb/Cr voi nen) nhung bao hoa 16.7 < floor 20:
+             # hue trung voi nen, thu duy nhat bao no la nguong bao hoa
+             # -> do rieng CHROMA_MAG_FLOOR, khong do bang hue.
+             ("xanh-rat-nhat", (196.0, 231.4, 208.8)))
+    strip = np.array([[colour] for _name, colour in PLATE], np.float32)
+    at = {name: i for i, (name, _c) in enumerate(PLATE)}
+
+    def matte_at(tol, feather=0.25, spill=0.0):
+        params = dict(CHROMA_IDENTITY)
+        params.update(key_color=KEY, tolerance=tol, feather=feather, spill=spill)
+        return chroma_key_rgb(strip, params)
+
+    def row(name, tol, feather=0.25, spill=0.0):
+        return float(matte_at(tol, feather, spill)[1][at[name], 0])
+
+    # (1) Nền PHẢI bị cắt ở mọi dung sai; chủ thể trung tính PHẢI sống ở dung sai
+    #     max. Hai bất biến này đối nghịch với bản "khoảng cách Cb/Cr": bản đó cho
+    #     trắng 83.7 (lớn hơn nền 0.0) nên khoét trắng trước khi khoét nền.
+    #     So SANH ĐẢO (`not v >= lo`): pixel trung tính co mag 0 nen floor = 0
+    #     chia 0/0 ra NaN, va `min()`/`v < lo` deu im lang voi NaN — do 21/10/2026
+    #     khi doi byte MAG_FLOOR xuyen qua ca cua do trang lan cua do la-cay.
+    worst_neutral = 1.0
+    for name in ("trang", "xam", "den-xam", "xanh-rat-nhat"):
+        v = row(name, 1.0)
+        if not v >= 0.999:
+            raise RuntimeError("tolerance 1.0 duc ca mau trung tinh (%s alpha %.3f): "
+                               "nguong bao hoa bi thay bang khoang cach hue"
+                               % (name, v))
+        worst_neutral = min(worst_neutral, v)
+    for tol in (0.05, 0.25, 0.5, 1.0):
+        if row("nen", tol) > 0.01:
+            raise RuntimeError("mau cua chinh bo khoa van con o alpha %.3f "
+                               "(tolerance %.2f)" % (row("nen", tol), tol))
+
+    # (1c) Vien mem phai co THAT: ton tai mot (mau, dung sai) ma feather 0 con
+    #      giu chu the nhung feather 1 da an. Do TRUOC kiem num dung sai de mot
+    #      lenh "soft_span = 0" do vi ly do cua chinh vien mem.
+    #      Nguong la DOI (>= 0.5), khong phai gia tri tuyet doi < 0.2: voi num
+    #      dung sai bi ve 0 do thi la-cay van mong 1.000 -> 0.287 o tolerance
+    #      0.98, nen no phai do o cua (2) chu khong phai o day.
+    edge = ("la-cay", "lan", "xanh-nhat")
+    found = None
+    for tol_i in range(1, 50):
+        t = tol_i * 0.02
+        for name in edge:
+            if (row(name, t, 0.0) > 0.9
+                    and row(name, t, 0.0) - row(name, t, 1.0) > 0.5):
+                found = (name, round(t, 2))
+                break
+        if found:
+            break
+    if found is None:
+        raise RuntimeError("vien mem khong lam mong bien o bat ky dung sai nao: "
+                           "khong mau nao co alpha > 0.9 (feather 0) va giam "
+                           "> 0.5 khi feather len 1")
+
+    # (2) Num dung sai PHAI mo rong vong hue thay vi chi to den: la cay 19.8 do
+    #     cat dan 1.000 -> 0.303 -> 0.000, lan 40.8 do chi cat tu 0.5.
+    if row("la-cay", 0.05) < 0.9:
+        raise RuntimeError("la cay 19.8 do bi cat o tolerance 0.05 (alpha %.3f): "
+                           "num khong con dong cua" % row("la-cay", 0.05))
+    if not (0.05 < row("la-cay", 0.15) < 0.6):
+        raise RuntimeError("tolerance 0.15 khong mo vong toi la cay (alpha %.3f)"
+                           % row("la-cay", 0.15))
+    if row("la-cay", 0.30) > 0.05 or row("lan", 0.15) < 0.9 or row("lan", 0.5) > 0.05:
+        raise RuntimeError("vong hue khong mo theo dung sai (la-cay 0.30 = %.3f, "
+                           "lan 0.15 = %.3f, lan 0.5 = %.3f)"
+                           % (row("la-cay", 0.30), row("lan", 0.15), row("lan", 0.5)))
+    sweep = [row("la-cay", 0.01 + i * 0.05) for i in range(20)]
+    if any(b > a + 1e-6 for a, b in zip(sweep, sweep[1:])):
+        raise RuntimeError("num dung sai khong don dieu: alpha la-cay %s"
+                           % [round(v, 3) for v in sweep])
+    # Bay so (2): neu nguong bao hoa PHONG theo tolerance thi num rong ra lai
+    # LAM MAT mau nhat. Do (120,180,140): alpha 0,060 o 0,05 va phai khong lon
+    # hon o 0,9 (ban floor*(1+tol*0,4) da bi 0,974 — nguoc ban chat keyer).
+    pale_lo, pale_hi = row("xanh-nhat", 0.05), row("xanh-nhat", 0.9)
+    if pale_hi > pale_lo + 1e-6 or pale_hi > 0.2:
+        raise RuntimeError("nguong bao hoa phong theo tolerance: mau nhat alpha "
+                           "%.3f o 0.05 -> %.3f o 0.9" % (pale_lo, pale_hi))
+
+    # (3) Num vien mem PHAI nong bien, khong chang trang nen hay lam chu the bi an.
+    hard, soft = row("la-cay", 0.15, 0.0), row("la-cay", 0.15, 1.0)
+    if not (hard - soft > 0.5):
+        raise RuntimeError("feather 0 -> 1 chi nong bien duoc %.3f (la-cay %.3f -> %.3f)"
+                           % (hard - soft, hard, soft))
+    if row("nen", 0.4, 1.0) > 0.01 or row("trang", 0.4, 1.0) < 0.999:
+        raise RuntimeError("vien mem 1.0 an chu the hoac de nen song (%.3f / %.3f)"
+                           % (row("nen", 0.4, 1.0), row("trang", 0.4, 1.0)))
+
+    # (4) Spill chi dung kenh NONG cua mau nen va khong duoc cham vao matte.
+    rgb_off, a_off = matte_at(0.6, 0.25, 0.0)
+    rgb_on, a_on = matte_at(0.6, 0.25, 0.8)
+    g_neutral = float(rgb_off[at["nen"], 0, 1])
+    g_keyed = float(rgb_on[at["nen"], 0, 1])
+    if not (g_neutral - g_keyed > 60.0):
+        raise RuntimeError("spill 0.8 khong keo kenh xanh cua nen (%.0f -> %.0f)"
+                           % (g_neutral, g_keyed))
+    for name in ("nen", "la-cay", "trang"):
+        i = at[name]
+        if (abs(float(rgb_on[i, 0, 0] - rgb_off[i, 0, 0])) > 1.0
+                or abs(float(rgb_on[i, 0, 2] - rgb_off[i, 0, 2])) > 1.0):
+            raise RuntimeError("spill dong luon kenh khac cua %s" % name)
+    if float(np.abs(a_off - a_on).max()) > 1e-6:
+        raise RuntimeError("chong ám lam doi matte (alpha lech %.4f)"
+                           % float(np.abs(a_off - a_on).max()))
+    untouched, _ = matte_at(0.0)
+    if untouched is not strip:
+        raise RuntimeError("tolerance 0 van mo numpy va atan2 (may cau hinh thap)")
+    if chroma_is_identity(CHROMA_IDENTITY) is not True:
+        raise RuntimeError("bo nut mac dinh khong phai la trung tinh")
+    if chroma_is_identity({"tolerance": 0.0, "feather": 0.9, "spill": 0.7}) is not True:
+        raise RuntimeError("the tolerance 0 con feather/spill khong bi coi la rong")
+    if chroma_is_identity({"tolerance": 0.4}) is not False:
+        raise RuntimeError("tolerance 0.4 bi coi la trung tinh: the bi boc khi dang dung")
+    if key_color_rgb("#FF0000") != (255.0, 0.0, 0.0):
+        raise RuntimeError("key_color_rgb doc sai hex (%s)" % (key_color_rgb("#FF0000"),))
+    for bad in ("", None, "#xyz", "khong phai mau"):
+        if key_color_rgb(bad) != key_color_rgb(CHROMA_IDENTITY["key_color"]):
+            raise RuntimeError("mau doc khong duoc (%r) khong tra ve nen mac dinh" % bad)
+
+    def qimage_rgb(arr):
+        a = np.ascontiguousarray(np.clip(arr, 0, 255).astype(np.uint8))
+        h, w = a.shape[:2]
+        rgba = np.ascontiguousarray(
+            np.dstack([a, np.full((h, w, 1), 255, np.uint8)]))
+        return QImage(rgba.data, w, h, w * 4,
+                      QImage.Format.Format_RGBA8888).copy()
+
+    def rgba_of(image):
+        img = image.convertToFormat(QImage.Format.Format_RGBA8888)
+        buf = img.constBits()
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else bytes(buf)
+        return np.frombuffer(raw, np.uint8).reshape(
+            (img.height(), img.width(), 4)).astype(np.float64)
+
+    # (4b) MATTE PHAI DUOC TINH O DO THU NHO. Do 21/10/2026 tren may nay
+    #      (numpy 2.4.6, SIMD chi X86_V2): toan bo phep tinh matte tai 640x360
+    #      = 54 ms/frame, trong do rieng atan2 11,8 ms/230k phan tu; rut ve 256
+    #      px con 10,3 ms. Day la dieu kien "toi u cho may cau hinh thap" cua
+    #      AGENTS.md, nen do ca HAI chieu: canh thu nho THAT SU chay (gate xanh
+    #      vi nhanh bi vo hieu hoa thi vo nghia), va no KHONG doi quyet dinh ben
+    #      trong vung dong nhat — chi duoc lam le duong bien.
+    from core import clip_effects as _ce
+    frame = np.zeros((360, 640, 3), np.float32)
+    frame[:, :] = (0.0, 177.0, 64.0)
+    frame[150:210, 290:350] = (200.0, 40.0, 190.0)     # chu the 60x60, hue xa nen
+    big_params = dict(CHROMA_IDENTITY)
+    big_params.update(key_color=KEY, tolerance=0.45, feather=0.25)
+    small_plate, upscale_to = _ce._matte_plate(frame)
+    if upscale_to is None or max(small_plate.shape[:2]) > CHROMA_MATTE_MAX:
+        raise RuntimeError("branch thu nho matte khong chay o 640x360 "
+                           "(plate %s, upscale %s): do luong 54 ms/frame van con "
+                           "nguyen" % (small_plate.shape[:2], upscale_to))
+    alpha_small = chroma_key_rgb(frame, big_params)[1]
+    _saved_max = _ce.CHROMA_MATTE_MAX
+    try:
+        _ce.CHROMA_MATTE_MAX = 10 ** 9
+        alpha_full = chroma_key_rgb(frame, big_params)[1]
+    finally:
+        _ce.CHROMA_MATTE_MAX = _saved_max
+    core = np.zeros(frame.shape[:2], bool)
+    core[165:195, 305:335] = True                      # 15 px le bien chu the
+    far = np.ones(frame.shape[:2], bool)
+    far[135:225, 275:365] = False                      # nen cach bien >= 15 px
+    if alpha_small[core].min() < 0.98:
+        raise RuntimeError("thu nho matte an chu the (alpha min %.3f o loi chu the)"
+                           % float(alpha_small[core].min()))
+    if alpha_small[far].max() > 0.02:
+        raise RuntimeError("thu nho matte khong cat het nen (alpha max %.3f)"
+                           % float(alpha_small[far].max()))
+    agree = np.abs(alpha_small - alpha_full)
+    agree_max = max(float(agree[core].max()), float(agree[far].max()))
+    if agree_max > 0.02:
+        raise RuntimeError("matte thu nho doi quyet dinh ben trong vung dong nhat "
+                           "(lech %.3f so voi do day du)" % agree_max)
+
+    folder = tempfile.mkdtemp(prefix="clinging_chroma_")
+    try:
+        # (5) Chuoi loc DI QUA HAM CHUNG: that su phai co kenh alpha tren QImage
+        #     ma CanvasClipItem va FrameComposer cung ve. Moi DONG la mot mau.
+        rows = (at["nen"], at["trang"], at["xam"], at["la-cay"])
+        plate = strip[list(rows)].repeat(6, axis=1)        # (4,6,3)
+        src = qimage_rgb(plate)
+
+        def card(**over):
+            params = dict(CHROMA_IDENTITY)
+            params.update(key_color=KEY)
+            params.update(over)
+            return EffectData(name=CHROMA_EFFECT_NAME, category=CHROMA_EFFECT_NAME,
+                              intensity=1.0, params=params)
+
+        keyed = rgba_of(apply_color_effects(src, [card(tolerance=0.4)]))
+        base = rgba_of(src)
+        for i, name in ((1, "trang"), (2, "xam")):
+            got = keyed[i, :, 3].min()
+            if got < 253.0:
+                raise RuntimeError("%s bi duc o QImage that (alpha %.0f):chuoi loc "
+                                   "khong giu kenh alpha" % (name, got))
+        if keyed[0, :, 3].max() > 3.0:
+            raise RuntimeError("nen con alpha %.0f trong QImage"
+                               % keyed[0, :, 3].max())
+        if keyed[3, :, 3].max() > 3.0:
+            raise RuntimeError("la cay (19.8 do) con song o tolerance 0.4 trong QImage")
+        kept_rgb = np.abs(keyed[1, :, :3] - base[1, :, :3]).max()
+        if kept_rgb > 1.0:
+            raise RuntimeError("mau giu nguyen bi xich %.1f/255 boi phep duc nen"
+                               % kept_rgb)
+        # (5b) Frame THAT (640x360 = dung cap proxy cua chuoi loc, nen matte
+        #      dung canh thu nho) phai cat duoc nen va giu chu the qua dung
+        #      duong QImage. Dat SAU cac dong o tren de hai phep doi byte
+        #      "pre-pass bi tat" va "matte dao nguoc" do vi ly do cua chinh
+        #      chung (nen con alpha / chu the bi duc), khong bi doan nay chan.
+        keyed_chain = rgba_of(apply_color_effects(
+            qimage_rgb(frame), [EffectData(
+                name=CHROMA_EFFECT_NAME, category=CHROMA_EFFECT_NAME,
+                intensity=1.0, params=dict(big_params))]))[:, :, 3]
+        if keyed_chain[core].min() < 248.0 or keyed_chain[far].max() > 6.0:
+            raise RuntimeError("chuoi that tai 640x360: chu the %.0f, nen %.0f "
+                               "(alpha tren QImage sau khi thu nho matte)"
+                               % (keyed_chain[core].min(), keyed_chain[far].max()))
+        # The trung tinh (tolerance 0) KHONG duoc mo numpy: day la duong tat
+        # may cau hinh thap va la ly do SetChromaCommand boc the.
+        if apply_color_effects(src, [card(tolerance=0.0)]) is not src:
+            raise RuntimeError("the chroma trung tinh van chay chuoi loc")
+        if apply_color_effects(src, [EffectData(
+                name=CHROMA_EFFECT_NAME, category=CHROMA_EFFECT_NAME, intensity=1.0,
+                params={"key_color": KEY, "feather": 0.8, "spill": 0.6})]) is not src:
+            raise RuntimeError("the chroma khong co tolerance van mo numpy")
+
+        # (6) Thu tu the KHONG duoc doi matte: phep tinh nam TRUOC vong lap loc
+        #     mau, nen "Bo loc" (lam nhiem nen) dat truoc hay sau cung mot ket qua.
+        rival = EffectData(name="Cool Blue", category="Sắc thái", intensity=1.0,
+                           params={"brightness": 0.2, "contrast": 1.4,
+                                   "saturation": 0.3, "color_temp": -0.2})
+        grade = EffectData(name=GRADING_EFFECT_NAME, category=GRADING_EFFECT_NAME,
+                           intensity=1.0, params={"hue_shift": 90.0})
+        alpha_ref = rgba_of(apply_color_effects(
+            src, [card(tolerance=0.4)]))[:, :, 3]
+        alpha_rival = rgba_of(apply_color_effects(
+            src, [rival, card(tolerance=0.4)]))[:, :, 3]
+        if np.abs(alpha_ref - alpha_rival).max() > 1e-6:
+            raise RuntimeError("loc mau dat truoc doi matte (lech %.1f/255):preview "
+                               "va export khong the trung nhau"
+                               % float(np.abs(alpha_ref - alpha_rival).max()))
+        alpha_later = rgba_of(apply_color_effects(
+            src, [card(tolerance=0.4), rival, grade]))[:, :, 3]
+        if np.abs(alpha_ref - alpha_later).max() > 1e-6:
+            raise RuntimeError("the chroma dat dau chuoi choi doi matte (%.1f/255)"
+                               % float(np.abs(alpha_ref - alpha_later).max()))
+
+        # (7) Seam cau truc: preview + export cung goi MOT ham, panel ghi qua LENH.
+        seams = (
+            ("apply_color_effects", apply_color_effects, "chroma_key_rgb"),
+            ("FrameComposer._draw_media", FrameComposer._draw_media, "apply_color_effects"),
+            ("CanvasClipItem._apply_effects", CanvasClipItem._apply_effects, "apply_color_effects"),
+            ("ClipPropertiesWidget._push_chroma", ClipPropertiesWidget._push_chroma, "SetChromaCommand"),
+            ("ClipPropertiesWidget._push_chroma", ClipPropertiesWidget._push_chroma, "undo_stack"),
+            ("ClipPropertiesWidget.update_values", ClipPropertiesWidget.update_values, "_sync_chroma_card"),
+        )
+
+        def walk_names(fn):
+            seen = set()
+            stack = [fn.__code__]
+            while stack:
+                code = stack.pop()
+                seen.update(code.co_names)
+                for const in code.co_consts:
+                    if hasattr(const, "co_names") and const not in seen:
+                        stack.append(const)
+            return seen
+
+        missing = sorted({"%s thieu %s" % (who, helper)
+                          for who, fn, helper in seams if helper not in walk_names(fn)})
+        if missing:
+            raise RuntimeError("seam chroma: %s" % "; ".join(missing))
+        ns = {}
+        exec(compile("class FakeKey:\n"
+                     "    def _draw(self):\n"
+                     "        return 1\n", "<mau>", "exec"), ns)
+        if "chroma_key_rgb" in walk_names(ns["FakeKey"]._draw):
+            raise RuntimeError("detector seam khong phan biet ham goi va khong goi")
+
+        # (8) Vong doi cua lenh tren UndoStack THAT.
+        model = TimelineModel()
+        model.project_ratio = "16:9"
+        track = model.add_track(TrackType.IMAGE)
+        clip = model.add_clip(track.track_id, os.path.join(folder, "nen.png"),
+                              "image", 0.0, 4.0, name="chroma")
+        if clip is None:
+            raise RuntimeError("add_clip image tra None (track IMAGE khong nhan image?)")
+
+        def chroma_of(item):
+            for e in item.effects:
+                if e.name == CHROMA_EFFECT_NAME:
+                    merged = dict(CHROMA_IDENTITY)
+                    merged.update(e.params or {})
+                    return merged
+            return dict(CHROMA_IDENTITY)
+
+        stack = UndoStack()
+        for t in (0.1, 0.2, 0.3, 0.4):
+            stack.push(SetChromaCommand(model, clip.clip_id, {"tolerance": t}))
+        merged_steps = stack.undo_count
+        if merged_steps != 1:
+            raise RuntimeError("keo 4 nac dung sai thanh %d buoc undo (MERGE_WINDOW_S bi vo)"
+                               % merged_steps)
+        cards = [e for e in clip.effects if e.name == CHROMA_EFFECT_NAME]
+        if len(cards) != 1:
+            raise RuntimeError("mot clip co %d the chroma (lenh hop nhat bi vo)" % len(cards))
+        if abs(chroma_of(clip)["tolerance"] - 0.4) > 1e-6:
+            raise RuntimeError("dung sai sau 4 nac la %.3f chu khong phai 0.4"
+                               % float(chroma_of(clip)["tolerance"]))
+        stack.push(SetChromaCommand(model, clip.clip_id, {"key_color": "#FF0000"}))
+        if stack.undo_count != 2:
+            raise RuntimeError("num khac khoa bi gom chung vao mot buoc undo")
+        desc = SetChromaCommand(model, clip.clip_id, {"key_color": "#FF0000"}).description()
+        if not desc or desc not in stack.undo_text:
+            raise RuntimeError("undo_text khong mo ta dung lenh chroma (%r / %r)"
+                               % (desc, stack.undo_text))
+        stack._undo_stack[-1]._at -= SetChromaCommand.MERGE_WINDOW_S + 0.25
+        stack.push(SetChromaCommand(model, clip.clip_id, {"key_color": "#FF0000"}))
+        if stack.undo_count != 3:
+            raise RuntimeError("qua ngac %.2fs van gom keo thanh mot buoc undo"
+                               % SetChromaCommand.MERGE_WINDOW_S)
+        stack.undo()
+        mid = chroma_of(clip)
+        if abs(mid["tolerance"] - 0.4) > 1e-6 or mid["key_color"] != "#FF0000":
+            raise RuntimeError("Ctrl+Z buoc cuoi lam lech bo so (%.3f / %s)"
+                               % (float(mid["tolerance"]), mid["key_color"]))
+        stack.push(SetChromaCommand(model, clip.clip_id, dict(CHROMA_IDENTITY)))
+        if clip.effects:
+            raise RuntimeError("tha het ve trung tinh ma the chroma van con (%d the)"
+                               % len(clip.effects))
+        stack.undo()
+        if abs(chroma_of(clip)["tolerance"] - 0.4) > 1e-6:
+            raise RuntimeError("Ctrl+Z sau reset khong tra lai dung sai")
+
+        # (9) Model -> .clinq -> model: hex van la str, num van la float, dung mot the.
+        stack.push(SetChromaCommand(model, clip.clip_id, {
+            "key_color": "#123456", "tolerance": 0.6, "feather": 0.8, "spill": 0.5}))
+        path = os.path.join(folder, "Duc nen.clinq")
+        if not project_storage.save_project_to_file(model, path):
+            raise RuntimeError("save_project_to_file that bai (payload chroma bi tu choi)")
+        data = project_storage.load_project_from_file(path)
+        if not data:
+            raise RuntimeError("load_project_from_file tra rong")
+        back = TimelineModel()
+        project_storage.restore_model_from_clinq(back, data)
+        revived = back.active_visual_clips_at(0.5)
+        if len(revived) != 1:
+            raise RuntimeError("mo lai file co %d clip thay vi 1" % len(revived))
+        p = chroma_of(revived[0])
+        lost = [k for k, v in (("tolerance", 0.6), ("feather", 0.8), ("spill", 0.5))
+                if abs(float(p[k]) - v) > 1e-6]
+        if str(p.get("key_color")) != "#123456":
+            lost.append("key_color")
+        if lost:
+            raise RuntimeError("chroma mat khi quay qua file: %s" % ", ".join(lost))
+        if not isinstance(p["tolerance"], float):
+            raise RuntimeError("tolerance mo lai la %s (slider lech sau khi mo file)"
+                               % type(p["tolerance"]).__name__)
+        if not isinstance(p["key_color"], str):
+            raise RuntimeError("key_color mo lai la %s: QColor khong luu duoc trong JSON"
+                               % type(p["key_color"]).__name__)
+        n_cards = len([e for e in revived[0].effects if e.name == CHROMA_EFFECT_NAME])
+        if n_cards != 1:
+            raise RuntimeError("file .clinq chua %d the chroma cho mot clip" % n_cards)
+        if not isinstance(apply_color_effects(src, [card(tolerance=0.4)]), QImage):
+            raise RuntimeError("duc nen khong tra ve QImage: ca hai duong ve deu hong")
+
+        return ("nen 0.000 moi dung sai, la-cay 19.8 do alpha %.3f->%.3f->%.3f theo "
+                "num 0.05/0.15/0.30, lan 40.8 do cat tu 0.50, 4 mau trung tinh con "
+                "%.3f o tolerance 1.0 (ke ca 0.0 do mag 16.7), bien mong %s tai "
+                "tolerance %.2f, feather 0->1 "
+                "lam mong %.3f->%.3f, spill %.0f->%.0f khong doi matte, "
+                "matte %d px (lech %.4f so voi do day du tai 640x360), "
+                "4 nac = %d buoc undo, %d seam, round-trip 1 the"
+                % (row("la-cay", 0.05), row("la-cay", 0.15), row("la-cay", 0.30),
+                   worst_neutral, found[0], found[1], hard, soft,
+                   g_neutral, g_keyed, CHROMA_MATTE_MAX, agree_max,
+                   merged_steps, len(seams)))
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 
