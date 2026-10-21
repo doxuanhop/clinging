@@ -1187,6 +1187,62 @@ class TimelineModel(QObject):
         self.clipAdded.emit(clip)
         return clip
 
+    def detach_audio(self, clip_id: str) -> Optional[ClipModel]:
+        """Tách tiếng của một clip video thành clip AUDIO riêng, đúng nhịp gốc.
+
+        Clip mới mang cùng ``source_path``/``in_point``/``duration``/``speed``/
+        ``volume``/``fade_*`` và cùng ``start_time``, nên đường tiếng đứng đè lên
+        đúng khung hình nó từng đi kèm — không cần đụng vào preview lẫn exporter:
+        ``core/audio_mix.collect_audio_clips`` chỉ cần thấy clip audio còn tiếng,
+        còn ``_preview_audio_owner`` đổi người theo gain nên video đã tắt tiếng tự
+        nhường.
+
+        Hàng audio đích ưu tiên hàng vừa không khóa vừa không tắt tiếng: đổ xuống
+        hàng đang ``is_muted`` thì tiếng tách ra bị im luôn mà người dùng không có
+        manh mối.
+
+        Trả về clip audio đã đặt, None nếu không tách được (không phải video,
+        nguồn rỗng, hàng khóa, hoặc tiếng đã tắt nên chẳng còn gì để tách).
+        """
+        clip, track = self._find_clip(clip_id)
+        if clip is None or track is None or track.is_locked:
+            return None
+        if clip.media_type != "video" or not clip.source_path:
+            return None
+        if clip.audio_muted:
+            return None
+
+        audio = clip.clone()
+        audio.media_type = "audio"
+        audio.track_id = ""
+        # Transition + keyframes hình học mô tả cách VIDEO được ghép và di chuyển;
+        # mang sang clip audio thì mép cắt của nó sẽ bị compact nuốt, còn ô thuộc
+        # tính thì hiện toàn slider vô nghĩa.
+        audio.transition = {}
+        audio.keyframes = {key: [] for key in audio.keyframes}
+        audio.effects = []
+        base = clip.name or clip.source_path.replace("\\", "/").rsplit("/", 1)[-1]
+        audio.name = "%s (tiếng)" % base
+
+        target = self._audio_track_for_detach()
+        placed = self.place_clip(audio, target.track_id, clip.start_time)
+        if placed is None:
+            return None
+        clip.audio_muted = True
+        self.clipUpdated.emit(clip.clip_id)
+        return placed
+
+    def _audio_track_for_detach(self) -> TrackModel:
+        """Hàng audio nhận tiếng tách ra: ưu tiên hàng còn phát được tiếng."""
+        usable = [t for t in self._tracks
+                  if t.track_type == TrackType.AUDIO and not t.is_locked]
+        for track in usable:
+            if not track.is_muted:
+                return track
+        if usable:
+            return usable[0]
+        return self.add_track(TrackType.AUDIO)
+
     def _track_compatible_with(self, media_type: str) -> Optional[TrackModel]:
         """Track đầu tiên nhận được loại media này, để Ctrl+V đổ về khi track
         nguồn không còn."""

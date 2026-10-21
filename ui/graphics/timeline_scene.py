@@ -49,6 +49,7 @@ class TimelineScene(QGraphicsScene):
         duplicate_requested(str)       — yêu cầu nhân bản clip (clip_id)
         delete_requested(str)          — yêu cầu xóa clip (clip_id)
         graph_requested(str)           — mở đồ thị đường cong của clip (clip_id)
+        audio_detach_requested(str)    — tách tiếng clip video (clip_id)
         resource_dropped(str, str, float)  — resource drop (name, kind, time)
     """
 
@@ -59,6 +60,7 @@ class TimelineScene(QGraphicsScene):
     duplicate_requested = Signal(str)
     delete_requested = Signal(str)
     graph_requested = Signal(str)
+    audio_detach_requested = Signal(str)
     resource_dropped = Signal(str, str, float, float)  # name, kind, time, drop_y
     preset_dropped = Signal(object, str, float, float)
     effect_dropped = Signal(object, float, float)

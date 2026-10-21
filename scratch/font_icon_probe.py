@@ -16,6 +16,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "windows")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+# Console mac dinh cua may nay la cp1252: mot dong in ra chua ky tu non-ASCII
+# (o day la danh sach emoji con lai) lam probe chet giua chung va rc=1 vi
+# UnicodeEncodeError chu khong vi san pham.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
@@ -25,8 +31,11 @@ OUT = os.path.join(ROOT, "scratch")
 EMOJI_RANGES = [(0x1F000, 0x1FAFF), (0x2600, 0x27BF), (0x2B00, 0x2BFF),
                 (0xFE00, 0xFE0F), (0x25A0, 0x25FF)]
 # Du lieu cu: sticker cua du an cu luu "emoji + ten" trong name, canvas ve lại
-# dung theo noi dung nguoi dung chon day, khong phai icon giao dien.
-ALLOWED = {os.path.join("ui", "graphics_canvas_item.py"): {468}}
+# dung theo noi dung nguoi dung chon day, khong phai icon giao dien. Danh bau
+# bang NOI DUNG dong lenh, khong bang so dong: so dong cua no da tr 468 -> 488
+# vi mot lan sua file khac, va phep danh bau theo so dong bien that thanh FAIL
+# gia (probe do rc=1 vi dong nguoi dung khong the sua).
+ALLOWED = {os.path.join("ui", "graphics_canvas_item.py"): {'or "\u25cf"'}}
 
 
 def is_emoji(ch):
@@ -114,7 +123,9 @@ def scan_sources():
                     if node.lineno in doc_lines:
                         continue
                     found = [c for c in node.value if is_emoji(c)]
-                    if found and node.lineno not in allowed:
+                    if found and not any(
+                            marker in physical[node.lineno - 1]
+                            for marker in allowed):
                         hits.append((rel, node.lineno,
                                      "".join(sorted(set(found))),
                                      physical[node.lineno - 1].strip()[:80]))
@@ -291,7 +302,15 @@ def main():
     from core.time_mapper import TimePixelMapper
     clip = ClipModel(clip_id="c1", name="clip.mp4", source_path="clip.mp4",
                      media_type="video", start_time=0.0, duration=4.0)
-    clip.effects = [{"type": "warm"}, {"type": "blur"}]
+    # Hieu ung phai la EffectData THAT: `deserialize_effects` la duong duy nhat
+    # mot file .clinq day vao model, va the thuoc tinh doc `effect.name`. Ban dict
+    # la hinh cua du an tk cu — khong co duong nao trong app nay cho no vao model,
+    # nen de nguyen thi probe chet o ClipPropertiesWidget chu khong do san pham.
+    from core.project_storage import deserialize_effects
+    clip.effects = deserialize_effects([
+        {"name": "Warm Tone", "category": "Sắc thái", "intensity": 1.0},
+        {"name": "Pop Art", "category": "Sắc thái", "intensity": 1.0},
+    ])
     item = ClipItem(clip, TimePixelMapper())
     from PySide6.QtWidgets import QGraphicsScene
     from PySide6.QtCore import QRectF
@@ -312,12 +331,16 @@ def main():
     check("badge co net font icon (khong phai chu)",
           icon_pixmap("fa6s.wand-magic-sparkles", 10, "#FFFFFF").isNull(), False)
 
-    # ── Menu chu clip: ba muc phai co QIcon font ────────────────
+    # ── Menu chu clip: moi muc phai co QIcon font ───────────────
     menu, actions = item._build_context_menu()
-    check("menu clip co 3 muc", len(actions), 3)
-    check("ca 3 muc menu co font icon",
+    check("menu clip co dung so muc theo loai",
+          [a.text() for a in actions],
+          ["Cắt tại Playhead", "Nhân bản clip", "Tách âm thanh", "Xóa clip"]
+          if item._detachable_audio_clip()
+          else ["Cắt tại Playhead", "Nhân bản clip", "Xóa clip"])
+    check("moi muc menu co font icon",
           all(not a.icon().isNull() for a in actions), True)
-    check("ca 3 muc font icon ve duoc pixel",
+    check("moi muc font icon ve duoc pixel",
           all(opaque_fraction(a.icon().pixmap(16, 16)) > 0.02 for a in actions),
           True)
     check("nhan menu khong con emoji",

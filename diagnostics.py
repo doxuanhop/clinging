@@ -1383,6 +1383,176 @@ def _media_split_ok():
     return "2 doan ghi ra that, tong span = nguon, ffprobe doc lai duoc"
 
 
+def _detach_audio_ok():
+    """Mot dong trong --selftest: tach tieng clip video thanh clip audio rieng.
+
+    Dong nay do tren CHUOI LOC MA EXPORTER SE CHAY (core.audio_mix), khong phai
+    mot danh sach clip tu kiem tra — tach tieng ma export van doc hai clip cung
+    nguon thi nguoi dung nghe tieng gon doi. Ba dieu bat buoc:
+
+    (1) clip audio mang dung start_time/duration/in_point/speed/volume/fade cua
+        clip video: lech nua giay la tieng khong con cua khung hinh do nua;
+    (2) collect_audio_clips con lai DUNG clip audio, va filter_complex keo
+        adelay = start_time — do la vi tri that cua no tren timeline;
+    (3) Ctrl+Z tra lai ca hai nua cung luc va khong lam mat hang audio trong san
+        co (remove_clip tu xoa hang khi clip cuoi bi go — do la bẫy cua no).
+
+    Gate phai do khi nguon khong co luong tieng: mot file video im lang thi
+    "tach" ra mot clip rang, nen do la dau hieu fixture hoac loader hong.
+    """
+    import subprocess
+    import tempfile
+
+    from core import external_tools
+    from core.audio_mix import build_filter_complex, collect_audio_clips
+    from core.commands import DetachAudioCommand, UndoStack
+    from core.timeline_model import ClipModel, TimelineModel, TrackType
+
+    ffmpeg = external_tools.find("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError(external_tools.missing_message("ffmpeg"))
+    folder = tempfile.mkdtemp(prefix="clinging_detach_")
+    try:
+        src = os.path.join(folder, "nguon.mp4")
+        subprocess.run(
+            [ffmpeg, "-v", "error", "-y",
+             "-f", "lavfi", "-i",
+             "testsrc2=size=160x120:rate=25:duration=4",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+             "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+             "-shortest", src],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180,
+            check=False, creationflags=0x08000000)
+        if not os.path.isfile(src):
+            raise RuntimeError("khong tao duoc video co tieng de do")
+
+        model = TimelineModel()
+        model.add_track(TrackType.VIDEO)   # Main Storyline, de trong co tinh
+        # Clip do nam tren hang Overlay: hang truc tu li dong nan clip ve 0 khi
+        # xoa clip cung hang, nen doan 1.5s o day vo sinh — start_time phai duoc
+        # giu nguyen de do dung duoc adelay cua exporter.
+        video_track = model.add_track(TrackType.VIDEO)
+        empty_audio = model.add_track(TrackType.AUDIO)
+        empty_id = empty_audio.track_id
+        clip = ClipModel(start_time=1.5, duration=1.0, source_path=src,
+                         media_type="video", name="Nguon", in_point=0.2,
+                         out_point=1.2, source_duration=4.0,
+                         track_id=video_track.track_id)
+        clip.speed = 2.0
+        clip.volume = 0.7
+        clip.fade_in = 0.1
+        clip.fade_out = 0.2
+        clip.refresh_out_point()
+        video_track.clips.append(clip)
+        model.recalculate_project_duration()
+        model.clipAdded.emit(clip)
+
+        from core.audio_mix import has_audio_stream
+        if not has_audio_stream(src):
+            raise RuntimeError("fixture khong co luong tieng, gate do gia")
+
+        # Clip da tat tieng va clip chu: khong co gi de tach, va model khong
+        # duoc phep tu "bat" lai tieng roi tach — do la doi hanh vi.
+        silent = ClipModel(start_time=5.0, duration=1.0, source_path=src,
+                           media_type="video", name="Im",
+                           track_id=video_track.track_id, audio_muted=True)
+        video_track.clips.append(silent)
+        if model.detach_audio(silent.clip_id) is not None:
+            raise RuntimeError("tach duoc tieng cua clip dang tat tieng")
+        model.remove_clip(silent.clip_id)
+        text_track = model.add_track(TrackType.TEXT)
+        caption = model.add_clip(text_track.track_id, "", "text", 0.0, 1.0, "Chu")
+        if model.detach_audio(caption.clip_id) is not None:
+            raise RuntimeError("tach duoc tieng cua clip chu")
+
+        stack = UndoStack()
+        import copy
+        clip_before_detach = copy.deepcopy(clip)
+        stack.push(DetachAudioCommand(model, clip.clip_id))
+        detached = [c for t in model.tracks if t.track_type == TrackType.AUDIO
+                    for c in t.clips]
+        if len(detached) != 1:
+            raise RuntimeError("khong co dung 1 clip audio sau khi tach: %r"
+                               % [(c.name, c.media_type) for c in detached])
+        audio = detached[0]
+        for field_name in ("start_time", "duration", "in_point", "out_point",
+                           "speed_factor", "volume_level", "fade_in",
+                           "fade_out"):
+            left = getattr(audio, field_name)
+            right = getattr(clip, field_name)
+            if abs(float(left) - float(right)) > 1e-6:
+                raise RuntimeError("lech %s: %.4f vs %.4f"
+                                   % (field_name, left, right))
+        if audio.source_path != clip.source_path or audio.media_type != "audio":
+            raise RuntimeError("clip tach sai loai hoac sai nguon")
+        if audio.audio_muted or not clip.audio_muted:
+            raise RuntimeError("hai nua cua thao tac khong doi trang thai")
+        if audio.track_id != empty_id:
+            raise RuntimeError("tieng tach ro khong xuong hang audio co san")
+
+        clips = collect_audio_clips(model)
+        if [c.clip_id for c in clips] != [audio.clip_id]:
+            raise RuntimeError("export con doc clip video da tach: %r"
+                               % [c.name for c in clips])
+        graph = build_filter_complex(model, clips, model.duration)
+        if "adelay=1500:all=1" not in graph:
+            raise RuntimeError("tieng tach ro nhay sai gio: %s" % graph[:200])
+
+        stack.undo()
+        after = [c for t in model.tracks if t.track_type == TrackType.AUDIO
+                 for c in t.clips]
+        if after or clip.audio_muted:
+            raise RuntimeError("Ctrl+Z chi tra lai mot nua thao tac")
+        if model.get_track(empty_id) is None:
+            raise RuntimeError("Ctrl+Z lam mat hang audio trong cua nguoi dung")
+
+        stack.redo()
+        redone = [c for t in model.tracks if t.track_type == TrackType.AUDIO
+                  for c in t.clips]
+        if len(redone) != 1 or abs(redone[0].start_time - 1.5) > 1e-6:
+            raise RuntimeError("redo khong dung lai vi tri cu")
+
+        from types import SimpleNamespace
+
+        from ui.graphics.clip_item import ClipItem
+        from ui.graphics.timeline_scene import TimelineScene
+        from ui.timeline_panel import TimelinePanel
+
+        def detachable(item):
+            return ClipItem._detachable_audio_clip(SimpleNamespace(
+                clip_model=item))
+
+        missing = [name for name, owner in (
+            ("audio_detach_requested", TimelineScene),
+            ("_on_detach_audio", TimelinePanel)) if not hasattr(owner, name)]
+        if "audio_detach_requested" not in (
+                ClipItem.contextMenuEvent.__code__.co_consts):
+            missing.append("menu clip khong goi audio_detach_requested")
+        # Panel goi thang model thi Ctrl+Z mat nen tach tieng khong hoan tac
+        # duoc nua — do la ly do ten lenh phai nam trong code cua chinh handler.
+        if "DetachAudioCommand" not in (
+                TimelinePanel._on_detach_audio.__code__.co_names):
+            missing.append("panel khong push DetachAudioCommand")
+        # Dieu kien hien muc menu do ngay tren clip that, khong phai chuoi nguon:
+        # muc "Tách âm thanh" phai moc len dung luc clip co tieng that va tat khi
+        # tieng da mat — neu khong nguoi dung bam vao mot muc rong.
+        if not detachable(clip_before_detach):
+            missing.append("menu an muc khi clip co tieng")
+        for item, ly_do in ((clip, "da tach va tat tieng"),
+                            (audio, "la clip audio"),
+                            (ClipModel(source_path=""), "khong co nguon")):
+            if detachable(item):
+                missing.append("menu hien khi %s" % ly_do)
+        if missing:
+            raise RuntimeError("diem vao tach tieng bi thieu: %s"
+                               % ", ".join(missing))
+    finally:
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+    return ("1 clip audio trung nguon/trung noi dung, export thay [0:a] "
+            "adelay=1500, Ctrl+Z tra lai ca hai nua + giu hang audio trong")
+
+
 def _captions_strip_ok():
     """Mot dong trong --selftest: thanh tien do Auto Captions mong trong bundle nay.
 
@@ -1586,6 +1756,7 @@ def run_selftest(argv=None):
     col.check("xem truoc = xuat: moc thoi gian cuc bo dung mot ham", _local_time_ok)
     col.check("trich xuat anh thumbnail", _thumbnail_export_ok)
     col.check("cat file thanh N doan ra dia", _media_split_ok)
+    col.check("tach tieng video thanh clip audio rieng", _detach_audio_ok)
     col.check("thanh tien do Auto Captions 8px", _captions_strip_ok)
     col.check("thu muc du lieu nguoi dung", _writable_ok)
     col.check("ffmpeg + ffprobe tim thay", _ffmpeg_note)

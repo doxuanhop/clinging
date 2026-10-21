@@ -7,10 +7,11 @@ Mỗi ClipItem tương ứng với một ClipModel và hiển thị:
   - Tên file
   - Resize handles ở 2 đầu (trim in/out)
   - Hover highlight + selection border
-  - Context menu (cắt, xóa, nhân bản)
+  - Context menu (cắt, xóa, nhân bản, tách tiếng)
 """
 
 import math
+import os
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QThread, Signal, QObject
 from PySide6.QtGui import (
@@ -723,10 +724,11 @@ class ClipItem(QGraphicsRectItem):
     # ── Context Menu ────────────────────────────────────────────
 
     def _build_context_menu(self):
-        """Tao menu chu phai va tra ve (menu, [Cắt, Nhân bản, (Đồ thị), Xóa]).
+        """Tao menu chu phai va tra ve (menu, [Cắt, Nhân bản, (Tách tiếng), (Đồ thị), Xóa]).
 
-        "Đồ thị đường cong" chi co mat khi clip dang co keyframe, nen do dai
-        danh sach khong co dinh — contextMenuEvent lay muc cuoi bang index.
+        "Tách âm thanh" chi co voi clip video co nguon va con tieng; "Đồ thị đường
+        cong" chi co khi clip dang co keyframe. nen do dai danh sach khong co dinh
+        — contextMenuEvent khong duoc dinh vi theo index, ma theo `action.data()`.
 
         Tach khoi contextMenuEvent vi menu.exec() mo event loop modal: khong
         the goi no trong probe kiem icon. Nay gate goi ham nay dung duong cua
@@ -744,43 +746,54 @@ class ClipItem(QGraphicsRectItem):
             QMenu::separator { height: 1px; background: #3A3A3A; margin: 6px 4px; }
         """)
 
+        def add(key, glyph, label, color="#D8DCE0"):
+            action = menu.addAction(font_icon(glyph, color), label)
+            action.setData(key)
+            return action
+
         actions = [
-            menu.addAction(font_icon("fa6s.scissors", "#D8DCE0"),
-                           "Cắt tại Playhead"),
-            menu.addAction(font_icon("fa6s.clone", "#D8DCE0"),
-                           "Nhân bản clip"),
+            add("split", "fa6s.scissors", "Cắt tại Playhead"),
+            add("duplicate", "fa6s.clone", "Nhân bản clip"),
         ]
+        # Clip video da tat tieng thi khong con tieng de tach: net them mot hang
+        # audio im lang roi + tat mot cai da im san la mot khong co gi de nghe.
+        if self._detachable_audio_clip():
+            actions.append(add("detach_audio", "fa6s.wave-square",
+                               "Tách âm thanh"))
         # Do thi khong co gi de xem voi clip chua co moc nao — mo len chi thay
         # mot khung trong, nen muc nay chi xuat hien khi clip thuc chuyen dong.
         if keyframe_graph.animated_properties(self.clip_model):
             menu.addSeparator()
-            actions.append(
-                menu.addAction(font_icon("fa6s.bezier-curve", "#D8DCE0"),
+            actions.append(add("graph", "fa6s.bezier-curve",
                                "Đồ thị đường cong…"))
         menu.addSeparator()
-        actions.append(menu.addAction(font_icon("fa6s.trash", "#EF4444"),
-                                      "Xóa clip"))
+        actions.append(add("delete", "fa6s.trash", "Xóa clip", "#EF4444"))
         return menu, actions
+
+    def _detachable_audio_clip(self):
+        """Clip này có tiếng thật để tách không — cùng điều kiện với model."""
+        clip = self.clip_model
+        return bool(clip.media_type == "video" and clip.source_path
+                    and not clip.audio_muted
+                    and os.path.exists(clip.source_path))
 
     def contextMenuEvent(self, event):
         menu, actions = self._build_context_menu()
-        act_split, act_dup = actions[0], actions[1]
-        act_del = actions[-1]
-        act_graph = actions[2] if len(actions) == 4 else None
-
         chosen = menu.exec(event.screenPos())
         scene = self.scene()
-        if not scene:
+        if not scene or chosen is None or chosen not in actions:
             return
-
-        if chosen == act_split and hasattr(scene, "split_requested"):
-            scene.split_requested.emit(self.clip_model.clip_id)
-        elif chosen == act_dup and hasattr(scene, "duplicate_requested"):
-            scene.duplicate_requested.emit(self.clip_model.clip_id)
-        elif chosen == act_graph and hasattr(scene, "graph_requested"):
-            scene.graph_requested.emit(self.clip_model.clip_id)
-        elif chosen == act_del and hasattr(scene, "delete_requested"):
-            scene.delete_requested.emit(self.clip_model.clip_id)
+        # Ten signal = khoa trong action.data(): menu dai bao nhieu muc khong
+        # quan trong, va gate goi tung signal duoc ma khong_phai theo sau thu tu.
+        signal_name = {
+            "split": "split_requested",
+            "duplicate": "duplicate_requested",
+            "detach_audio": "audio_detach_requested",
+            "graph": "graph_requested",
+            "delete": "delete_requested",
+        }.get(chosen.data())
+        if signal_name and hasattr(scene, signal_name):
+            getattr(scene, signal_name).emit(self.clip_model.clip_id)
 
     # ── Media Extraction Worker (Asynchronous QThread) ──────────
 

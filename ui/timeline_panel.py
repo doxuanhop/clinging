@@ -35,7 +35,7 @@ from core.snap_engine import SnapEngine
 from core.commands import (
     UndoStack, MoveClipCommand, ResizeClipCommand,
     AddClipCommand, RemoveClipCommand, SplitClipCommand, DuplicateClipCommand,
-    PasteClipsCommand
+    DetachAudioCommand, PasteClipsCommand
 )
 from core.clip_clipboard import ClipClipboard
 
@@ -539,6 +539,7 @@ class TimelinePanel(QWidget):
         self.scene.duplicate_requested.connect(self._on_duplicate_clip)
         self.scene.delete_requested.connect(self._on_delete_clip)
         self.scene.graph_requested.connect(self.keyframeGraphRequested.emit)
+        self.scene.audio_detach_requested.connect(self._on_detach_audio)
 
     def _wire_model(self):
         """Kết nối model signals → UI updates."""
@@ -938,6 +939,14 @@ class TimelinePanel(QWidget):
     def _on_duplicate_clip(self, clip_id: str):
         """Nhân bản clip."""
         self.undo_stack.push(DuplicateClipCommand(self.model, clip_id))
+
+    def _on_detach_audio(self, clip_id: str):
+        """Tách tiếng clip video thành một clip audio ngay dưới.
+
+        Một lệnh, một bước Ctrl+Z: thêm hàng tiếng và tắt tiếng video là hai nửa
+        của cùng một thao tác, undo rời rạc sẽ để lại hàng tiếng câm.
+        """
+        self.undo_stack.push(DetachAudioCommand(self.model, clip_id))
 
     # ── Clipboard (Ctrl+C / Ctrl+V) ─────────────────────────────
 

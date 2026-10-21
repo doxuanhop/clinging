@@ -89,7 +89,7 @@ python scratch/user_data_snapshot.py capture scratch/_snap_before.json
 # 1) Audit tên icon + tham số color= trên toàn bộ nguồn
 python scratch/icon_name_audit.py
 
-# 2) Selftest 35 dòng trên tree nguồn
+# 2) Selftest 36 dòng trên tree nguồn
 python main.py --selftest
 
 # 3) Đo khởi động (bao gồm control cùng lần, xem mục dưới đây)
@@ -128,7 +128,7 @@ python scratch/color_grading_evidence.py        # -> scratch/color_grading_evide
                                                 # -> scratch/color_grading_card_evidence.png
 
 # 4f) Du an Pop Art: gate do TREN FILE mp4 da xuat + 6 phep phan chung (moi phep
-#     chay CA HAI gate: --selftest 35 dong va gate file)
+#     chay CA HAI gate: --selftest 36 dong va gate file)
 python scratch/popart_project_build.py              # -> ALL PASS, ~5 ban render 720p
 CLINGING_POPART_REUSE=1 python scratch/popart_project_build.py  # do lai khong xuat lai
 python scratch/popart_project_counterfactual.py     # -> 6/6 do dung ly do, byte ve nguyen ban
@@ -150,7 +150,14 @@ python scratch/chroma_key_evidence.py             # -> 54 OK / 0 FAIL
 python scratch/chroma_cost_probe.py               # -> 16 OK / 0 FAIL: chi phi/frame
                                                   # qua composer that, do xen ke 1 vong
 
-# 4i) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
+# 4i) Tach am thanh (clip video -> clip audio cung nguon, cung noi dung, tat tieng
+#     video): 10 phep doi byte tren 4 file nguon + anh TimelineScene that + wav do RMS
+python scratch/detach_audio_counterfactual.py     # -> 10/10 do dung ly do, byte ve nguyen ban
+python scratch/detach_audio_evidence.py           # -> 14/14 phep do PASS
+                                                  # -> scratch/detach_audio_evidence.png
+                                                  # -> scratch/detach_audio_evidence.json
+
+# 4j) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
 #     chung (lat _internal/styles, an core/ cua tree nguon) + do boot
 python scratch/frozen_bundle_probe.py             # -> ALL PASS (0 fail), rc=0
 dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json
@@ -547,6 +554,80 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
   keep-5 của đúng hai fixture selftest (`Kiem karaoke`, `Kiem recap`).
 * **Chưa** dựng lại installer, **chưa** cài đè, **chưa** đụng Release: chroma key
   mới tồn tại ở tree nguồn + bundle local, chờ duyệt phát hành.
+
+---
+
+## Cổng "tách âm thanh" (nhóm G, 2026-10-21)
+
+| Dòng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `tach tieng video thanh clip audio rieng` | `TimelineModel.detach_audio` clone clip video thành clip AUDIO **cùng** `source_path`/`in_point`/`out_point`/`duration`/`speed_factor`/`volume_level`/`fade_in`/`fade_out` và **cùng** `start_time`, rồi đặt `audio_muted = True` lên clip nguồn. Exporter không phải sửa một dòng: `collect_audio_clips` chỉ còn thấy clip audio, `build_filter_complex` tự sinh `atrim` + `adelay=<start*1000>`. Preview cũng không: `_preview_audio_owner` đổi chủ theo `clip_volume` nên video đã tắt tiếng tự nhường. **Đúng MỘT** clip được thêm — video còn tiếng thì cùng một nguồn bị đọc hai lần trong bản trộn. Từ chối khi: không phải video, `source_path` rỗng, hàng đang khóa, tiếng đã tắt (chẳng còn gì để tách). Hàng đích ưu tiên hàng audio không khóa và **còn phát được tiếng**; đổ xuống hàng `is_muted` là tiếng tách ra câm luôn mà người dùng không có manh mối. `remove_clip` tự xóa hàng trống nên `undo()` phải dựng lại hàng audio trống của người dùng **cùng id, tên, mute/lock và vị trí trong danh sách** — không thì một cú Ctrl+Z ăn mất hàng họ tạo. Hai nửa nằm trong MỘT `DetachAudioCommand` vì undo rời rạc để lại hàng tiếng câm. Persistence dùng nguyên `ClipModel.to_dict/from_dict`, không khoá mới. Cửa ngõ UI gate bằng **hành vi thật** (`ClipItem._detachable_audio_clip` gọi qua `SimpleNamespace(clip_model=...)` cho 4 trạng thái) chứ không bằng tên hàm | `detach_audio_counterfactual.py`: 10 phép đổi byte trên `core/timeline_model.py`, `core/commands.py`, `ui/graphics/clip_item.py`, `ui/timeline_panel.py` |
+
+Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
+
+* `--selftest`: **36 dòng, `failed = []`**. Chi tiết dòng tách tiếng:
+  `1 clip audio trung nguon/trung noi dung, export thay [0:a] adelay=1500,
+  Ctrl+Z tra lai ca hai nua + giu hang audio trong`. Fixture là file lavfi
+  `testsrc2` + `sine=440` 4 s dựng trong `%TEMP%`, không dùng video của người dùng.
+* 10 phép phản chứng — mỗi phép chạy lại `python main.py --selftest <json>` THẬT,
+  **rc đọc từ chính probe = 0 (`0x00000000`), 244,8 s** cho 11 lần selftest —
+  tất cả đỏ ĐÚNG lý do và **không kéo theo dòng nào khác**:
+  `place_clip(..., clip.start_time + 0.5)` → `lech start_time: 2.0000 vs 1.5000`;
+  bỏ `clip.audio_muted = True` → `hai nua cua thao tac khong doi trang thai`;
+  `if clip.audio_muted and False` → `tach duoc tieng cua clip dang tat tieng`;
+  `audio.media_type = "video"` → `khong co dung 1 clip audio sau khi tach: []`
+  (chính `place_clip`/`track_accepts_media` từ chối, tức loại media là khóa thật
+  chứ không phải nhãn trang trí); `audio.source_path = ""` →
+  `clip tach sai loai hoac sai nguon`; `_detachable_audio_clip` trả `True` mòn →
+  `menu hien khi da tach va tat tieng, menu hien khi la clip audio, ...`;
+  `undo` không ghi lại mute → `Ctrl+Z chi tra lai mot nua thao tac`;
+  `_restore_track` thành `state = None` → `Ctrl+Z lam mat hang audio trong cua
+  nguoi dung`; panel gọi thẳng `model.detach_audio` →
+  `panel khong push DetachAudioCommand`; xóa khóa `"detach_audio"` khỏi bảng phân
+  phối menu → `menu clip khong goi audio_detach_requested`. Khôi phục byte xong:
+  `khoi_phuc_xanh PASS rc=0 rows=36 failed=[]`, `ALL PASS`. Probe copy bản gốc
+  sang `<file>.cfbak` TRƯỚC khi chèn và ở lần chạy sau tự khôi phục mọi `.cfbak`
+  còn sót: một lần chạy nền bị cắt giữa chừng đã để lại đúng một dòng `# CU`
+  trong `ui/timeline_panel.py` trong khi wrapper báo `exit 0`.
+* Ảnh `scratch/detach_audio_evidence.png` (1282×578, bốn ô `TimelineScene` dựng
+  từ model thật qua đúng tín hiệu model — `TimePixelMapper().set_zoom(90.0)`,
+  `SnapEngine` thật, mỗi ô grab sau 4,0 s settle để worker thumbnail/waveform kịp
+  việc): ô 1 clip gốc 0..4 s; ô 2 block audio teal 0..4 s **và sóng trên clip video
+  biến mất** (`ClipItem._audio_silent()` đọc thẳng model, nên nút loa trên hàng và
+  cây sóng không thể bất đồng); ô 3 kéo block sang 1..5 s; ô 4 lane audio trống +
+  sóng video trở lại sau Ctrl+Z. wav do `core.audio_mix.render_audio` sản xuất
+  (PCM s16le/48k/stereo), giải bằng `wave`+`struct` của stdlib, định vị điểm đổi
+  tone 440→880 Hz bằng mật độ cắt-zero trong cửa trượt 25 ms:
+  **trước 2,00 s | sau tách 2,00 s | dịch +1,0 s 3,00 s | Ctrl+Z 2,00 s**, RMS cả
+  file `0,0628 / 0,0628 / 0,0562 / 0,0628` — tách không làm đổi tiếng, con số
+  thứ ba thấp hơn đúng bằng phần đầu bị cắt. Probe: **14/14 phép đo PASS**,
+  `failed = []`.
+* Máy cấu hình thấp: không module mới, không import mới trên đường boot, không
+  hộp thoại — `detach_audio` chỉ chạy khi người dùng bấm menu, nên giá boot là
+  0 s / 0 MB; việc mới duy nhất nằm trong row selftest.
+* Snapshot dữ liệu người dùng quanh vòng gate (`_snap_before.json` 18:09 →
+  `_snap_after.json` 18:15, **1790 → 1790 file**): `THEM: 6 / MAT: 6 / DOI: 0`.
+  Sáu thêm và sáu mất nằm trọn trong `~\.clinqing\recovery\` và trùng đúng hai
+  stem fixture của `--selftest` (`Kiem karaoke` 5, `Kiem recap` 1) — vòng quay
+  keep-5 đã giải trình ở các nhóm trước. Không có dòng nào ở `recent_projects.json`,
+  `.clinq`, hay `Clinging_Projects\`; `DOI: 0`.
+* Hai probe cũ đụng tới menu clip phải chạy lại sau khi thêm mục "Tách âm thanh":
+  `scratch/font_icon_probe.py` **rc=0, ALL PASS (0 fail)** và
+  `scratch/keyframe_graph_probe.py` **rc=0, ALL PASS**. Lần chạy đầu của
+  `font_icon_probe.py` ĐỎ vì ba khiếm khuyết có sẵn từ trước, không phải do
+  nhóm này: (a) `clip.effects` trong fixture là `dict` trong khi
+  `ClipPropertiesWidget._grading_params` đọc `effect.name` — model không bao giờ
+  chứa dict (`deserialize_effects` luôn trả `EffectData`), nên fixture được sửa
+  đi đúng đường sản xuất; (b) bảng cho-phép emoji danh theo **số dòng** (468) mà
+  dòng đó đã trôi tới 488, nên cổng "không còn emoji trong UI" báo đỏ giả — niu
+  nay danh theo nội dung dòng, và chứng minh nó không rỗng: tắt bảng cho-phép
+  thì đúng một hit `ui/graphics_canvas_item.py:488` quay lại; (c) probe in danh
+  sách emoji ra console cp1252 nên chết giữa bảng bằng `UnicodeEncodeError` —
+  nay `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` như các probe
+  khác.
+* **Chưa** dựng lại bundle cho nhóm này: `dist\Clinging` hiện tại dựng từ tree
+  chroma nên vẫn chạy 35 dòng — tách tiếng mới tồn tại ở tree nguồn, chờ duyệt
+  phát hành.
 
 ---
 

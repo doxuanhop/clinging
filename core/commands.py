@@ -400,6 +400,79 @@ class DuplicateClipCommand(Command):
         return "Nhân bản clip"
 
 
+class DetachAudioCommand(Command):
+    """Tách tiếng một clip video thành clip audio — MỘT bước Ctrl+Z cho cả hai nửa.
+
+    Thao tác này sửa hai nơi cùng lúc (thêm clip audio xuống hàng tiếng, tắt tiếng
+    clip video), nên undo phải trả cả hai. Trả một nửa thì hàng video im lặng vẫn
+    nằm đó và người dùng chỉ phát hiện lúc bật export.
+
+    Clip audio là clip cuối cùng trên một hàng vừa trống sẽ bị ``remove_clip`` xóa
+    luôn hàng đó. Nếu hàng ấy người dùng tạo sẵn mà đang rỗng thì Ctrl+Z làm mất
+    hàng của họ, nên lệnh nhớ nguyên trạng (tên, mute, lock, vị trí) để dựng lại
+    đúng id — redo rồi undo phải về đúng mô hình ban đầu.
+    """
+
+    def __init__(self, model, clip_id: str):
+        self._model = model
+        self._source_id = clip_id
+        self._audio_id: Optional[str] = None
+        self._was_muted = False
+        self._existed_audio_ids: set[str] = set()
+        self._track_state: Optional[dict] = None
+
+    def execute(self):
+        clip = self._model.get_clip(self._source_id)
+        if clip is None:
+            return
+        self._was_muted = bool(clip.audio_muted)
+        from core.timeline_model import TrackType
+        self._existed_audio_ids = {
+            t.track_id for t in self._model.tracks
+            if t.track_type == TrackType.AUDIO}
+        audio = self._model.detach_audio(self._source_id)
+        if audio is None:
+            return
+        self._audio_id = audio.clip_id
+        if audio.track_id in self._existed_audio_ids:
+            track = self._model.get_track(audio.track_id)
+            if track is not None:
+                self._track_state = {
+                    "track_id": track.track_id,
+                    "name": track.name,
+                    "is_muted": bool(track.is_muted),
+                    "is_locked": bool(track.is_locked),
+                    "index": self._model.tracks.index(track),
+                }
+
+    def undo(self):
+        if self._audio_id is None:
+            return
+        self._model.remove_clip(self._audio_id)
+        self._restore_track()
+        clip = self._model.get_clip(self._source_id)
+        if clip is not None:
+            clip.audio_muted = self._was_muted
+            self._model.clipUpdated.emit(self._source_id)
+
+    def _restore_track(self):
+        state = self._track_state
+        if state is None or self._model.get_track(state["track_id"]) is not None:
+            return
+        from core.timeline_model import TrackType
+        track = self._model.add_track(TrackType.AUDIO, name=state["name"],
+                                      track_id=state["track_id"])
+        track.is_muted = state["is_muted"]
+        track.is_locked = state["is_locked"]
+        self._model.tracks.remove(track)
+        self._model.tracks.insert(
+            min(state["index"], len(self._model.tracks)), track)
+        self._model.tracksReordered.emit()
+
+    def description(self) -> str:
+        return "Tách âm thanh khỏi clip"
+
+
 class PasteClipsCommand(Command):
     """Dán cả nhóm clip từ clipboard tại playhead — MỘT bước undo.
 
