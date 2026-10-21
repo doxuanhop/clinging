@@ -1553,6 +1553,250 @@ def _detach_audio_ok():
             "adelay=1500, Ctrl+Z tra lai ca hai nua + giu hang audio trong")
 
 
+def _trim_card_ok():
+    """Mot dong trong --selftest: the "Cat" (in/out giay cua nguon) trong bang thuoc tinh.
+
+    Do tren chinh ClipPropertiesWidget: so duoc ghi vao spin nhu nguoi dung ghi,
+    lenh di qua undo_stack that cua panel. Bon dieu bat buoc:
+
+    (1) In/Out do bang giay CUA NGUON con duration do bang giay timeline, nen moi
+        phep quy doi phai chia cho toc do - clip 2x ma cong tru thang thi keo 1
+        giay nguon nhat mat 2 giay thanh;
+    (2) meg trai khong duoc lo nguon truoc giay 0 - cung tran ma handle keo dang
+        dung (ui/graphics/clip_item.py:614);
+    (3) cat tren Main Storyline la ripple: clip sau phai di theo meg vua thay;
+    (4) mot lan doi so = mot buoc undo, Ctrl+Z tra lai du ca start_time lan goc.
+
+    Gate phai do khi co thu de cat: clip chu khong co cua so nguon thi the PHAI
+    an, hien cho no la UI noi doi va phep quy doi o tren vo nghia.
+    """
+    import subprocess
+    import tempfile
+    import types
+
+    from PySide6.QtWidgets import QWidget
+    from core import external_tools
+    from core.audio_mix import build_filter_complex, collect_audio_clips
+    from core.commands import TrimClipCommand, UndoStack
+    from core.timeline_model import ClipModel, TimelineModel, TrackType
+    from ui.properties_panel import ClipPropertiesWidget
+
+    ffmpeg = external_tools.find("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError(external_tools.missing_message("ffmpeg"))
+    folder = tempfile.mkdtemp(prefix="clinging_trim_")
+    try:
+        src = os.path.join(folder, "nguon.mp4")
+        subprocess.run(
+            [ffmpeg, "-v", "error", "-y",
+             "-f", "lavfi", "-i",
+             "testsrc2=size=160x120:rate=25:duration=6",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+             "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+             "-shortest", src],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180,
+            check=False, creationflags=0x08000000)
+        if not os.path.isfile(src):
+            raise RuntimeError("khong tao duoc video co tieng de do")
+
+        model = TimelineModel()
+        for old in list(model.tracks):
+            model.remove_track(old.track_id)
+        spine = model.add_track(TrackType.VIDEO)
+        if not spine.is_main_track:
+            raise RuntimeError("hang VIDEO dau khong phai Main Storyline")
+        overlay = model.add_track(TrackType.VIDEO)
+
+        def media_clip(track, start, duration, in_point, speed, name):
+            clip = ClipModel(start_time=start, duration=duration,
+                             source_path=src, media_type="video", name=name,
+                             in_point=in_point, source_duration=6.0,
+                             track_id=track.track_id)
+            clip.speed = speed
+            clip.refresh_out_point()
+            track.clips.append(clip)
+            model.recalculate_project_duration()
+            model.clipAdded.emit(clip)
+            return clip
+
+        # Clip do nam tren Overlay de start_time vo sinh: tren truc chinh thi ripple
+        # keo no ve 0 va khong con gi de phan biet phep chia toc do.
+        subject = media_clip(overlay, 2.0, 2.0, 1.0, 2.0, "Cat")
+        if abs(subject.out_point - 5.0) > 1e-6:
+            raise RuntimeError("fixture sai of so nguon: %.3f" % subject.out_point)
+
+        host = QWidget()
+        host.setObjectName("MainWindow")
+        stack = UndoStack()
+        host.timeline_panel = types.SimpleNamespace(
+            model=model, undo_stack=stack,
+            scene=types.SimpleNamespace(_clip_items={}))
+        editor = ClipPropertiesWidget(subject, parent=host)
+
+        if editor.card_trim.isHidden():
+            raise RuntimeError("the Cat an khi clip co nguon that")
+        got = (editor.spin_trim_in.value(), editor.spin_trim_out.value(),
+               editor.lbl_trim_duration.text())
+        if got != (1.0, 5.0, "2.00 s"):
+            raise RuntimeError("the Cat doc sai cua so nguon: %r" % (got,))
+        # Tran duoi 0,1 s: do In toi da van phai con cho clip mot do dai dung
+        # duoc, neu khong spin mo cho phep cat clip ve 0 giay.
+        if not (editor.spin_trim_in.maximum() < subject.out_point
+                and editor.spin_trim_out.minimum() > subject.in_point):
+            raise RuntimeError("spin cho phep clip rong 0 giay")
+        bounds = editor._trim_bounds(subject)
+        # 1,0 giay nguon o do In = 0,5 giay o do duration: bo bon so nay la phan
+        # chia cho toc do bi bo.
+        if tuple(round(v, 3) for v in bounds) != (0.0, 4.8, 1.2, 6.0):
+            raise RuntimeError("dai In/Out khong dung: %r"
+                               % (tuple(round(v, 3) for v in bounds),))
+
+        editor.spin_trim_out.setValue(3.0)
+        geom = (subject.start_time, subject.duration, subject.in_point,
+                subject.out_point)
+        if geom != (2.0, 1.0, 1.0, 3.0) or stack.undo_count != 1:
+            raise RuntimeError("cat cuoi sai tren clip 2x: %r (buoc %d)"
+                               % (geom, stack.undo_count))
+        editor.spin_trim_in.setValue(2.0)
+        geom = (subject.start_time, subject.duration, subject.in_point,
+                subject.out_point)
+        # Cat dau giu nguyen meg phai: out van 3,0 trong khi start nhich 0,5.
+        if geom != (2.5, 0.5, 2.0, 3.0) or stack.undo_count != 2:
+            raise RuntimeError("cat dau khong giu meg phai: %r (buoc %d)"
+                               % (geom, stack.undo_count))
+
+        clips = collect_audio_clips(model)
+        graph = build_filter_complex(model, clips, model.duration)
+        if "atrim=start=2.000000:duration=1.000000" not in graph:
+            raise RuntimeError("export cat sai doan nguon: %s" % graph[:220])
+        if "adelay=2500:all=1" not in graph:
+            raise RuntimeError("tieng chay sai gio sau khi cat dau: %s"
+                               % graph[:220])
+
+        stack.undo()
+        if (subject.start_time, subject.duration, subject.in_point,
+                subject.out_point) != (2.0, 1.0, 1.0, 3.0):
+            raise RuntimeError("Ctrl+Z khong tra lai net cat dau")
+        stack.undo()
+        if (subject.start_time, subject.duration, subject.in_point,
+                subject.out_point) != (2.0, 2.0, 1.0, 5.0):
+            raise RuntimeError("Ctrl+Z khong tra lai net cat cuoi")
+        stack.redo()
+        if abs(subject.duration - 1.0) > 1e-6:
+            raise RuntimeError("Ctrl+Y khong lam lai duoc net cat")
+
+        # Mot nac cua spin tren clip 4x doi 0,0025 s timeline: du nho de model ap
+        # nhung khong du cho mot buoc undo - do la ly do _apply_trim chan so.
+        fast = media_clip(overlay, 0.0, 1.0, 0.0, 4.0, "Nhanh")
+        fast_editor = ClipPropertiesWidget(fast, parent=host)
+        before = (stack.undo_count, fast.in_point, fast.duration)
+        fast_editor.spin_trim_in.setValue(fast_editor.spin_trim_in.value() + 0.01)
+        if (stack.undo_count, fast.in_point, fast.duration) != before:
+            raise RuntimeError("mot nac 0,01s tren clip 4x tao buoc undo gia")
+
+        # Meg trai khong phai luc nao cung ve 0: clip co in_point lon hon
+        # start_time*speed bi chan ngay giay 0 cua NGUON, va do le do la phep
+        # nhan speed trong _trim_bounds. Clip nay keo ve het thi In = 2,0 chu
+        # khong phai 2,5, con start_time ve tan 0,0.
+        tight = media_clip(overlay, 0.5, 1.0, 3.0, 2.0, "Sat")
+        tight_editor = ClipPropertiesWidget(tight, parent=host)
+        bounds = tuple(round(v, 3) for v in tight_editor._trim_bounds(tight))
+        if bounds != (2.0, 4.8, 3.2, 6.0):
+            raise RuntimeError("meg trai toi da tinh sai vi chia toc do: %r"
+                               % (bounds,))
+        tight_editor.spin_trim_in.setValue(2.0)
+        geom = (tight.start_time, tight.duration, tight.in_point,
+                tight.out_point)
+        if geom != (0.0, 1.5, 2.0, 5.0):
+            raise RuntimeError("cat toi meg trai khong lo duoc toan bo nguon: %r"
+                               % (geom,))
+
+        # Track khoa: resize_clip tu choi im lang, lenh khong duoc ghi nhan la da
+        # ap - neu khong undo se ghi nguoc mot hinh hoc chua tung duoc ap.
+        overlay.is_locked = True
+        geom_before = (subject.start_time, subject.duration, subject.in_point)
+        editor.spin_trim_out.setValue(editor.spin_trim_out.value() - 0.5)
+        cmd = stack._undo_stack[-1]
+        if (subject.start_time, subject.duration, subject.in_point) != geom_before:
+            raise RuntimeError("track khoa ma the Cat van ghi duoc")
+        if not isinstance(cmd, TrimClipCommand) or cmd._applied:
+            raise RuntimeError("lenh cat tren track khoa bi tinh la da ap")
+        stack.undo()
+        if (subject.start_time, subject.duration, subject.in_point) != geom_before:
+            raise RuntimeError("Ctrl+Z pha hinh hoc clip tren track khoa")
+        overlay.is_locked = False
+        while stack.undo_count:
+            stack.undo()
+
+        # Ripple Main Storyline: cat dau clip A thi clip B phai bo theo meg moi,
+        # va Ctrl+Z phai keo B ve cho cu.
+        a = media_clip(spine, 0.0, 3.0, 0.0, 1.0, "A")
+        b = media_clip(spine, 3.0, 3.0, 3.0, 1.0, "B")
+        a_editor = ClipPropertiesWidget(a, parent=host)
+        a_editor.spin_trim_in.setValue(1.0)
+        if (a.duration, a.start_time, b.start_time) != (2.0, 0.0, 2.0):
+            raise RuntimeError("cat tren truc chinh khong ripple: A=%.2f@%.2f B=%.2f"
+                               % (a.duration, a.start_time, b.start_time))
+        stack.undo()
+        if (a.duration, b.start_time) != (3.0, 3.0):
+            raise RuntimeError("Ctrl+Z khong tra lai ripple tren truc chinh")
+
+        # Hai nut "Cat tai Playhead": playhead nam trong clip thi meg ben kia phai
+        # giu nguyen; nam ngoai thi khong duoc them buoc nao.
+        while stack.undo_count:
+            stack.undo()
+        tail = media_clip(overlay, 0.0, 4.0, 0.0, 1.0, "Duoi")
+        tail_editor = ClipPropertiesWidget(tail, parent=host)
+        steps = stack.undo_count
+        model.playhead = 1.0
+        tail_editor.btn_trim_head.click()
+        if (tail.start_time, tail.duration, tail.in_point) != (1.0, 3.0, 1.0):
+            raise RuntimeError("nut cat dau khong lay dung playhead")
+        model.playhead = 2.0
+        tail_editor.btn_trim_tail.click()
+        if (tail.start_time, tail.duration, tail.in_point,
+                tail.out_point) != (1.0, 1.0, 1.0, 2.0):
+            raise RuntimeError("nut cat cuoi khong giu meg trai")
+        if stack.undo_count != steps + 2:
+            raise RuntimeError("hai nut cat tao %d buoc undo"
+                               % (stack.undo_count - steps))
+        model.playhead = 9.0
+        before = (stack.undo_count, tail.start_time, tail.duration)
+        tail_editor.btn_trim_head.click()
+        tail_editor.btn_trim_tail.click()
+        if (stack.undo_count, tail.start_time, tail.duration) != before:
+            raise RuntimeError("playhead ngoai clip ma van cat")
+
+        # Clip chu: khong co cua so nguon thi the phai an.
+        text_track = model.add_track(TrackType.TEXT)
+        caption = model.add_clip(text_track.track_id, "", "text", 0.0, 3.0, "Chu")
+        if not ClipPropertiesWidget(caption, parent=host).card_trim.isHidden():
+            raise RuntimeError("the Cat hien cho clip chu khong co nguon")
+
+        missing = []
+        if "card_trim" not in ClipPropertiesWidget.__init__.__code__.co_names:
+            missing.append("__init__ khong dung the Cat")
+        if "_sync_trim_card" not in (
+                ClipPropertiesWidget.update_values.__code__.co_names):
+            missing.append("update_values khong doc lai the Cat")
+        for method in ("_apply_trim", "_trim_at_playhead"):
+            code = getattr(ClipPropertiesWidget, method).__code__.co_names
+            if "_push_trim" not in code:
+                missing.append("%s khong di qua lenh" % method)
+            if "resize_clip" in code:
+                missing.append("%s goi thang model.resize_clip" % method)
+        if "TrimClipCommand" not in (
+                ClipPropertiesWidget._push_trim.__code__.co_names):
+            missing.append("_push_trim khong push TrimClipCommand")
+        if missing:
+            raise RuntimeError("diem vao the cat bi thieu: %s" % ", ".join(missing))
+    finally:
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+    return ("cat tren clip 2x: in=2.0 dur=0.5@2.5s, export thay atrim=start=2.0 "
+            "duration=1.0 + adelay=2500, ripple keo clip sau ve 2.0, Ctrl+Z 4/4")
+
+
 def _captions_strip_ok():
     """Mot dong trong --selftest: thanh tien do Auto Captions mong trong bundle nay.
 
@@ -1757,6 +2001,7 @@ def run_selftest(argv=None):
     col.check("trich xuat anh thumbnail", _thumbnail_export_ok)
     col.check("cat file thanh N doan ra dia", _media_split_ok)
     col.check("tach tieng video thanh clip audio rieng", _detach_audio_ok)
+    col.check("the Cat in/out trong bang thuoc tinh", _trim_card_ok)
     col.check("thanh tien do Auto Captions 8px", _captions_strip_ok)
     col.check("thu muc du lieu nguoi dung", _writable_ok)
     col.check("ffmpeg + ffprobe tim thay", _ffmpeg_note)

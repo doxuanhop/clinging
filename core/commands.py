@@ -596,6 +596,66 @@ class SplitClipCommand(Command):
         return "Cắt clip"
 
 
+class TrimClipCommand(Command):
+    """Cắt mép trái (from_start=True) hoặc mép phải clip — một bước undo.
+
+    Hình học giao hoàn toàn cho `model.resize_clip`: chính hàm đó kẹp trần nguồn
+    theo tốc độ (core/timeline_model.py:1054) và tính lại ripple cho Main
+    Storyline, nên thẻ thuộc tính và handle kéo trên timeline ra cùng một con số.
+    Lệnh này không tự viết lại phép kẹp đó.
+    """
+
+    def __init__(self, model, clip_id: str, new_duration: float,
+                 from_start: bool = False):
+        self._model = model
+        self._clip_id = clip_id
+        self._new_duration = new_duration
+        self._from_start = from_start
+        self._before: tuple = ()
+        self._applied = False
+
+    def _geometry(self) -> tuple:
+        clip = self._model.get_clip(self._clip_id)
+        if clip is None:
+            return ()
+        return (float(clip.start_time), float(clip.duration),
+                float(clip.in_point), float(clip.out_point))
+
+    def _write(self, geometry: tuple):
+        clip, track = self._model._find_clip(self._clip_id)
+        if clip is None:
+            return
+        start_time, duration, in_point, out_point = geometry
+        clip.start_time = max(0.0, start_time)
+        clip.duration = max(0.1, duration)
+        clip.in_point = max(0.0, in_point)
+        clip.out_point = out_point
+        if track and track.is_main_track:
+            self._model.recalculate_main_storyline(track)
+        else:
+            self._model.recalculate_project_duration()
+        self._model.clipResized.emit(self._clip_id, clip.duration)
+
+    def execute(self):
+        self._before = self._geometry()
+        if not self._before:
+            return
+        self._model.resize_clip(self._clip_id, self._new_duration,
+                                self._from_start)
+        after = self._geometry()
+        # resize_clip im lặng bỏ qua khi track bị khoá; ghi ngược một hình học
+        # chưa từng được áp là lệnh undo giả.
+        self._applied = bool(after) and any(
+            abs(old - new) > 0.0001 for old, new in zip(self._before, after))
+
+    def undo(self):
+        if self._applied and self._before:
+            self._write(self._before)
+
+    def description(self) -> str:
+        return "Cắt đầu clip" if self._from_start else "Cắt cuối clip"
+
+
 class ApplyEffectCommand(Command):
     """Áp dụng hiệu ứng lên clip."""
 

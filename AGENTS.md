@@ -34,7 +34,7 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
 
 ```bash
 python main.py                                  # chay app binh thuong
-python main.py --selftest                       # 36 dong cong, bao JSON co "failed"
+python main.py --selftest                       # 37 dong cong, bao JSON co "failed"
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
@@ -63,6 +63,8 @@ python scratch/chroma_key_evidence.py           # anh FrameComposer: cat nen xan
 python scratch/chroma_cost_probe.py             # low-spec: duong tat 0 ms; thue chroma < the Pop Art da ban
 python scratch/detach_audio_counterfactual.py   # phan chung: 10 phep doi byte -> cua tach tieng do dung ly do
 python scratch/detach_audio_evidence.py         # anh + JSON: TimelineScene that, RMS wav do tu render_audio
+python scratch/trim_counterfactual.py           # phan chung: 12 phep doi byte -> the Cat in/out do dung ly do
+python scratch/trim_evidence.py                 # anh + JSON: FrameComposer 4 trang thai, wav do first_loud + RMS
 python scratch/boot_low_spec_probe.py           # 5 vong xuyen tat: boot/WS/private + seam icon (may phai yen)
 python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
 python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile

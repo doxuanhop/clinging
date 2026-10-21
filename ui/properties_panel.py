@@ -328,6 +328,52 @@ class ClipPropertiesWidget(QWidget):
             clip_model.media_type in ("video", "audio"))
         scroll_layout.addWidget(self.card_audio)
         self._sync_audio_card()
+
+        # Card: Cắt — cửa sổ nguồn (in/out) của clip, mọi thay đổi đi qua
+        # TrimClipCommand nên Ctrl+Z trả lại đúng một bước.
+        self.card_trim = QFrame()
+        self.card_trim.setObjectName("PropertyCard")
+        layout_trim = QFormLayout(self.card_trim)
+        layout_trim.setSpacing(8)
+        layout_trim.setContentsMargins(12, 12, 12, 12)
+
+        lbl_trim_title = QLabel("Cắt")
+        lbl_trim_title.setObjectName("CardTitle")
+        layout_trim.addRow(lbl_trim_title)
+
+        self.spin_trim_in = self._create_trim_spin()
+        self.spin_trim_in.valueChanged.connect(self._on_trim_in_changed)
+        layout_trim.addRow("In (s):", self.spin_trim_in)
+
+        self.spin_trim_out = self._create_trim_spin()
+        self.spin_trim_out.valueChanged.connect(self._on_trim_out_changed)
+        layout_trim.addRow("Out (s):", self.spin_trim_out)
+
+        self.lbl_trim_duration = QLabel("0,00 s")
+        self.lbl_trim_duration.setStyleSheet("color: #A0A0A0; font-size: 11px;")
+        layout_trim.addRow("Thời lượng:", self.lbl_trim_duration)
+
+        self.btn_trim_head = QPushButton("Cắt đầu tại Playhead")
+        self.btn_trim_head.setObjectName("TransitionClearBtn")
+        self.btn_trim_head.setFixedHeight(26)
+        self.btn_trim_head.setCursor(Qt.PointingHandCursor)
+        self.btn_trim_head.clicked.connect(
+            lambda: self._trim_at_playhead(from_start=True))
+        layout_trim.addRow(self.btn_trim_head)
+
+        self.btn_trim_tail = QPushButton("Cắt cuối tại Playhead")
+        self.btn_trim_tail.setObjectName("TransitionClearBtn")
+        self.btn_trim_tail.setFixedHeight(26)
+        self.btn_trim_tail.setCursor(Qt.PointingHandCursor)
+        self.btn_trim_tail.clicked.connect(
+            lambda: self._trim_at_playhead(from_start=False))
+        layout_trim.addRow(self.btn_trim_tail)
+
+        # Chỉ clip có nguồn thật mới có in/out: ảnh/chữ/sticker không có cửa sổ
+        # nguồn để cắt, hiện hai ô spin cho chúng là UI nói dối.
+        self.card_trim.setVisible(self._has_source_window(clip_model))
+        scroll_layout.addWidget(self.card_trim)
+        self._sync_trim_card()
         
         # Card 3: Nhóm chuyên biệt cho Văn bản (ẩn mặc định)
         self.card_text = QFrame()
@@ -1231,6 +1277,126 @@ class ClipPropertiesWidget(QWidget):
             item.update()
         main_window._sync_canvas()
 
+    # Clip ngắn nhất còn được phép cắt: cùng trần với model.resize_clip
+    # (core/timeline_model.py:1052).
+    MIN_TRIM = 0.1
+
+    @staticmethod
+    def _has_source_window(clip) -> bool:
+        """Chỉ clip đọc được độ dài nguồn mới có in/out để cắt."""
+        return bool(clip is not None
+                    and clip.media_type in ("video", "audio")
+                    and float(clip.source_duration) > 0.0)
+
+    def _create_trim_spin(self) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setDecimals(2)
+        spin.setSingleStep(0.10)
+        spin.setRange(0.0, 0.0)
+        spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
+        return spin
+
+    def _trim_bounds(self, clip):
+        """Khoảng hợp lệ của (In, Out) — phép ngược của resize_clip + refresh_out_point.
+
+        In/Out đo bằng giây CỦA NGUỒN, duration đo bằng giây timeline, nên mỗi
+        bước ở ô spin phải chia cho tốc độ. Mép trái không được lộ nguồn trước
+        giây 0 — đúng trần mà handle kéo đang dùng (ui/graphics/clip_item.py:614).
+        """
+        speed = clip.speed_factor
+        span = self.MIN_TRIM * speed
+        in_min = max(0.0, float(clip.in_point) - float(clip.start_time) * speed)
+        in_max = max(in_min, float(clip.out_point) - span)
+        out_min = float(clip.in_point) + span
+        out_max = max(out_min, float(clip.source_duration))
+        return in_min, in_max, out_min, out_max
+
+    def _sync_trim_card(self):
+        """Đọc lại in/out từ model — model mới là bên kẹp số, spin không được tin số của mình."""
+        clip = self._clip()
+        if not self._has_source_window(clip):
+            self.card_trim.setVisible(False)
+            return
+        self.card_trim.setVisible(True)
+
+        blocked = self._block_signals
+        self._block_signals = True
+        in_min, in_max, out_min, out_max = self._trim_bounds(clip)
+        # Đặt dải trước rồi mới đặt giá trị: Qt kẹp giá trị ngoài dải và phát
+        # valueChanged, mà khi đó cờ chặn tín hiệu đã hạ xuống.
+        self.spin_trim_in.setRange(in_min, in_max)
+        self.spin_trim_out.setRange(out_min, out_max)
+        self.spin_trim_in.setValue(float(clip.in_point))
+        self.spin_trim_out.setValue(float(clip.out_point))
+        self.lbl_trim_duration.setText("%.2f s" % float(clip.duration))
+        self._block_signals = blocked
+
+    def _on_trim_in_changed(self, value):
+        self._apply_trim(float(value), from_start=True)
+
+    def _on_trim_out_changed(self, value):
+        self._apply_trim(float(value), from_start=False)
+
+    def _apply_trim(self, target: float, from_start: bool):
+        """Một con số In/Out → thời lượng timeline mới cho model.resize_clip."""
+        if self._block_signals:
+            return
+        clip = self._clip()
+        if not self._has_source_window(clip):
+            return
+        speed = clip.speed_factor
+        # Dải trên spin chỉ là gợi ý: ripple của clip khác có thể vừa dời mép
+        # trái clip này mà chẳng có card nào được gọi cập nhật lại, nên phải
+        # chặn số ngay đây.
+        in_min, in_max, out_min, out_max = self._trim_bounds(clip)
+        if from_start:
+            target = min(max(target, in_min), in_max)
+            # Tiến In bao nhiêu giây nguồn thì nội dung đã dùng bớt đi bấy nhiêu,
+            # quy ra timeline là delta; mép phải giữ nguyên (ngược của
+            # resize_clip from_start, core/timeline_model.py:1061).
+            delta = (target - float(clip.in_point)) / speed
+            new_duration = float(clip.duration) - delta
+        else:
+            target = min(max(target, out_min), out_max)
+            new_duration = (target - float(clip.in_point)) / speed
+        if abs(new_duration - float(clip.duration)) < 0.005:
+            # Trả về đúng số cũ là lệnh rỗng: mỗi lệnh rỗng thêm một lần Ctrl+Z
+            # không hoàn tác được gì (cùng quy tắc với _commit_audio).
+            return
+        self._push_trim(new_duration, from_start)
+
+    def _trim_at_playhead(self, from_start: bool):
+        model = self._model()
+        clip = self._clip()
+        if model is None or not self._has_source_window(clip):
+            return
+        playhead = float(model.playhead)
+        # Ngoài phạm vi clip thì chẳng còn nội dung để cắt; để yên các ô số còn
+        # hơn ghi một lệnh mà người dùng không thấy gì xảy ra.
+        if not (clip.start_time + self.MIN_TRIM < playhead
+                < clip.end_time - self.MIN_TRIM):
+            return
+        new_duration = (clip.end_time - playhead) if from_start else (
+            playhead - clip.start_time)
+        self._push_trim(new_duration, from_start)
+
+    def _push_trim(self, new_duration: float, from_start: bool):
+        model = self._model()
+        main_window = self._find_main_window()
+        if model is None or main_window is None:
+            return
+        from core.commands import TrimClipCommand
+        main_window.timeline_panel.undo_stack.push(
+            TrimClipCommand(model, self.clip_id, new_duration, from_start))
+        self._sync_trim_card()
+        # Cắt mép làm cửa sổ chuyển tiếp co giãn, nên dải đánh dấu phải đọc lại.
+        self._sync_transition_card()
+        # Cắt đổi CỬA SỔ nguồn: dải hình và cây sóng trên clip phải trích xuất
+        # lại, đúng như đường kéo handle (ui/graphics/clip_item.py:558).
+        item = main_window.timeline_panel.scene._clip_items.get(self.clip_id)
+        if item is not None:
+            item.refresh_media_extraction()
+
     # (khoá, nhãn, min, max, bước thực của một nấc, định dạng nhãn). Slider chỉ
     # biết số nguyên, nên mỗi núm lưu thêm hệ số quy đổi để con số ghi vào
     # EffectData trùng khớp con số trên nhãn.
@@ -1452,6 +1618,7 @@ class ClipPropertiesWidget(QWidget):
         # phải đọc lại từ model mỗi lần panel cập nhật.
         self._sync_transition_card()
         self._sync_audio_card()
+        self._sync_trim_card()
         self._sync_grading_card()
         self._sync_chroma_card()
 

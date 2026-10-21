@@ -89,7 +89,7 @@ python scratch/user_data_snapshot.py capture scratch/_snap_before.json
 # 1) Audit tên icon + tham số color= trên toàn bộ nguồn
 python scratch/icon_name_audit.py
 
-# 2) Selftest 36 dòng trên tree nguồn
+# 2) Selftest 37 dòng trên tree nguồn
 python main.py --selftest
 
 # 3) Đo khởi động (bao gồm control cùng lần, xem mục dưới đây)
@@ -157,7 +157,14 @@ python scratch/detach_audio_evidence.py           # -> 14/14 phep do PASS
                                                   # -> scratch/detach_audio_evidence.png
                                                   # -> scratch/detach_audio_evidence.json
 
-# 4j) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
+# 4j) The Cat in/out (bang thuoc tinh ben phai): hinh hoc giao hoan toan cho
+#     resize_clip, mot spin = mot buoc undo, do ca preview lan export
+python scratch/trim_counterfactual.py             # -> 12/12 do dung ly do, byte ve nguyen ban
+python scratch/trim_evidence.py                   # -> 23/23 phep do PASS
+                                                  # -> scratch/trim_evidence.png
+                                                  # -> scratch/trim_evidence.json
+
+# 4k) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
 #     chung (lat _internal/styles, an core/ cua tree nguon) + do boot
 python scratch/frozen_bundle_probe.py             # -> ALL PASS (0 fail), rc=0
 dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json
@@ -631,6 +638,96 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
 
 ---
 
+## Cổng "thẻ Cắt in/out" (nhóm H, 2026-10-21)
+
+| Dòng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `the Cat in/out trong bang thuoc tinh` | Bảng thuộc tính có thẻ **Cắt**: spin `In (s)`, spin `Out (s)`, nhãn thời lượng và hai nút cắt theo playhead ở đầu/cuối clip. **Toàn bộ hình học giao cho `TimelineModel.resize_clip`** — chính hàm mà cú kéo mép clip trên timeline gọi — nên thẻ và timeline không thể sản ra hai số khác nhau, và pipeline render không đổi một dòng nào. Đơn vị là hợp đồng: In/Out là **giây của nguồn** (`in_point`/`out_point`), thời lượng là **giây timeline**, nối nhau qua `consumed_source() = duration * speed_factor`; vì vậy mọi khoảng cách trong `_trim_bounds` phải qua `* speed` (mép trái tối đa `in_point - start_time*speed` — clip bị chắn ở giây 0 của **nguồn** thì kéo hết cỡ vẫn còn `In = 2,0` chứ không về 0). Kéo một spin = **MỘT** bước `TrimClipCommand`: `_applied` chỉ đặt khi hình học THỰC đổi (`> 0,0001`), nên một cú nudge 0,01 s trên clip 4x hay một cú cắt trên hàng khóa không tạo bước undo giả — Ctrl+Z của người dùng không được xóa nhầm bước bên cạnh. Cắt đầu phải **giữ mép phải** (`start_time` và `in_point` cùng dịch, có nhân speed). Playhead ngoài đoạn clip thì từ chối. Clip chữ/hình không có cửa sổ nguồn thì thẻ ẩn. Export không có code mới: gate assert `atrim=start=2.000000:duration=1.000000` và `adelay=2500:all=1` trong filter graph thật, và `update_values()` phải đọc lại thẻ (undo KHÔNG tự làm mới panel) | `trim_counterfactual.py`: 12 phép đổi byte trên `ui/properties_panel.py` + `core/commands.py` |
+
+Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
+
+* `--selftest`: **37 dòng, `failed = []`**. Chi tiết dòng thẻ Cắt:
+  `cat tren clip 2x: in=2.0 dur=0.5@2.5s, export thay atrim=start=2.0 duration=1.0
+  + adelay=2500, ripple keo clip sau ve 2.0, Ctrl+Z 4/4`. Fixture là mp4 lavfi
+  `testsrc2=160x120:rate=25:duration=6` + `sine=440:duration=6` dựng trong
+  `%TEMP%`, không dùng video của người dùng.
+* `scratch/trim_evidence.png` (900×1318, `scratch/trim_evidence.json`): nguồn 6 s
+  ghép từ sáu block rắn 1 s **đỏ / lục / lam / vàng / cyan / magenta** + tone
+  440 Hz 0..3 s và 880 Hz 3..6 s, nên "đang phát giây nguồn nào" đọc bằng MÀU,
+  không phải bằng pixel-diff. Bốn trạng thái, mỗi trạng thái một ô `TimelineScene`
+  grab từ model thật (`TimePixelMapper().set_zoom(120.0)`), bốn khung ra do
+  `FrameComposer(320x180).render_frame()` tại t = 0,5 / 1,5 / 2,5 / 3,5 s (mẫu
+  pixel giữa 160,90) và tiếng do `core.audio_mix.render_audio` sản xuất
+  (PCM s16le/48k/stereo) rồi đo bằng `wave`+`struct` stdlib:
+
+  | Trạng thái | `start, dur, in, out` | spin In/Out | filmstrip (do-luc-lam-vang) | `first_loud` | đổi tone | RMS 0,3–1,7 s / 2,3–3,7 s |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | A gốc | 0,0 4,0 0,0 4,0 | 0,0 / 4,0 | do luc lam vang | 0,00 s | 3,00 s | 0,0625 / 0,06245 |
+  | B cắt đầu 2 s | 2,0 2,0 2,0 4,0 | 2,0 / 4,0 | **den den** lam vang | **2,00 s** | 3,00 s | **0,0** / 0,06245 |
+  | C cắt cuối 2 s | 0,0 2,0 0,0 2,0 | 0,0 / 2,0 | do luc **den den** | 0,00 s | **không có** | 0,0625 / **0,0** |
+  | D Ctrl+Z từ B | 0,0 4,0 0,0 4,0 | 0,0 / 4,0 | do luc lam vang | 0,00 s | 3,00 s | 0,0625 / 0,06245 |
+
+  `first_loud` dịch đúng 2,00 s khi cắt đầu nhưng **không đổi** khi cắt cuối — tức
+  `start_time` được giữ, chỉ `out_point` bị chặn. Hai ô đen ở đầu filmstrip B là
+  khung hình timeline trống (clip đã dời sang 2,0 s), còn `source_time()` tại
+  2,5 / 3,5 s vẫn 2,5 / 3,5 vì mép phải bất động. `switch = None` ở C là bằng
+  chứng đoạn 880 Hz đã ra khỏi cửa sổ nguồn.
+  Kết quả probe: **23/23 phép đo PASS**, `failed = []`, `TRUE_RC = 0`.
+* Bẫy phải ghi lại: `active_visual_clips_at` (core/timeline_model.py:1452) clamp
+  mọi truy vấn tại/sau đuôi dự án về `duration - 1e-6` để **giữ khung cuối**, và
+  `resize_clip` gọi `recalculate_project_duration` khi cắt cuối nên `model.duration`
+  co còn 2,1 s — nếu không chốt dự án ở một độ dài cố định thì 4 ô đo ở 2,5 s và
+  3,5 s vẫn "có hình" và trạng thái C trông như không cắt gì. `measure()` vì vậy
+  đặt `model.duration = PROJECT_SPAN` (6,0 s) trước khi dựng `FrameComposer`.
+* Bẫy thứ hai: undo KHÔNG đọc lại bảng thuộc tính, nên sau `stack.undo()` spin vẫn
+  mang range của trạng thái cũ (`out_min = in_point + MIN_TRIM*speed = 2,1`) và
+  `setValue(2,0)` bị clamp thành 2,1. Probe phải gọi đúng đường sản xuất
+  `editor.update_values(clip)` (qua `PropertiesPanel.show_clip_properties`) sau
+  mỗi cú Ctrl+Z — đó cũng là lý do `update_values` nằm trong nhóm gate.
+* 12 phép phản chứng, **tất cả chạy lại `python main.py --selftest <json>` THẬT**
+  trên tree nguồn và mỗi phép chỉ làm đỏ ĐÚNG một dòng `the Cat in/out trong bang
+  thuoc tinh` (không dòng nào khác đỏ). Probe kết thúc `ALL PASS`, **rc đọc từ
+  chính probe = 0 (`0x00000000`)**, lần chạy cuối `khoi_phuc_xanh PASS rc=0
+  rows=37 failed=[]`:
+
+  | Phép đổi byte | Lý do gate đỏ (nguyên văn từ selftest) |
+  | --- | --- |
+  | `in_min_khong_nhan_speed` — bỏ `* speed` ở mép trái | `meg trai toi da tinh sai vi chia toc do: (2.5, 4.8, 3.2, 6.0)` |
+  | `cat_dau_khong_chia_speed` — cắt đầu không dịch theo speed | `cat dau khong giu meg phai: (2.9, 0.1, 2.8, 3.0) (buoc 2)` |
+  | `cat_cuoi_khong_chia_speed` — chặn nguồn theo timeline thay vì nguồn | `cat cuoi sai tren clip 2x: (2.0, 2.0, 1.0, 5.0) (buoc 0)` |
+  | `min_trim_bang_0` — `MIN_TRIM = 0.0` | `spin cho phep clip rong 0 giay` |
+  | `push_trim_bo_undo_stack` — ghi hình học thẳng, không qua `UndoStack` | `cat cuoi sai tren clip 2x: (2.0, 1.0, 1.0, 3.0) (buoc 0)` |
+  | `khong_chan_lenh_rong` — bỏ guard `abs(...) < 0.005` | `mot nac 0,01s tren clip 4x tao buoc undo gia` |
+  | `khong_kiem_playhead` — bỏ guard playhead ngoài clip | `playhead ngoai clip ma van cat` |
+  | `cho_phep_clip_chu` — `_has_source_window` trả `True` mòn | `the Cat hien cho clip chu khong co nguon` |
+  | `the_bi_an_voi_clip_co_nguon` — thẻ ẩn với clip có nguồn | `the Cat an khi clip co nguon that` |
+  | `applied_vo_dieu_kien` — `_applied = True` vô điều kiện | `lenh cat tren track khoa bi tinh la da ap` |
+  | `undo_khong_ripple` — undo không gọi `recalculate_main_storyline` | `Ctrl+Z khong tra lai ripple tren truc chinh` |
+  | `update_values_khong_doc_the` — bỏ `_sync_trim_card()` khỏi `update_values` | `diem vao the cat bi thieu: update_values khong doc lai the Cat` |
+
+  Phép thứ nhất ban đầu **không đỏ**: fixture duy nhất có `in_point` nhỏ hơn
+  `start_time*speed`, nên `in_min` bị `max(0.0, ...)` clamp TRƯỚC khi số hạng bị
+  đổi kịp ảnh hưởng tới kết quả — gate xanh vì đầu vào bị cắt cụt cũng là gate giả.
+  Thêm fixture mà số hạng đó quyết định kết quả (`start 0,5 / in 3,0 / speed 2,0`:
+  mép trái tối đa là 2,0 chứ không phải 0,0) thì phép thử phân biệt được ngay.
+* Máy cấu hình thấp: thẻ Cắt sống trong `ui/properties_panel.py` — file nằm NGOÀI
+  chuỗi boot của trang Home (đã lazify từ 1.0.3), `TrimClipCommand` đi nhờ
+  `core.commands` đang được nạp sẵn. Không module mới, không import mới trên đường
+  boot, không hộp thoại, nên giá là 0 s / 0 MB. Đo lại `--startup-report` trên
+  chính tree nguồn có thẻ Cắt: cửa sổ hiện lúc **1,064 s**, RAM **67,2 MB** lúc
+  cửa sổ / 81,6 MB lúc ngấm, `cv2_da_nap_luc_boot = false`, control cùng lần chạy
+  `nhe_s = 0,0` / `nang_s = 0,237`. Toàn bộ việc mới nằm trong row selftest
+  (28,0 s cho 37 dòng, `rc=0`).
+* Snapshot dữ liệu người dùng quanh vòng gate cuối (`_snap_trim_a.json` →
+  `_snap_trim_b.json`, **1833 → 1833 file**): `THEM: 6 / MAT: 6 / DOI: 0`. Sáu thêm
+  và sáu mất nằm trọn trong `~\.clinqing\recovery\`, trùng đúng hai stem fixture của
+  `--selftest` (`Kiem karaoke` 5, `Kiem recap` 1) — vòng quay keep-5 đã giải trình
+  ở nhóm G. Không có dòng nào ở `recent_projects.json`, `.clinq`, hay
+  `Clinging_Projects\`; `DOI: 0`.
+* **Chưa** dựng lại bundle cho nhóm này: `dist\Clinging` vẫn dựng từ tree chroma nên
+  chạy 35 dòng — thẻ Cắt (cũng như tách tiếng và chroma key) mới tồn tại ở tree
+  nguồn, chờ duyệt phát hành.
+
 ## Thất bại đã ghi (để không lặp)
 
 | Hiện tượng | Nguyên nhân thật | Hệ quả thành quy tắc |
@@ -649,6 +746,7 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
 | `frozen_bundle_probe.py` chết giữa bảng, `UnicodeEncodeError: 'charmap' codec` ở dòng in `row["detail"]` | Probe in chi tiết selftest có dấu ("Trang chủ 5 nut/1 menu…") ra console cp1252, và bảng dừng ở dòng 12/35 — hai đoạn counterfactual phía sau KHÔNG chạy mà vẫn có người tưởng probe đã xong | Probe nào in bảng cũng phải `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` ở đầu file; rc của probe phải đọc bằng `subprocess.run`, không đọc bằng mắt |
 | Cửa `bundle khong kem ffmpeg/ffprobe` FAIL trên một bundle đúng | Check viết từ 1.0.1 khi app gọi ffmpeg bản PATH; `ClingingQt.spec` nay đóng cả cặp vào `_internal/tools` nên "không kèm" là sai hợp đồng | Cửa "có/không tài nguyên" phải lấy spec + `dist` làm chuẩn và so **từng file với bản trên đĩa** (102.856.192 B / 102.652.416 B), không so với hằng số hay với trí nhớ |
 | `--selftest` xanh nhưng stdout in `Loi luu du an: Object of type QColor is not JSON serializable` | Đó là fixture cố ý của dòng `luu du an atomic` (`diagnostics.py:523` đưa payload không serialize được để chứng minh file thật không bị chạm; `:535` ghi JSON cắt đôi cho đường đọc) | Trước khi gọi một dòng stdout "trông như lỗi" là regression, quy nó về ĐÚNG dòng: chạy từng hàm `_ok` trong subprocess riêng rồi xem dòng nào in ra |
+| Phản chứng `in_min_khong_nhan_speed` của thẻ Cắt KHÔNG đỏ dù đã bỏ `* speed` | Fixture duy nhất có `in_point < start_time*speed`, nên `max(0.0, ...)` clamp kết quả về 0,0 trước khi số hạng bị đổi kịp lộ ra — đầu vào bị cắt cụt, không phải code đúng | Một mutation chỉ được coi là đã gate khi có fixture mà số hạng đó **quyết định đầu ra**; thêm fixture `start 0,5 / in 3,0 / speed 2,0` rồi chạy lại đủ 12/12 |
 
 ## Liên quan
 
