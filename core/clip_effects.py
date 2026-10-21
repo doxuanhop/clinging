@@ -49,6 +49,43 @@ PIXEL_KEYS = (
     "chromatic", "lens_flare",
 )
 
+# Khoá của BO CHỈNH MÀU (nhóm D). Tách khỏi PIXEL_KEYS có chủ đích: cổng
+# _effect_liveness_ok khoá PIXEL_KEYS đúng bằng tập khoá của các thẻ "Sắc thái"/
+# "Bộ lọc", còn chỉnh màu KHÔNG phải thẻ một-nhấp — nó là một EffectData
+# (category "Chinh mau") do panel thuộc tính quản lý. Thêm khoá chỉnh màu vào
+# đây thì không phải sửa gate thẻ ma, và chuỗi lọc vẫn đọc được qua GRADING_KEYS.
+GRADING_KEYS = ("hue_shift", "lift", "gamma", "gain", "lut_path")
+
+# Bo chinh mau dung khi DUOC bat duoc trong danh sach hieu ung cua clip; ten
+# nay la khoa nhat quan giua panel thuoc tinh, lenh undo va gate, vi khong co
+# the mot-nhap nao trong EFFECT_CATEGORIES mang ten trung.
+GRADING_EFFECT_NAME = "Chinh mau"
+
+# Phan tu trung tinh cua tung phep: hue 0 do, lift 0, gamma 1, gain 1, khong LUT.
+# Mot bo dung het cac gia tri nay thi apply_color_effects ve bang nguyen ban,
+# nen SetClipGradingCommand boc ca EffectData khi nguoi dung tha het ve mac
+# dinh - giu no lai chi dem them vong numpy moi frame tren may cau hinh thap.
+GRADING_IDENTITY = {"hue_shift": 0.0, "lift": 0.0, "gamma": 1.0,
+                    "gain": 1.0, "lut_path": ""}
+
+
+def grading_is_identity(params) -> bool:
+    """True khi bo tham so chinh mau khong con lam thay doi khung hinh nao."""
+    values = params or {}
+    for key, neutral in GRADING_IDENTITY.items():
+        value = values.get(key, neutral)
+        try:
+            if isinstance(neutral, str):
+                if str(value or ""):
+                    return False
+            else:
+                parts = value if isinstance(value, (list, tuple)) else [value]
+                if any(abs(float(v) - neutral) > 1e-6 for v in parts):
+                    return False
+        except (TypeError, ValueError):
+            return False   # gia tri sai kieu tu file .clinq cu: giu EffectData, khong boc
+    return True
+
 
 def _qimage_to_rgba(image: QImage):
     """QImage -> ndarray float32 (H, W, 4) theo thứ tự R,G,B,A."""
@@ -238,6 +275,66 @@ def chromatic_rgb(rgb, strength):
     return out
 
 
+def _per_channel(value, default):
+    """Trả mảng (3,) float32: value là scalar (lặp 3 kênh) hoặc đúng 3 số.
+
+    Scalar và list độ dài khác 3 đều phân phối về `default` cho từng kênh, để
+    một giá trị lỗi từ file .clinq cũ không làm hỏng cả khung hình.
+    """
+    try:
+        if isinstance(value, (list, tuple)):
+            if len(value) == 3:
+                return np.asarray(value, np.float32)
+        else:
+            v = float(value)
+            return np.array([v, v, v], np.float32)
+    except (TypeError, ValueError):
+        pass
+    return np.asarray([default, default, default], np.float32)
+
+
+def hue_shift_rgb(rgb, degrees):
+    """Xoay hue toàn ảnh bằng ma trận quay quanh trục xám (giữ nguyên độ sáng).
+
+    Đây là phép quay trong không gian RGB quanh vector (1,1,1), nên ảnh xám
+    thuần (R=G=B) đứng yên tuyệt đối — đó là tính chất gate đo: một bản xoay
+    sai (dịch cả ba kênh như brightness) sẽ làm xám đổi màu và bị bắt.
+    """
+    a = math.radians(float(degrees))
+    if abs(a) < 1e-9:
+        return rgb
+    c, s = math.cos(a), math.sin(a)
+    one = 1.0 / 3.0
+    sqrt3 = math.sqrt(1.0 / 3.0)
+    m = np.array([
+        [c + one * (1 - c),        one * (1 - c) - sqrt3 * s, one * (1 - c) + sqrt3 * s],
+        [one * (1 - c) + sqrt3 * s, c + one * (1 - c),        one * (1 - c) - sqrt3 * s],
+        [one * (1 - c) - sqrt3 * s, one * (1 - c) + sqrt3 * s, c + one * (1 - c)],
+    ], np.float32)
+    return rgb @ m.T
+
+
+def lift_gamma_gain_rgb(rgb, lift, gamma, gain):
+    """Ba bánh xe màu chuẩn (SGO): gain nhân, gamma bẻ midtone, lift nhấc bóng.
+
+    Chuẩn hoá về 0..1 rồi: x = x** (1/gamma) * gain + lift*(1-x). Mặc định
+    lift=0, gamma=1, gain=1 trả nguyên ảnh (identity), nên gate đo được từng
+    cái một: gamma>1 sáng midtone mà không cháy đen, lift>0 nhấc vùng tối mà
+    không đụng vùng sáng, gain nhân đều.
+    """
+    lift = _per_channel(lift, 0.0)
+    gamma = _per_channel(gamma, 1.0)
+    gain = _per_channel(gain, 1.0)
+    if (np.allclose(lift, 0.0) and np.allclose(gamma, 1.0)
+            and np.allclose(gain, 1.0)):
+        return rgb
+    x = np.clip(rgb, 0.0, 255.0) / 255.0
+    g = np.clip(gamma, 0.05, 4.0)
+    x = np.power(x, 1.0 / g) * gain
+    x = x + lift * (1.0 - x)
+    return np.clip(x, 0.0, 1.0) * 255.0
+
+
 def apply_color_effects(image: QImage, effects) -> QImage:
     """Áp dụng toàn bộ hiệu ứng lọc màu lên QImage và trả về QImage mới.
 
@@ -254,7 +351,7 @@ def apply_color_effects(image: QImage, effects) -> QImage:
     # nguyên bản: round-trip numpy + proxy 640px dưới đây tự nó làm đổi vài
     #/channel, nên chỉ cần một hiệu ứng phi-pixel cũng đủ làm clip xỉn màu.
     # Đây cũng là đường tắt cho máy cấu hình thấp — khỏi mở numpy khi không vẽ gì.
-    if not any(k in PIXEL_KEYS
+    if not any(k in PIXEL_KEYS or k in GRADING_KEYS
                for e in effects for k in (getattr(e, "params", None) or {})):
         return image
 
@@ -292,6 +389,20 @@ def apply_color_effects(image: QImage, effects) -> QImage:
             rgb = rgb.copy()
             rgb[:, :, 0] += ct * 30.0   # ct > 0 = ấm (tăng đỏ)
             rgb[:, :, 2] -= ct * 30.0   # giảm xanh
+
+        # ── Bo chinh mau (nhom D): hue -> lift/gamma/gain -> LUT ──
+        # Gia tri tuyet doi theo slider, khong nhan intensity: panel thuoc tinh
+        # la nguon thuat toan, con intensity cua EffectData mac dinh 1.0. Thu tu
+        # nay de LUT nam cuoi (LUT da duoc thi cong theo khong gian mau cua no).
+        if "hue_shift" in params:
+            rgb = hue_shift_rgb(rgb, params["hue_shift"])
+        if any(k in params for k in ("lift", "gamma", "gain")):
+            rgb = lift_gamma_gain_rgb(rgb, params.get("lift", 0.0),
+                                      params.get("gamma", 1.0),
+                                      params.get("gain", 1.0))
+        if params.get("lut_path"):
+            from core import lut as _lut
+            rgb = _lut.apply_lut(rgb, params["lut_path"])
 
         # ── Blur ──
         # Khong co `max(1, ...)`: ban cu bao gio cung mo 3x3, ngay khi tay keo

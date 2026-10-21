@@ -10,7 +10,7 @@ phản chứng chứng minh cổng đỏ vì đúng lý do, và ảnh `FrameComp
 ## [Unreleased]
 
 Chưa đóng bundle/installer, chưa đẩy lên GitHub Releases — mới chỉ nằm trong tree
-nguồn (commit `b894d2a`). Selftest: 33/33, `rc=0`.
+nguồn, tiếp sau `2b22966` (config đã nâng 1.0.3). Selftest: 34/34, `rc=0`.
 
 ### Thêm — định vị media & lưu dự án (nhóm A)
 
@@ -48,6 +48,30 @@ nguồn (commit `b894d2a`). Selftest: 33/33, `rc=0`.
 - Phản chứng `text_styling_counterfactual.py` (6 phép đổi byte, mỗi phép làm cổng
   đỏ đúng một lý do), ảnh `text_styling_evidence.py` (8 ô: viền / bóng / bóng mờ /
   hộp nền / căn trái / căn phải / kết hợp).
+
+### Thêm — chỉnh màu (nhóm D)
+
+- **Năm núm trên mỗi clip hình ảnh/video:** tông màu (hue, ±180°), lift (bóng tối),
+  gamma (midtone), gain (vùng sáng) và một file LUT `.cube`. Một thẻ
+  `EffectData("Chinh mau")` duy nhất cho mỗi clip, lưu nguyên trong `.clinq`.
+- **Xem trước đúng bằng xuất file.** Cả hai bên gọi chung
+  `core/clip_effects.apply_color_effects`; probe so khung hình trên canvas với
+  `FrameComposer` lệch **1,0/255** trên từng kênh.
+- **Đọc được LUT 1D lẫn 3D, sửa file tại chỗ là nạp lại.** Bộ lọc `.cube` dựng
+  trong `core/lut.py` (nội suy tam tuyến tính, cache theo đường dẫn + `mtime_ns` +
+  size, file hỏng thì bỏ qua chứ không chết). Hai lỗi thật bị cổng mới bắt được:
+  LUT 1D chưa từng áp được do phát sóng numpy `(3,3,1)`, và cache chỉ nhìn
+  `mtime` giây nên sửa file `.cube` tại chỗ không được nạp lại.
+- **Máy yếu không bị đánh thuế:** `hue_shift = 0` trả về đúng mảng cũ (không chạy
+  ma trận quay), thẻ trở về trung tính bị lệnh undo xoá hẳn nên clip không mang
+  dữ liệu thừa; `core/lut.py` chỉ được import khi thực sự có đường dẫn LUT.
+- **Điều khiển trong panel thuộc tính** (thẻ "Chỉnh màu", nút "Chọn .cube…") và
+  **có undo**: kéo nhiều nấc liên tiếp trong 0,75 s gộp một bước, khác núm thì
+  thành bước riêng.
+- Phản chứng `color_grading_counterfactual.py` (13 phép đổi byte trên 4 file, mỗi
+  phép làm cổng đỏ đúng một lý do), 8 cổng UI trên `MainWindow` thật
+  `color_grading_ui_probe.py`, ảnh `color_grading_evidence.py` (9 ô render + ảnh
+  thẻ điều khiển).
 
 ## [1.0.2] - 2026-10
 

@@ -510,6 +510,58 @@ class ClipPropertiesWidget(QWidget):
             layout_style, "Bo góc:", "text_box_radius",
             0.0, 60.0, 1.0, 0, " px")
 
+        # Card 6: Chỉnh màu — năm núm của MỘT EffectData "Chinh mau" gắn trên
+        # clip. Đây không phải thẻ một-nhấp trong panel Hiệu ứng: người dùng kéo
+        # từng núm và thấy ảnh đổi ngay, nên mọi núm phải đi qua
+        # SetGradingCommand — đường duy nhất vào model, và cũng đường duy nhất
+        # để Ctrl+Z biết mình đang trả lại cái gì.
+        self.card_grading = QFrame()
+        self.card_grading.setObjectName("PropertyCard")
+        layout_grading = QFormLayout(self.card_grading)
+        layout_grading.setSpacing(8)
+        layout_grading.setContentsMargins(12, 12, 12, 12)
+        lbl_grading_title = QLabel("Chỉnh màu")
+        lbl_grading_title.setObjectName("CardTitle")
+        layout_grading.addRow(lbl_grading_title)
+
+        self._grading_widgets = {}
+        for key, label_text, vmin, vmax, unit, fmt in self.GRADING_CONTROLS:
+            row, slider, value_label = self._create_audio_slider(
+                vmin, vmax, int(round(self._grading_scalar(key) / unit)))
+            slider.valueChanged.connect(
+                lambda v, k=key, u=unit: self._push_grading(**{k: v * u}))
+            self._grading_widgets[key] = (slider, value_label, fmt, unit)
+            layout_grading.addRow(label_text, row)
+
+        lut_row = QWidget()
+        lut_layout = QHBoxLayout(lut_row)
+        lut_layout.setContentsMargins(0, 0, 0, 0)
+        lut_layout.setSpacing(6)
+        self.btn_lut = QPushButton("Chọn .cube…")
+        self.btn_lut.setObjectName("TransitionClearBtn")
+        self.btn_lut.setFixedHeight(26)
+        self.btn_lut.setCursor(Qt.PointingHandCursor)
+        self.btn_lut.setIcon(font_icon("fa6s.cube", "#8a8a92"))
+        self.btn_lut.clicked.connect(self._on_lut_clicked)
+        self.lbl_lut_name = QLabel("(không dùng LUT)")
+        self.lbl_lut_name.setStyleSheet("color: #A0A0A0; font-size: 11px;")
+        lut_layout.addWidget(self.btn_lut)
+        lut_layout.addWidget(self.lbl_lut_name, 1)
+        layout_grading.addRow("LUT:", lut_row)
+
+        self.btn_grading_reset = QPushButton("Về mặc định")
+        self.btn_grading_reset.setObjectName("TransitionClearBtn")
+        self.btn_grading_reset.setFixedHeight(26)
+        self.btn_grading_reset.setCursor(Qt.PointingHandCursor)
+        self.btn_grading_reset.clicked.connect(self._reset_grading)
+        layout_grading.addRow(self.btn_grading_reset)
+
+        # Chỉ clip vẽ ra pixel mới có thẻ này: audio không có khung hình để lọc,
+        # text đi ngả _draw_text nên không chạm chuỗi màu.
+        self.card_grading.setVisible(
+            clip_model.media_type in ("video", "image", "sticker"))
+        self._sync_grading_card()
+
         # Ẩn/hiện dựa trên media_type
         is_text = clip_model.media_type == "text"
         self.card_text.setVisible(is_text)
@@ -519,6 +571,7 @@ class ClipPropertiesWidget(QWidget):
         scroll_layout.addWidget(self.card_text)
         scroll_layout.addWidget(self.card_motion)
         scroll_layout.addWidget(self.card_style)
+        scroll_layout.addWidget(self.card_grading)
         scroll_layout.addStretch(1)
 
         scroll_area.setWidget(scroll_content)
@@ -1130,6 +1183,105 @@ class ClipPropertiesWidget(QWidget):
             item.update()
         main_window._sync_canvas()
 
+    # (khoá, nhãn, min, max, bước thực của một nấc, định dạng nhãn). Slider chỉ
+    # biết số nguyên, nên mỗi núm lưu thêm hệ số quy đổi để con số ghi vào
+    # EffectData trùng khớp con số trên nhãn.
+    GRADING_CONTROLS = (
+        ("hue_shift", "Tông màu:", -180, 180, 1.0, "%+d°"),
+        ("lift", "lift (bóng):", -50, 50, 0.01, "%.2f"),
+        ("gamma", "gamma (giữa):", 20, 300, 0.01, "%.2f"),
+        ("gain", "gain (sáng):", 20, 200, 0.01, "%.2f"),
+    )
+
+    def _grading_params(self) -> dict:
+        """Đọc bo chỉnh màu trên clip; chua co thi tra ve bo trung tinh."""
+        from core.clip_effects import GRADING_EFFECT_NAME, GRADING_IDENTITY
+        for effect in getattr(self._clip(), "effects", None) or []:
+            if effect.name == GRADING_EFFECT_NAME:
+                merged = dict(GRADING_IDENTITY)
+                merged.update(effect.params or {})
+                return merged
+        return dict(GRADING_IDENTITY)
+
+    def _grading_scalar(self, key) -> float:
+        """Số của một núm. Giá trị lạc kiểu từ file cũ trả về trung tính."""
+        from core.clip_effects import GRADING_IDENTITY
+        try:
+            return float(self._grading_params().get(key))
+        except (TypeError, ValueError):
+            return float(GRADING_IDENTITY[key])
+
+    def _push_grading(self, **changes):
+        """Một núm đổi = một SetGradingCommand; núm trả về đúng số cũ = không thêm bước.
+
+        Panel không bao giờ tự sửa ``clip.effects``: đi tắt qua lệnh thì Ctrl+Z
+        để lại một bo số mà không lệnh nào biết cách trả về.
+        """
+        if self._block_signals:
+            return
+        current = self._grading_params()
+        requested = {}
+        for key, value in changes.items():
+            old = current.get(key)
+            if isinstance(value, str):
+                if str(old or "") == value:
+                    continue
+            elif abs(float(old) - float(value)) < 0.005:
+                continue
+            requested[key] = value
+        if not requested:
+            return
+        from core.commands import SetGradingCommand
+        main_window = self._find_main_window()
+        model = self._model()
+        if main_window is None or model is None:
+            # Widget chưa nằm trong cửa sổ thì KHÔNG có model để ghi: thẻ chỉnh
+            # màu chỉ có nghĩa trên TimelineModel thật, nên im lặng là đúng —
+            # ghi thẳng vào clip_model tạm sẽ để lại bo số không lệnh nào biết
+            # cách trả về, và gate sẽ đỏ vì lý do thật chứ không phải giả định.
+            return
+        main_window.timeline_panel.undo_stack.push(
+            SetGradingCommand(model, self.clip_id, requested))
+        self._sync_grading_card()
+        self._refresh_canvas()
+
+    def _on_lut_clicked(self):
+        from PySide6.QtWidgets import QFileDialog
+        import os
+        current = str(self._grading_params().get("lut_path") or "")
+        chosen, _ = QFileDialog.getOpenFileName(
+            self, "Chọn LUT (.cube)",
+            os.path.dirname(current) if current else "",
+            "Cube LUT (*.cube);;Tất cả file (*)")
+        if chosen:
+            self._push_grading(lut_path=os.path.normpath(chosen))
+
+    def _reset_grading(self):
+        from core.clip_effects import GRADING_IDENTITY
+        self._push_grading(**dict(GRADING_IDENTITY))
+
+    def _sync_grading_card(self):
+        """Đọc lại năm núm + tên LUT từ model — Ctrl+Z không tự sửa widget."""
+        clip = self._clip()
+        if clip is None or clip.media_type not in ("video", "image", "sticker"):
+            self.card_grading.setVisible(False)
+            return
+        self.card_grading.setVisible(True)
+        blocked = self._block_signals
+        self._block_signals = True
+        for key, (slider, label, fmt, unit) in self._grading_widgets.items():
+            value = self._grading_scalar(key)
+            slider.setValue(int(round(value / unit)))
+            label.setText(fmt % value)
+        import os
+        path = str(self._grading_params().get("lut_path") or "")
+        self.lbl_lut_name.setText(os.path.basename(path) if path
+                                  else "(không dùng LUT)")
+        self.lbl_lut_name.setToolTip(path)
+        self.btn_lut.setIcon(font_icon(
+            "fa6s.cube", "#40E0D0" if path else "#8a8a92"))
+        self._block_signals = blocked
+
     def update_values(self, clip_model):
         """Cập nhật các ô nhập liệu từ Model (khi tương tác kéo trên Canvas)."""
         self._block_signals = True
@@ -1164,6 +1316,7 @@ class ClipPropertiesWidget(QWidget):
         # phải đọc lại từ model mỗi lần panel cập nhật.
         self._sync_transition_card()
         self._sync_audio_card()
+        self._sync_grading_card()
         
         # Cập nhật màu các nút kim cương
         self.update_keyframe_buttons_ui()

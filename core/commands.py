@@ -599,6 +599,99 @@ class RemoveEffectCommand(Command):
         return f"Xóa hiệu ứng: {self._effect_name}"
 
 
+class SetGradingCommand(Command):
+    """Đổi một nút của bo chỉnh màu: hue / lift / gamma / gain / LUT.
+
+    Một clip chỉ có DUY NHẤT một EffectData tên "Chinh mau". Bảy lần gõ từ bảy
+    slider mà mỗi lần thêm một hiệu ứng thì chuỗi lọc chạy bảy lượt và file
+    .clinq đầy rác — nên lệnh này HỢP NHẤT vào params của thẻ đã có.
+
+    Ngược lại, khi người dùng thả hết về trung tính thì thẻ bị XOÁ: giữ lại một
+    bo số không làm đổi lấy một pixel là bắt máy cấu hình thấp mở numpy mỗi
+    frame vô ích (đường tắt trong apply_color_effects chỉ bật khi có khoá thật).
+
+    Bảy slider kéo liên tục trong MERGE_WINDOW_S được gom thành MỘT bước undo:
+    kéo tông màu tới đáy rồi Ctrl+Z phải trả về đúng lúc chưa kéo, không phải
+    lùi từng nấc.
+    """
+
+    MERGE_WINDOW_S = 0.75
+    LABELS = {"hue_shift": "tông màu", "lift": "lift", "gamma": "gamma",
+              "gain": "gain", "lut_path": "LUT"}
+
+    def __init__(self, model, clip_id: str, params: dict):
+        from core.clip_effects import GRADING_KEYS
+        self._model = model
+        self._clip_id = clip_id
+        self._requested = {key: value for key, value in (params or {}).items()
+                           if key in GRADING_KEYS and value is not None}
+        self._before = None          # (index, EffectData|None, params|None)
+        self._at = time.monotonic()
+
+    @staticmethod
+    def _index(clip, name) -> int:
+        for i, effect in enumerate(clip.effects):
+            if effect.name == name:
+                return i
+        return -1
+
+    def execute(self):
+        from core.clip_effects import (GRADING_EFFECT_NAME, GRADING_IDENTITY,
+                                       grading_is_identity)
+        from core.timeline_model import EffectData
+        clip = self._model.get_clip(self._clip_id)
+        if clip is None or not self._requested:
+            return
+        index = self._index(clip, GRADING_EFFECT_NAME)
+        old = clip.effects[index] if index >= 0 else None
+        self._before = (index, old, dict(old.params) if old else None)
+        merged = dict(GRADING_IDENTITY)
+        merged.update(old.params if old is not None else {})
+        merged.update(self._requested)
+        if grading_is_identity(merged):
+            if index >= 0:
+                clip.effects.pop(index)
+        elif old is not None:
+            old.params = merged
+        else:
+            clip.effects.append(EffectData(
+                name=GRADING_EFFECT_NAME, category=GRADING_EFFECT_NAME,
+                intensity=1.0, params=merged))
+        self._model.clipUpdated.emit(self._clip_id)
+
+    def undo(self):
+        from core.clip_effects import GRADING_EFFECT_NAME
+        clip = self._model.get_clip(self._clip_id)
+        if clip is None or self._before is None:
+            return
+        index, old, old_params = self._before
+        current = self._index(clip, GRADING_EFFECT_NAME)
+        if current >= 0:
+            clip.effects.pop(current)
+        if old is not None:
+            old.params = old_params
+            clip.effects.insert(min(index, len(clip.effects)), old)
+        self._model.clipUpdated.emit(self._clip_id)
+
+    def merges_with(self, other: "Command") -> bool:
+        if not isinstance(other, SetGradingCommand):
+            return False
+        if other._clip_id != self._clip_id:
+            return False
+        keys = set(self._requested)
+        if keys != set(other._requested) or not keys:
+            return False
+        return other._at - self._at <= self.MERGE_WINDOW_S
+
+    def absorb(self, other: "SetGradingCommand"):
+        self._requested = dict(other._requested)
+        self._at = other._at
+
+    def description(self) -> str:
+        parts = [self.LABELS.get(key, key) for key in sorted(self._requested)]
+        return ("Chỉnh màu: " + ", ".join(parts)) if parts else "Chỉnh màu"
+
+
 class SetTransitionCommand(Command):
     """Gắn/xóa chuyển tiếp ở mép trái clip.
 

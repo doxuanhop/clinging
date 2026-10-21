@@ -1579,6 +1579,7 @@ def run_selftest(argv=None):
     col.check("undo cho chu + hinh hoc clip", _undo_text_transform_ok)
     col.check("clipboard clip Ctrl+C/V", _clipboard_copy_paste_ok)
     col.check("style chu: vien/bong/hop nen/can le", _text_styling_ok)
+    col.check("chinh mau: hue/lift-gamma-gain/LUT .cube", _color_grading_ok)
     col.check("doc MRU khong ghi du lieu nguoi dung", _recent_readonly_ok)
     col.check("giai ma tuan tu + cache dia", _decode_cache_ok)
     col.check("xem truoc = xuat: moc thoi gian cuc bo dung mot ham", _local_time_ok)
@@ -3854,6 +3855,348 @@ def _text_styling_ok():
             "vien/bong/hop lech nhat %s=%d px, can le dich %d px, "
             "export hop nen %d px, fast path giu khi chi doi le"
             % (weakest[0], weakest[1], dl, ex))
+
+
+def _color_grading_ok():
+    """Một dòng --selftest: bo chinh mau (hue / lift-gamma-gain / LUT .cube) phai
+    xoay mau DUNG CHUAN banh xe mau, preview lan export di chung MOT ham, va that
+    tron ven qua file .clinq.
+
+    Cam fixture nguoi dung: moi phep do dung mang numpy tai cho va file .cube ty
+    le sinh trong thu muc tam. Ba sai lam cua .cube la duong thang giot cua so
+    neu khong co cua nay: hieu nguoc thu tu kenh (xanh LAM doi nhanh nhat trong
+    file, khong phai do), ap bang doc cho file rac, va giu bang cu trong cache khi
+    nguoi dung sua file tai cho (do bang gia dinh cua `%.6f` luon co so byte bang
+    nhau nen khoa cache theo GIAY khong phan biet duoc hai noi dung).
+
+    Do sau nam o khac: 8 cua tren MainWindow that trong
+    scratch/color_grading_ui_probe.py (preview doi pixel, nut LUT that, keo 5 nac
+    = 1 buoc undo, preview = export lech 1.0/255), phan chung trong
+    scratch/color_grading_counterfactual.py, anh trong
+    scratch/color_grading_evidence.py. O day chi do nam xich ma ma bundle dong goi
+    co the quyet: phep xoay, tung banh xe, bo doc LUT, seam dung chung, va vong
+    doi cua lenh undo.
+    """
+    import os
+    import shutil
+    import tempfile
+    import numpy as np
+    from PySide6.QtGui import QImage
+    from core import lut as lut_mod, project_storage
+    from core.clip_effects import (GRADING_EFFECT_NAME, GRADING_IDENTITY,
+                                   GRADING_KEYS, PIXEL_KEYS, apply_color_effects,
+                                   grading_is_identity, hue_shift_rgb,
+                                   lift_gamma_gain_rgb)
+    from core.commands import SetGradingCommand, UndoStack
+    from core.frame_composer import FrameComposer
+    from core.timeline_model import EffectData, TimelineModel, TrackType
+    from ui.graphics_canvas_item import CanvasClipItem
+    from ui.properties_panel import ClipPropertiesWidget
+
+    if set(GRADING_KEYS) & set(PIXEL_KEYS):
+        raise RuntimeError("GRADING_KEYS trung PIXEL_KEYS: cua the ma mat nghia che do")
+
+    def levels(*vals):
+        """(len(vals), 1, 3): moi hang la mot mau phang co do sang = val."""
+        a = np.asarray(vals, np.float32)
+        return np.repeat(a[:, None, None], 3, axis=2)
+
+    def grading_of(clip):
+        for e in clip.effects:
+            if e.name == GRADING_EFFECT_NAME:
+                merged = dict(GRADING_IDENTITY)
+                merged.update(e.params or {})
+                return merged
+        return dict(GRADING_IDENTITY)
+
+    def qimage(a):
+        arr = np.ascontiguousarray(np.clip(a, 0, 255).astype(np.uint8))
+        h, w = arr.shape[:2]
+        rgba = np.ascontiguousarray(
+            np.dstack([arr, np.full((h, w, 1), 255, np.uint8)]))
+        return QImage(rgba.data, w, h, w * 4,
+                      QImage.Format.Format_RGBA8888).copy()
+
+    def rgb_of(image):
+        img = image.convertToFormat(QImage.Format.Format_RGBA8888)
+        buf = img.constBits()
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else bytes(buf)
+        return np.frombuffer(raw, np.uint8).reshape(
+            (img.height(), img.width(), 4))[:, :, :3].astype(np.float64)
+
+    def walk_names(fn):
+        seen = set()
+        stack = [fn.__code__]
+        while stack:
+            code = stack.pop()
+            seen.update(code.co_names)
+            for const in code.co_consts:
+                if hasattr(const, "co_names") and const not in seen:
+                    stack.append(const)
+        return seen
+
+    folder = tempfile.mkdtemp(prefix="clinging_grading_")
+    try:
+        # (1) hue = phep xoay quanh truc xam: anh xam PHAI dung yen, mau do PHAI
+        #     dich ve phia luc. Mot ban "hue" chi cong/doi ba kenh (lenh kinh
+        #     dien cua brightness-viet-voi) do duoc ải thứ hai nhung hong ải thứ
+        #     nhat, va nguoc lai.
+        grey = np.full((16, 16, 3), 137.0, np.float32)
+        drift = float(np.abs(hue_shift_rgb(grey, 180.0) - grey).max())
+        if drift > 1.0:
+            raise RuntimeError("hue 180 doi mau xa (%.2f/255): khong phai xoay truc xam"
+                               % drift)
+        red = np.zeros((16, 16, 3), np.float32)
+        red[:, :, 0] = 200.0
+        red[:, :, 1] = 30.0
+        gap_before = float((red[:, :, 0] - red[:, :, 1]).mean())
+        rotated = hue_shift_rgb(red, 45.0)
+        gap_after = float((rotated[:, :, 0] - rotated[:, :, 1]).mean())
+        if gap_after > gap_before - 20.0:
+            raise RuntimeError("hue +45 khong xoay mau (do-luc %.1f -> %.1f)"
+                               % (gap_before, gap_after))
+        if hue_shift_rgb(red, 0.0) is not red:
+            raise RuntimeError("hue 0 do van chay ma tran (ton may cau hinh thap)")
+
+        # (2) Ba banh xe lift/gamma/gain PHAI do duoc tung cai mot: chi banh
+        #     xe cua vung toi nhuc, chi banh xe giua bongo midtone ma den van
+        #     den, gain nhan tuyen tinh theo tung kenh.
+        strip = levels(0.0, 10.0, 128.0, 250.0)
+        lift_out = lift_gamma_gain_rgb(strip, 0.25, 1.0, 1.0)[:, 0, 0] - strip[:, 0, 0]
+        if lift_out[1] < 20.0:
+            raise RuntimeError("lift 0.25 khong nhuc vung toi (%+.1f o do 10)" % lift_out[1])
+        if lift_out[3] > 3.0:
+            raise RuntimeError("lift 0.25 cham ca vung sang (%+.1f o do 250)" % lift_out[3])
+        gam_out = lift_gamma_gain_rgb(strip, 0.0, 1.6, 1.0)[:, 0, 0] - strip[:, 0, 0]
+        if gam_out[2] < 20.0:
+            raise RuntimeError("gamma 1.6 khong bentre midtone (%+.1f o do 128)" % gam_out[2])
+        if abs(gam_out[0]) > 0.5:
+            raise RuntimeError("gamma 1.6 lam chang den (%+.1f o do 0)" % gam_out[0])
+        if abs(gam_out[3]) > 8.0:
+            raise RuntimeError("gamma 1.6 cham vung sang (%+.1f o do 250)" % gam_out[3])
+        gain_out = float(lift_gamma_gain_rgb(levels(100.0), 0.0, 1.0, 1.5)[0, 0, 0])
+        if abs(gain_out - 150.0) > 1.0:
+            raise RuntimeError("gain 1.5 khong nhan tuyen tinh (%.1f thay vi 150)" % gain_out)
+        per = lift_gamma_gain_rgb(levels(100.0), 0.0, 1.0,
+                                  [1.5, 1.0, 1.0])[0, 0]
+        if (abs(per[0] - 150.0) > 1.0 or abs(per[1] - 100.0) > 0.5
+                or abs(per[2] - 100.0) > 0.5):
+            raise RuntimeError("gain 3 kenh bi lech thu tu kenh %s" % np.round(per, 1))
+        if lift_gamma_gain_rgb(strip, 0.0, 1.0, 1.0) is not strip:
+            raise RuntimeError("bo lift/gamma/gain trung tinh van mo numpy")
+        if lift_gamma_gain_rgb(strip, "khong phai so", 1.0, 1.0) is not strip:
+            raise RuntimeError("gia tri lac kieu tu file cu lam hong khung hinh")
+
+        # (3) Bo doc + ap .cube: thu tu kenh, LUT 1D, file rac, va cache phai
+        #     theo noi dung moi lan ghi de.
+        def write_cube(path, n, value):
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("LUT_3D_SIZE %d\n" % n)
+                for ri in range(n):
+                    for gi in range(n):
+                        for bi in range(n):
+                            r, g, b = (ri / (n - 1.0), gi / (n - 1.0),
+                                       bi / (n - 1.0))
+                            handle.write("%.6f %.6f %.6f\n" % value(r, g, b))
+
+        ident = os.path.join(folder, "identity17.cube")
+        swap = os.path.join(folder, "swap17.cube")
+        write_cube(ident, 17, lambda r, g, b: (r, g, b))
+        write_cube(swap, 17, lambda r, g, b: (b, g, r))
+        palette = np.array([[[200.0, 30.0, 30.0], [30.0, 200.0, 30.0],
+                             [30.0, 30.0, 200.0]]], np.float32)
+        id_err = float(np.abs(lut_mod.apply_lut(palette, ident) - palette).max())
+        if id_err > 2.0:
+            raise RuntimeError("LUT identity lech %.1f/255: bang bi hoan vi kenh "
+                               "hoac doc sai thu tu xanh-lam-nhanh-nhat" % id_err)
+        sw = lut_mod.apply_lut(palette, swap)
+        sw_err = float(np.abs(sw - palette[:, :, ::-1]).max())
+        if sw_err > 3.0:
+            raise RuntimeError("LUT hoan vi kenh sai chieu (lech %.1f/255)" % sw_err)
+
+        one_d = os.path.join(folder, "gamma1d.cube")
+        n1 = 33
+        with open(one_d, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("LUT_1D_SIZE %d\n" % n1)
+            for i in range(n1):
+                v = (i / (n1 - 1.0)) ** 0.45
+                handle.write("%.6f %.6f %.6f\n" % (v, v, v))
+        ramp = lut_mod.apply_lut(levels(0.0, 128.0, 255.0), one_d)[:, 0, 0]
+        if ramp[1] < 148.0:
+            raise RuntimeError("LUT 1D khong duoc ap (do 128 ra %.1f)" % ramp[1])
+        if abs(ramp[0]) > 1.0 or abs(ramp[2] - 255.0) > 1.0:
+            raise RuntimeError("LUT 1D lam hong hai dau %s" % np.round(ramp, 1))
+
+        junk = os.path.join(folder, "rac.cube")
+        with open(junk, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("LUT_3D_SIZE 9\n0.0 0.0\nran\n")
+        if lut_mod.load_lut(junk) is not None:
+            raise RuntimeError("file cube rac khong bi bo qua (load_lut khong tra None)")
+        if lut_mod.apply_lut(palette, junk) is not palette:
+            raise RuntimeError("LUT hong bi ap len anh thay vi bo qua")
+        gone = os.path.join(folder, "khong-ton-tai.cube")
+        if lut_mod.apply_lut(palette, gone) is not palette:
+            raise RuntimeError("LUT vo duong dan phai tra nguyen mang")
+
+        # Cache phai biet file da doi: bang `%.6f` co so byte co dinh, nen dung
+        # khoa theo giay thi sua .cube tai cho khong bao gio duoc nap lai.
+        mutable = os.path.join(folder, "doi.cube")
+        write_cube(mutable, 9, lambda r, g, b: (r, g, b))
+        before_re = float(np.abs(lut_mod.apply_lut(palette, mutable) - palette).max())
+        write_cube(mutable, 9, lambda r, g, b: (0.0, 0.0, 0.0))
+        after_re = float(np.abs(lut_mod.apply_lut(palette, mutable)).max())
+        if after_re > 2.0:
+            raise RuntimeError("LUT bi thay noi dung van dung ban cu trong cache "
+                               "(con %.1f/255, size khong doi = %d byte)"
+                               % (after_re, os.path.getsize(mutable)))
+        if before_re > 2.0:
+            raise RuntimeError("lan doc dau cua .cube da sai (%.1f/255)" % before_re)
+
+        # (4) Chuoi loc mau DI QUA HAM CHUNG: QImage + EffectData like trong
+        #     model that, hue va LUT deu phai de lai dau vet tren pixel.
+        flat = np.zeros((8, 8, 3), np.float32)
+        flat[:, :, 0] = 200.0
+        flat[:, :, 1] = 30.0
+        flat[:, :, 2] = 30.0
+
+        def chain(a, params):
+            return rgb_of(apply_color_effects(qimage(a), [EffectData(
+                name=GRADING_EFFECT_NAME, category=GRADING_EFFECT_NAME,
+                intensity=1.0, params=dict(params))]))
+
+        hue_px = chain(flat, {"hue_shift": 45.0})
+        hue_gap = float((hue_px[:, :, 0] - hue_px[:, :, 1]).mean())
+        flat_gap = float((flat[:, :, 0] - flat[:, :, 1]).mean())
+        if hue_gap > flat_gap - 20.0:
+            raise RuntimeError("chuoi loc bo qua hue_shift (do-luc %.1f -> %.1f)"
+                               % (flat_gap, hue_gap))
+        lut_px = chain(flat, {"lut_path": swap})
+        if abs(lut_px[0, 0, 0] - 30.0) > 2.0 or abs(lut_px[0, 0, 2] - 200.0) > 2.0:
+            raise RuntimeError("chuoi loc bo qua lut_path (kenh 0=%.1f kenh 2=%.1f)"
+                               % (lut_px[0, 0, 0], lut_px[0, 0, 2]))
+        neutral = chain(flat, GRADING_IDENTITY)
+        base_px = rgb_of(qimage(flat))
+        if not np.array_equal(neutral, base_px):
+            raise RuntimeError("bo trung tinh gan nhe vao anh (%.2f/255 lech)"
+                               % float(np.abs(neutral - base_px).max()))
+        src = qimage(flat)
+        passthrough = apply_color_effects(src, [EffectData(
+            name="probe", category="Aura", intensity=1.0,
+            params={"aura_size": 1.0})])
+        if passthrough is not src:
+            raise RuntimeError("the khong co khoa pixel nao bi mo numpy (round-trip)")
+        if apply_color_effects(src, []) is not src:
+            raise RuntimeError("danh sach hieu ung rong van chay chuoi loc")
+
+        # (5) Seam cau truc: preview va export phai cung goi MOT ham, panel phai
+        #     ghi qua LENH (khong noi vong len clip), va Ctrl+Z phai duoc doc
+        #     lai. Bundle dong goi khong con file .py de grep, nen do co_names.
+        seams = (
+            ("FrameComposer._draw_media", FrameComposer._draw_media, "apply_color_effects"),
+            ("CanvasClipItem.paint", CanvasClipItem.paint, "_apply_effects"),
+            ("CanvasClipItem._apply_effects", CanvasClipItem._apply_effects, "apply_color_effects"),
+            ("ClipPropertiesWidget._push_grading", ClipPropertiesWidget._push_grading, "SetGradingCommand"),
+            ("ClipPropertiesWidget._push_grading", ClipPropertiesWidget._push_grading, "undo_stack"),
+            ("ClipPropertiesWidget.update_values", ClipPropertiesWidget.update_values, "_sync_grading_card"),
+        )
+        missing = sorted({"%s thieu %s" % (who, helper)
+                          for who, fn, helper in seams if helper not in walk_names(fn)})
+        if missing:
+            raise RuntimeError("seam chinh mau: %s" % "; ".join(missing))
+        ns = {}
+        exec(compile("class FakeGrade:\n"
+                     "    def _draw(self):\n"
+                     "        return 1\n", "<mau>", "exec"), ns)
+        if "apply_color_effects" in walk_names(ns["FakeGrade"]._draw):
+            raise RuntimeError("detector seam khong phan biet ham goi va khong goi")
+
+        # (6) Vong doi cua lenh tren UndoStack THAT: 4 nac gamma = 1 buoc, num
+        #     khac khoa = buoc moi, qua ngac 0.75s = buoc moi, ve trung tinh =
+        #     boc the, Ctrl+Z tra lai du bo so.
+        model = TimelineModel()
+        model.project_ratio = "16:9"
+        track = model.add_track(TrackType.IMAGE)
+        clip = model.add_clip(track.track_id, os.path.join(folder, "anh.png"),
+                              "image", 0.0, 4.0, name="grade")
+        if clip is None:
+            raise RuntimeError("add_clip image tra None (track IMAGE khong nhan image?)")
+        stack = UndoStack()
+        for g in (1.1, 1.2, 1.3, 1.4):
+            stack.push(SetGradingCommand(model, clip.clip_id, {"gamma": g}))
+        if stack.undo_count != 1:
+            raise RuntimeError("keo 4 nac gamma thanh %d buoc undo (MERGE_WINDOW_S bi vo)"
+                               % stack.undo_count)
+        cards = [e for e in clip.effects if e.name == GRADING_EFFECT_NAME]
+        if len(cards) != 1:
+            raise RuntimeError("mot clip co %d the chinh mau (lenh hop nhat bi vo)"
+                               % len(cards))
+        if abs(grading_of(clip)["gamma"] - 1.4) > 1e-6:
+            raise RuntimeError("gamma sau 4 nac la %.3f chu khong phai 1.4"
+                               % float(grading_of(clip)["gamma"]))
+        stack.push(SetGradingCommand(model, clip.clip_id, {"hue_shift": 30.0}))
+        if stack.undo_count != 2:
+            raise RuntimeError("num khac khoa bi gom chung vao mot buoc undo")
+        desc = SetGradingCommand(model, clip.clip_id, {"hue_shift": 1.0}).description()
+        if not desc:
+            raise RuntimeError("lenh chinh mau khong co mo ta (undo_text trong)")
+        if desc not in stack.undo_text:
+            raise RuntimeError("undo_text khong mo ta dung lenh chinh mau dang dinh")
+        stack._undo_stack[-1]._at -= SetGradingCommand.MERGE_WINDOW_S + 0.25
+        stack.push(SetGradingCommand(model, clip.clip_id, {"hue_shift": 31.0}))
+        if stack.undo_count != 3:
+            raise RuntimeError("qua ngac %.2fs van gom keo thanh mot buoc undo"
+                               % SetGradingCommand.MERGE_WINDOW_S)
+        stack.undo()
+        mid = grading_of(clip)
+        if abs(mid["hue_shift"] - 30.0) > 1e-6 or abs(mid["gamma"] - 1.4) > 1e-6:
+            raise RuntimeError("Ctrl+Z buoc cuoi lam lech bo so (%s)"
+                               % {k: mid[k] for k in ("hue_shift", "gamma")})
+        stack.push(SetGradingCommand(model, clip.clip_id, dict(GRADING_IDENTITY)))
+        if clip.effects:
+            raise RuntimeError("tha het ve trung tinh ma the chinh mau van con (%d the)"
+                               % len(clip.effects))
+        if grading_is_identity(GRADING_IDENTITY) is not True:
+            raise RuntimeError("grading_is_identity khong coi bo mac dinh la trung tinh")
+        stack.undo()
+        if abs(grading_of(clip)["gamma"] - 1.4) > 1e-6:
+            raise RuntimeError("Ctrl+Z sau reset khong tra lai du bo so")
+
+        # (7) Model -> .clinq -> model: nam khong so phai la float, LUT van dung
+        #     duong dan, va chi co DUY NHAT mot the.
+        stack.push(SetGradingCommand(model, clip.clip_id, {
+            "hue_shift": 45.0, "gamma": 1.6, "gain": 1.2, "lut_path": swap}))
+        path = os.path.join(folder, "Kiem chinh mau.clinq")
+        if not project_storage.save_project_to_file(model, path):
+            raise RuntimeError("save_project_to_file that bai (payload chinh mau bi tu choi)")
+        data = project_storage.load_project_from_file(path)
+        if not data:
+            raise RuntimeError("load_project_from_file tra rong")
+        back = TimelineModel()
+        project_storage.restore_model_from_clinq(back, data)
+        revived = back.active_visual_clips_at(0.5)
+        if len(revived) != 1:
+            raise RuntimeError("mo lai file co %d clip thay vi 1" % len(revived))
+        p = grading_of(revived[0])
+        lost = [k for k, v in (("hue_shift", 45.0), ("gamma", 1.6), ("gain", 1.2))
+                if abs(float(p[k]) - v) > 1e-6]
+        if os.path.normpath(str(p.get("lut_path") or "")) != swap:
+            lost.append("lut_path")
+        if lost:
+            raise RuntimeError("chinh mau mat khi quay qua file: %s" % ", ".join(lost))
+        if not isinstance(p["gamma"], float):
+            raise RuntimeError("gamma mo lai la int (slider lech sau khi mo file)")
+        if len([e for e in revived[0].effects if e.name == GRADING_EFFECT_NAME]) != 1:
+            raise RuntimeError("file .clinq chua %d the chinh mau cho mot clip"
+                               % len([e for e in revived[0].effects
+                                      if e.name == GRADING_EFFECT_NAME]))
+
+        return ("xoay truc xam 0.00->%.1f do-luc, lift +%.1f toi/%.1f sang, "
+                "gamma mid %.1f, gain %.1f, LUT identity %.2f swap %.2f 1D %.1f, "
+                "4 nac = %d buoc undo, 6 seam nguyen"
+                % (gap_after, lift_out[1], lift_out[3], gam_out[2], gain_out,
+                   id_err, sw_err, ramp[1], stack.undo_count))
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def _project_fixture():

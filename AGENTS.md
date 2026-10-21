@@ -26,7 +26,7 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
 
 ```bash
 python main.py                                  # chay app binh thuong
-python main.py --selftest                       # 33 dong cong, bao JSON co "failed"
+python main.py --selftest                       # 34 dong cong, bao JSON co "failed"
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
@@ -43,6 +43,9 @@ python scratch/clipboard_counterfactual.py      # phan chung: tat place_clip + c
 python scratch/clipboard_evidence.py            # anh FrameComposer: ban dan giong het goc, Ctrl+Z gach ban dan ve nen
 python scratch/text_styling_counterfactual.py   # phan chung: 6 phep doi byte -> cua style chu do dung ly do
 python scratch/text_styling_evidence.py         # anh FrameComposer: vien/bong/bong mo/hop nen/can le ve ra that
+python scratch/color_grading_ui_probe.py        # 8 cua chinh mau tren MainWindow that (nut LUT, keo, Ctrl+Z, .clinq)
+python scratch/color_grading_counterfactual.py  # phan chung: 13 phep doi byte -> cua chinh mau do dung ly do
+python scratch/color_grading_evidence.py        # anh FrameComposer + the panel: hue/lift/gamma/gain/LUT ve ra that
 python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
 python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile
 python scratch/user_data_snapshot.py capture scratch/_snap_before.json  # truoc khi do
