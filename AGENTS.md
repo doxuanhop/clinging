@@ -23,8 +23,9 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   `MSYS_NO_PATHCONV=1 msiexec /i <msi> INSTALLFOLDER="%LOCALAPPDATA%\Programs\ClingingMSI" /qn`
   rồi đọc lại cả hai cây + khóa HKCU Uninstall, đừng tin mỗi mã thoát (trả giá
   21/10/2026 khi ship 1.0.3).
-- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.2` (hai asset
-  `.exe` + `.msi`). Release `v1.0.1` vẫn tồn tại nhưng là bundle còn qtawesome.
+- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.3` (hai asset
+  `.exe` + `.msi`, tag gắn trên `7ee04b6`). Release `v1.0.2` là bundle liền trước,
+  `v1.0.1` vẫn tồn tại nhưng là bundle còn qtawesome.
   Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
