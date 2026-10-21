@@ -16,6 +16,13 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
 - Máy này có hai bản cài song song: Inno ở `%LOCALAPPDATA%\Programs\Clinging`,
   MSI ở `%LOCALAPPDATA%\Programs\ClingingMSI`. Bản cài sau chiếm shortcut Desktop
   và phần mở rộng `.clinq`. Dữ liệu người dùng: `%APPDATA%\Roaming\Clinging`.
+  **`INSTALLFOLDER` mặc định của `.msi` là `Programs\Clinging`** (trùng cây Inno):
+  `msiexec /i ... /qn` không kèm thuộc tính sẽ gỡ product cũ trong `ClingingMSI`,
+  xóa thư mục đó, rồi ghi payload đè lên cây Inno — vẫn báo `rc=0` và
+  "MainEngineThread is returning 0". Luôn cài dạng
+  `MSYS_NO_PATHCONV=1 msiexec /i <msi> INSTALLFOLDER="%LOCALAPPDATA%\Programs\ClingingMSI" /qn`
+  rồi đọc lại cả hai cây + khóa HKCU Uninstall, đừng tin mỗi mã thoát (trả giá
+  21/10/2026 khi ship 1.0.3).
 - Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.2` (hai asset
   `.exe` + `.msi`). Release `v1.0.1` vẫn tồn tại nhưng là bundle còn qtawesome.
   Clone mới muốn

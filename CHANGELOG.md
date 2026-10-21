@@ -7,10 +7,12 @@ chứng nằm trong `docs/verification-gates.md`.
 Mọi mục dưới đây đều đi kèm cổng `--selftest` chạy trên đúng đường production,
 phản chứng chứng minh cổng đỏ vì đúng lý do, và ảnh `FrameComposer` cho phần render.
 
-## [Unreleased]
+## [1.0.3] - 2026-10-21
 
-Chưa đóng bundle/installer, chưa đẩy lên GitHub Releases — mới chỉ nằm trong tree
-nguồn, tiếp sau `2b22966` (config đã nâng 1.0.3). Selftest: 34/34, `rc=0`.
+Đã đóng bundle (`dist\Clinging`, 362 file), đã dựng `ClingingSetup-1.0.3.exe` (Inno)
+và `ClingingSetup-1.0.3.msi` (WiX 3.11), đã cài và kiểm chứng trên máy này. Selftest
+34/34, `rc=0`; `scratch/installed_app_probe.py` 216 dòng do, 0 FAIL. Chi tiết cho người
+dùng cuối: `docs/release-1.0.3.md`.
 
 ### Thêm — định vị media & lưu dự án (nhóm A)
 
