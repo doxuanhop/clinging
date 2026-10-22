@@ -24,7 +24,8 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   rồi đọc lại cả hai cây + khóa HKCU Uninstall, đừng tin mỗi mã thoát (trả giá
   21/10/2026 khi ship 1.0.3).
 - Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.5` (hai asset
-  `.exe` + `.msi`, tag gắn trên commit tài liệu cuối), notes `docs/release-1.0.5.md`.
+  `.exe` + `.msi`, tag `v1.0.5` = commit `9df00c3` — commit tài liệu 1.0.5; `main`
+  đi tiếp sau đó nên đừng đợi tag nhích theo), notes `docs/release-1.0.5.md`.
   `v1.0.4` là cặp liền trước
   (tag gắn trên `155cef5`; `msi_payload_check.py` đọc bảng File của
   MSI và so từng tên với `dist\Clinging` — 363 file, 514.130.264 B). `v1.0.3` là
