@@ -120,6 +120,11 @@ Số đo trên máy phát triển (fixture 6 s 1280×720, 1.951.137 B, 8 CPU log
   `--startup-report` của cùng exe đó: `ok=True`, cửa sổ hiện lúc **0,977 s**,
   working set **68.872 KiB** ngay lúc cửa sổ hiện, và cả bốn cửa laziness đều
   `True` (`cv2`, `psutil`, `ui.main_window`, `ui.compress_dialog` chưa được nạp).
+  Bản dựng 1.0.4 liền trước cùng tree nguồn (lúc 06:21, trước khi dựng lại
+  `--clean` lúc 08:28) đo `boot_to_window_s` **0,718 s** — hai số của cùng mã nguồn
+  lệch nhau 36 %, vì vậy con giây ở đây là một mẫu có dao động trên HDD máy này, còn
+  bốn cửa `sys.modules` (đều `True`) mới là bất biến đáng tin (xem `AGENTS.md`, mục
+  "Wall clock giữa hai lần chạy nói dối").
   `scratch/frozen_bundle_probe.py`: **ALL PASS, 0 fail, rc=0**, gồm ba phép phản
   chứng — lật `_internal/styles` (phải đỏ), ẩn `core/` rồi ẩn `ui/` của tree nguồn
   (phải vẫn xanh và chi tiết giống từng byte, tức mã đọc từ PYZ).
