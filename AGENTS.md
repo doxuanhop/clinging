@@ -89,6 +89,8 @@ python scratch/popart_project_build.py          # du an .clinq Pop Art + xuat mp
 python scratch/popart_project_counterfactual.py # phan chung: 6 phep doi byte, moi phep chay CA HAI gate
 python scratch/popart_window_shot.py            # anh cua so THAT cua ban da cai mo du an Pop Art (PrintWindow)
 python scratch/popart_window_shot.py --pixels   # phan chung tren anh: khung den do, anh that xanh, boi preview do
+python scratch/editor_screen_shots.py           # 34,5 s: 3 anh CHUP THAT toan man hinh 1920x1080 (editor/SplitDialog/ExportDialog) -> assets/uiux
+python scratch/editor_screen_shots.py --pixels  # phan chung: khung den bi bat, xoa vung -> cua do, lech B/C vs A, cong duong dan nguoi dung
 python scratch/chroma_key_counterfactual.py     # phan chung: 19 phep doi byte -> cua duc nen do dung ly do
 python scratch/chroma_key_evidence.py           # anh FrameComposer: cat nen xanh, giu chu the, vien mong + chong am
 python scratch/chroma_cost_probe.py             # low-spec: duong tat 0 ms; thue chroma < the Pop Art da ban
@@ -143,6 +145,12 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
    khi không tìm thấy gì để quét.
 3. **Ảnh cho phần render.** Bộ dựng ảnh đi từ code path sản xuất, lưu
    `scratch/*.png`, và PHẢI mở ảnh ra xem. Log + dòng PASS không phải chứng cứ.
+   Ảnh nào tài liệu dẫn cho người đọc repo thì phải copy sang `assets/uiux/` —
+   `scratch/*` bị ignore nên ảnh ở đó chỉ máy này xem được. Ảnh commit là ảnh
+   chụp THẬT cửa sổ app (toàn màn hình, do `scratch/editor_screen_shots.py` sinh
+   ra), không phải bảng panel ghép nền tối: người đọc repo cần thấy sản phẩm,
+   số đo của người dựng cứ để ở `scratch/`. Ảnh lộ dữ liệu người
+   dùng (bìa dự án thật, đường dẫn cá nhân) thì không commit; để lại số đo.
 4. **Đọc rc của chính công cụ.** Không qua đường ống, không tin wrapper.
 
 ## Bẫy của máy này (đã trả giá)

@@ -57,9 +57,13 @@ ffprobe doc lai duoc` (8 = 2 + 2 + 4, trong đó chuỗi nhập 8 token còn 4 m
 Phản chứng: `scratch/split_plan_counterfactual.py` — 14 phép đổi byte trên
 `core/media_splitter.py`, **14/14 PHÂN BIỆT**, `ALL PASS`, rc=0, ~2,2 phút.
 Probe hiện trường: `scratch/media_split_probe.py` — **167 cửa, ALL PASS (0 fail)**,
-rc=0, 78,6 s. Ảnh `scratch/media_split_evidence.png` (ba kiểu, mỗi kiểu hàng đoạn +
-file trên đĩa) và `scratch/media_split_dialog_points.png` (600×602, hộp thoại "Mốc
-tự đặt" với cả ba dòng giải thích).
+rc=0, 78,6 s. Ảnh (bản commit trong repo, mở được từ GitHub):
+`assets/uiux/editor-split-dialog.png` — ảnh chụp THẬT toàn màn hình 1920×1080
+của đúng hộp thoại "Điểm cắt tự đặt" đang mở trong cửa sổ editor, thấy được cả
+ba dòng giải thích. Bảng số của ba kiểu cắt (mỗi kiểu hàng đoạn + file trên đĩa)
+và ảnh cắt riêng 600×602 vẫn do probe sinh ra, nằm ở
+`scratch/media_split_evidence.png`, `scratch/media_split_dialog_points.png`
+(`scratch/*` bị gitignore nên chỉ người dựng xem được).
 
 Đi kèm là một sửa giao diện: thân hộp thoại kiểu mốc cần 492 px trong khi
 `resize(600, 520)` chỉ cho viewport 410 px, nên dòng "1 mốc bị bỏ vì…" — dòng
@@ -100,9 +104,13 @@ file nguồn thật (`core/export_range.py`, `ui/export_dialog.py`, `diagnostics
 `rc=0 rows=39 failed=[]`. Hai vết đỏ bằng lời của chính người dùng: nhãn in ra
 `'Thời lượng: 00:00 / 00:02'` (nên phải in con số giây + khung hình), và
 `tieng: 6 frame/1.2 s thay vi 6/0.6 s` (nên `-ss` phải đi vào lệnh xuất video).
-Ảnh `scratch/export_range_evidence.png` (1560×1380): `ExportDialog` THẬT ở
-1120×520 cho cả hai chế độ, 24 + 12 khung giải mã thật kèm hiệu số hue, bảng
-`ffprobe -count_frames` của năm tệp, RMS hai cửa sổ.
+Ảnh commit cho người đọc repo: `assets/uiux/editor-export-dialog.png` — ảnh chụp
+THẬT toàn màn hình 1920×1080 của `ExportDialog` ở chế độ "Vùng chỉ định
+(từ → đến)" `1.25 s → 5.75 s` với preset `Cân bằng · CRF 21 · nhẹ hơn 23 %` và dòng
+"Thời lượng: 4,50 s, 108 frame / 00:12" do chính `core/export_range` sinh ra.
+Bảng chứng minh nhiều panel (24 + 12 khung giải mã thật kèm hiệu số hue,
+`ffprobe -count_frames` năm tệp, RMS hai cửa sổ) vẫn ở
+`scratch/export_range_evidence.png` (1560×1380).
 
 ### Sửa lỗi đi kèm
 
@@ -163,6 +171,11 @@ file nguồn thật (`core/export_range.py`, `ui/export_dialog.py`, `diagnostics
   boot **0,642 s** tới cửa sổ, **68.880 KiB** lúc cửa sổ hiện, **82.524 KiB** lúc
   nghỉ, **cả chín cửa khởi động `True`**; style/layout/alignment/audio/chrome/
   thumbnail/graph/project report đều rc=0.
+  Ảnh cửa sổ chụp lại lúc 15:54 cùng ngày
+  (`python scratch/popart_window_shot.py` → **ALL PASS, rc=0**, `luma 34.7`,
+  `preview 571 mau`, lệch hai lần chụp `0.00 %`) **trùng từng byte** với
+  `assets/uiux/pop-art-project.png` đã commit — cửa sổ 1.0.5 vẽ ra đúng số pixel
+  như bản chụp lần trước.
 - **Thư mục cài không thiếu file nào.** Set-diff đường dẫn tương đối giữa
   `%LOCALAPPDATA%\Programs\Clinging` và `dist\Clinging`: **363 lá (dist) so với
   365 (bản cài)** — `0 thiếu`, hai phần thừa đúng là `unins000.exe` +

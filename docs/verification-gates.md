@@ -104,6 +104,18 @@ do chính script vừa in ra.
 `scratch/karaoke_ui_evidence.png`, `scratch/transition_ui_evidence.png`,
 `scratch/save_atomic_evidence.png`, `scratch/media_locator_evidence.png`.
 
+**Nhưng `scratch/*` bị `.gitignore` (giữ lại mỗi `*.py`), nên ảnh nằm ở đó chỉ
+người dùng máy này xem được.** Ảnh nào tài liệu cần dẫn cho người đọc repo /
+Release thì phải copy sang `assets/uiux/` — bằng chứng đã commit:
+`assets/uiux/pop-art-project.png` (cửa sổ app đã cài mở dự án Pop Art),
+`assets/uiux/editor-project-window.png`, `assets/uiux/editor-split-dialog.png`,
+`assets/uiux/editor-export-dialog.png` (ba bức sau là ảnh chụp THẬT toàn màn
+hình 1920×1080 của cửa sổ editor đang chạy, do `scratch/editor_screen_shots.py`
+sinh ra ngày 22/10/2026). Bảng chứng minh nhiều panel do probe ghép (nền tối,
+panel A/B/C/G...) KHÔNG commit: người đọc repo cần thấy sản phẩm, không cần thấy
+bảng số của người dựng — số đó vẫn nằm trong text và trong `scratch/`. Đường
+`scratch/...` vẫn được ghi cạnh để biết ảnh do script nào sinh ra.
+
 Bẫy đã trả giá (xem `~/.qoder/memory`): ảnh DPR > 1 phải blit vào QRect theo device
 size, không `drawPixmap(x, y, pm)` trên QImage DPR-1 (co còn 80%, ăn cả dấu trừ);
 không grab sau `hide()+show()`; `QT_QPA_PLATFORM=offscreen` trên máy này không có
@@ -543,6 +555,14 @@ thước.
 * Số đo lần chạy 21/10/2026: `man hinh: 1920x1080`, `bat anh: PrintWindow
   (rc=1 getdibits=1000)`, `kich thuoc 1500x1000 luma 34.7 preview 571 mau lech hai
   lan 0.00%`, **ALL PASS rc=0** (12,3 s).
+* Chụp lại ngày 22/10/2026 trên đúng cây Inno đã nâng cấp **1.0.5** (exe
+  sha256[:16] `33cbadb850d55464`): `cua so: pid=11008 title='Clinging - Video
+  Editor'`, `bat anh: PrintWindow (rc=1 getdibits=1000)`, `bbox 0,0-1500,1000
+  tron_man_hinh=True`, `kich thuoc 1500x1000 luma 34.7 preview 571 mau lech hai
+  lan 0.00%`, **ALL PASS rc=0**. Ảnh mới **trùng từng byte** với bản đã commit
+  (sha256[:16] `4529d55b4ada5a6d`, 299.382 B): cửa sổ 1.0.5 vẽ ra đúng số pixel
+  như lần chụp 21/10 — không có gì để sửa trong `assets/uiux/`, và đó là cách phát
+  hiện sớm nhất nếu một thẻ màu mới làm đổi frame nền.
 * Bài học về thứ tự: lần đầu gọi `PrintWindow` ngay sau 2,5 s chờ trả về **toàn
   đen** (`luma 0.0`, 1 màu) dù `rc=1`. Probe vì vậy chỉ nhận ảnh khi đã sáng, poll
   mỗi 1,5 s trong 25 s — ảnh chụp "lúc app còn đang boot" không phải bằng chứng.
@@ -555,6 +575,19 @@ thước.
   (2) — thumbnail + waveform của hai fixture Pop Art vừa được tính lại. Không có
   dòng nào ở `recent_projects.json`, `.clinq`, hay `~\.clinqing\recovery\`: đóng
   app mà model không bẩn thì không có gì được lưu.
+* Vòng chụp 22/10 (1.0.5): 1.968 → 1.969 file, `THEM: 1 / MAT: 0 / DOI: 1` — và
+  CẢ HAI dòng không phải do probe. Ba bằng chứng: (1) phép chụp kết thúc lúc
+  15:54, còn `last_modified` của `.clinq` và timestamp bản recovery vừa sinh ra
+  đều là **15:57:47** — ba phút SAU khi tiến trình probe (pid 11008) đã thoát;
+  (2) nội dung diff là **hai clip mới** ở `timeline_in` 11,5 s và 17,5 s
+  (11,5 → 23,5 s) — một phép lặp/paste của người dùng, probe chụp ảnh không thêm
+  clip nào; (3) suốt vòng đo vẫn còn ĐÚNG MỘT phiên app của người dùng sống
+  (pid 7000, `Clinging - Video Editor`) — mà chỉ cần một phiên mở/đóng `.clinq`
+  là `_auto_save()` ghi đè và re-key `asset-…` (đã ghi ở nhóm A2). Bản recovery
+  15:57:47 vẫn mang `last_modified 2026-10-21T10:12:32`, tức trạng thái ngay
+  trước cú lưu đó trùng trạng thái mà probe đã thấy và chụp lại.
+  Kết luận cho vòng sau: muốn diff của một phép chụp ra `0/0/0` thì phải đóng hết
+  `Clinging.exe` của người dùng trước.
 
 ---
 
@@ -1009,7 +1042,9 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-22):
   hộp thoại "Mốc tự đặt" với CẢ BA dòng giải thích, kể dòng
   `1 mốc bị bỏ vì ngoài khoảng Từ→Đến hoặc vì hai mốc sát nhau dưới 0.20s.`).
   Đã mở cả hai ảnh ra xem; bản trước của ảnh thứ hai thiếu dòng đó vì nó nằm
-  dưới fold.
+  dưới fold. Ảnh commit để người đọc repo xem được là ảnh chụp THẬT của đúng hộp
+  thoại đó trong cửa sổ editor: `assets/uiux/editor-split-dialog.png` (mục "Ảnh
+  chứng minh đã commit của 1.0.5" cuối file); hai bảng trên vẫn ở `scratch/`.
 
 Hộp thoại: ba cột `col_count` / `col_length` / `col_points` đổi theo `combo_style`,
 `_plan_args()` trả đúng một từ khoá cho kiểu đang chọn, và `_on_run()` từ chối
@@ -1080,6 +1115,9 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-22):
   cửa sổ. Đã mở ảnh ra xem: bản đầu **dòng chú thích của A chồng lên tiêu đề B** vì panel A
   cao 372 px trong khi ảnh 700 px + hai dòng chú thích cần 401 px — đã nong
   panel A lên 420 px và dời B/C/D xuống 48 px.
+  Ảnh commit cho người đọc repo là ảnh chụp THẬT của đúng hộp thoại này trong
+  cửa sổ editor: `assets/uiux/editor-export-dialog.png` (mục "Ảnh chứng minh đã
+  commit của 1.0.5" cuối file).
 * `scratch/needle_canary.py`: `export_range_counterfactual 18 vet OK`,
   `ALL CLEAN: 12/14`.
 * Snapshot dữ liệu người dùng quanh lần chạy: **1926 → 1926 file,
@@ -1109,6 +1147,7 @@ dùng không chọn vùng. `export_audio` vẫn chỉ gates tệp mp3 sidecar.
 | Process abort `0xC0000409`, mất hết stdout | `ValueError` bật lên trong `QIconEngine.pixmap()` — callback C++ | Kiểm tên ngay trong `widgets/fontawesome.py:icon()`, trước khi qua biên |
 | 4 dòng selftest đỏ `cv2` | Sandbox `APPDATA` của chính người viết | Chạy nguồn với APPDATA thật + gate snapshot |
 | Probe để lại `scratch/*.mp4`, `os.remove` báo `WinError 32` cả sau 2 s retry | `QMediaPlayer` (backend WMF) giữ source đang mở cho tới khi được `setSource(QUrl())`, không phải `close()` của `SequentialVideoReader` | Dọn fixture phải buông cả player: `stop()` + `setSource(QUrl())` rồi mới xoá; và việc xoá thất bại phải tính là FAIL, không được in một dòng rồi bỏ qua |
+| `shutil.rmtree(WORK, ignore_errors=True)` "thành công" mà `%PUBLIC%\ClingingEditorShot` còn nguyên `shot_gradient.mp4` (phát hiện 22/10/2026 khi chụp ảnh editor) | Trong đường editor, kẻ giữ file **đầu tiên** là `MainWindow._video_readers` (`SequentialVideoReader` → `cv2.VideoCapture`, `ui/main_window.py:1293`): reader chỉ đóng khi clip biến khỏi model (`ui/main_window.py:628`), còn `close()` cửa sổ thì giữ nguyên handle. `ignore_errors=True` biến thất bại đó thành im lặng | Probe mở cửa thật phải `reader.close()` + clear `_video_readers` TRƯỚC khi xoá fixture, và `rmtree` không dùng `ignore_errors`: thử lại vài giây rồi **đo** "gốc fixture không còn tồn tại" như một cửa — cửa đó đã đỏ đúng một lần trước khi tìm ra thủ phạm |
 | selftest xanh, exe crash khi mở | Probe để window sống tới lúc teardown | Probe phải đóng theo thứ tự rồi pump event |
 | `--report` treo khi build `console=False` | Exception không bắt biến thành hộp thoại modal | Chế độ headless phải ghi error payload và return khác 0 |
 | Phản chứng đỏ **mà source không đổi gì** | Gate assert `rc == 3221226505`, trong khi Qt-abort lần ra 0xC0000409 lần ra rc=1 (đo 6 lần: 2 abort / 1 rc=1 cho cùng một đầu vào) | Bất biến phải là nội dung log (`Error calling Python override of ...`), mã exit chỉ in ra để đọc — assert trên TẬP {1, 0xC0000409} |
@@ -1167,6 +1206,81 @@ ALL PASS (0 fail) — số đo ở bốn dòng cuối bảng trên. Cây MSI
 cắt giữa giao dịch — xem dòng "Người dung yeu cau dong goi 1.0.4.1" ở bảng Thất
 bại), nên mọi `/i` `/x` đều treo cho tới khi reboot; hai product probe
 `{B3C15772-…}` / `{706DC2C6-…}` vẫn còn trong database Windows Installer.
+
+## Ảnh chứng minh đã commit của 1.0.5
+
+Bốn bức dưới đây nằm trong `assets/uiux/` (được commit) vì `scratch/*` bị
+`.gitignore`: ảnh chỉ trong `scratch/` thì người đọc repo hoặc Release không mở
+được. Ba bức sau bức đầu là **ảnh chụp THẬT toàn màn hình 1920×1080** của cửa sổ
+editor đang chạy, do `scratch/editor_screen_shots.py` sinh ra ngày 22/10/2026 —
+không phải ảnh ghép panel, không phải `widget.grab()`.
+
+Cửa sổ của bản Inno đã cài 1.0.5, mở `Pop Art Demo.clinq` qua đúng đường
+`Clinging.exe <đường dẫn>` (PrintWindow, không phải `grabWidget()`):
+
+![Cửa sổ Clinging 1.0.5 đã cài, mở dự án Pop Art](../assets/uiux/pop-art-project.png)
+
+Editor đang mở một dự án dựng qua đúng code path sản xuất (`MainController()` →
+`open_project_path()`), hai clip video tự sinh + một clip chữ "CLINGING DEMO" +
+hiệu ứng Pop Art, push qua `core.commands` chứ không ghi thẳng vào model:
+
+![Cửa sổ editor 1920x1080 đang mở dự án](../assets/uiux/editor-project-window.png)
+
+`SplitDialog` kiểu **Điểm cắt tự đặt** với mốc `1.5, 3.0, 9.0` trên nguồn 6 s —
+dòng "1 mốc bị bỏ vì ngoài khoảng Từ→Đến…" nằm gọn trong khung, và cổng
+`verticalScrollBar().maximum() == 0` của chính ảnh này xanh (bốn trạng thái của hộp
+thoại thì do `scratch/media_split_probe.py` đo):
+
+![SplitDialog trong cửa sổ editor, đủ ba dòng giải thích](../assets/uiux/editor-split-dialog.png)
+
+`ExportDialog` ở chế độ **Vùng chỉ định (từ → đến)** `1.25 s → 5.75 s`, preset
+`Cân bằng · CRF 21 · nhẹ hơn 23 %`, dòng "Thời lượng: 4,50 s, 108 frame / 00:12" —
+số này do chính `core/export_range` sinh ra, không gõ tay:
+
+![ExportDialog trong cửa sổ editor, vùng xuất in/out](../assets/uiux/editor-export-dialog.png)
+
+Vì sao ba bức đó là ảnh thật của cửa sổ đang chạy (cổng trong
+`scratch/editor_screen_shots.py`, **rc=0, 34,5 s**): ảnh đúng kích thước màn
+hình (`[1920,1080] == screen_size`), handle của hộp thoại thuộc `os.getpid()`
+(không match theo tiêu đề), hai lần chụp liên tiếp lệch **0,00 %** (khung hình
+đã vẽ xong, không bắt được lúc đang cập nhật), và ảnh B/C **lệch 17,03 % /
+37,62 %** trên đúng vùng hình chữ nhật của hộp thoại so với ảnh A — ảnh ghép lại
+hay copy rồi đổi tên sẽ cho 0 %.
+
+Phản chứng của bộ ảnh (`--pixels`, **rc=0, 5,2 s**): khung đen tổng hợp phải bị
+bắt (luma 5,00); xoá trắng vùng preview → cổng "nội dung giữa ảnh" đỏ; xoá trắng
+dải timeline → cổng dải timeline đỏ; xoá trắng cả ảnh → cổng "số màu toàn ảnh"
+đỏ. Ngưỡng 120 màu đặt theo số đo thật: vùng bị xoá cho **đúng 1 màu**, vùng thật
+cho 149–2.313 màu.
+
+Một lần chụp đã tự đỏ vì ĐÚNG lý do: bản đầu của ảnh C chỉ gọi
+`SetWindowPos(SWP_SHOWWINDOW)` mà thiếu `dlg.show()`, nên Qt vẫn coi widget đang
+ẩn — cửa "hộp thoại thật sự được vẽ" trả **−5,0** (lệch 0,00 % so với ảnh A). Đó
+chính là bằng chứng cổng lệch phân biệt được hộp thoại được vẽ với hộp thoại chỉ
+có handle.
+
+Không có ảnh nào trong bốn bức để lộ dữ liệu của người dùng: fixture nằm ở
+`%PUBLIC%\ClingingEditorShot` (chọn `%PUBLIC%` thay `%TEMP%` vì `%TEMP%` chứa tên
+user `doxuanhop`, sẽ hiện trong ô đường dẫn xuất), và một cổng kiểm tra DUY NHẤT
+mọi đường tuyệt đối trong `.clinq` đang mở (`assets[].path` + `clips[].source_path`)
+phải nằm dưới gốc fixture — phản chứng bằng cách cài một đường
+`C:\Users\me\Clinging_Projects\...`: cổng trả đúng một mục phạm.
+
+Vòng chạy không để lại rác (đo 22/10/2026, ba cổng TỰ DO trong probe): cache ảnh
+người dùng **1964 → 1964 file**, `recent_projects.json` **giống từng byte**, cây
+recovery người dùng **không thêm** bản nào mang tên đoạn chụp, và gốc fixture
+`%PUBLIC%\ClingingEditorShot` **bị xoá sạch** (cửa này đỏ đúng một lần — xem dòng
+cuối bảng "Thất bại đã ghi"). Snapshot `user_data_snapshot.py` quanh vòng chạy cho
+`THEM: 1 / MAT: 1 / DOI: 1`, cả ba nằm trên `Pop Art Demo` — **không phải** do probe:
+một bản Clinging đã cài ĐANG mở (pid 7000) quay timer recovery đúng 300 s một lần
+(16:32:47 → 16:37:47 → 16:42:47 → 16:47:47, tức vẫn chạy khi không có probe nào),
+còn probe redirect autosave/recovery về gốc tạm và chỉ tự đo stem của chính nó.
+
+Không commit: `scratch/installed_app_window.png` (màn hình Home của bản đã cài,
+130.366 B, chụp 22/10/2026 15:20 trong `installed_app_probe.py`). Ảnh đó hiện cả
+bìa dự án THẬT của người dùng (`Dự án 2`) trong ô "Dự án gần đây" — repo này public
+nên bằng chứng giữ ở dạng số đo (dòng "Bản cài thật (Inno)" ở bảng trên), không ở
+dạng pixel.
 
 
 
