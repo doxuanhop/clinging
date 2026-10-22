@@ -1,7 +1,8 @@
 """
 ui/split_dialog.py
-Hộp thoại "Cắt thành nhiều đoạn": chọn MỘT video hoặc audio trong dự án, nhập
-số đoạn, rồi ghi N file thật ra một thư mục.
+Hộp thoại "Cắt thành nhiều đoạn": chọn MỘT video hoặc audio trong dự án, chọn
+kiểu cắt (chia đều N đoạn / mỗi đoạn dài X giây / tự đặt điểm cắt), rồi ghi N
+file thật ra một thư mục.
 
 Toán cắt nằm ở core/media_splitter.py — hộp thoại này không tự tính giây, không
 tự đặt tên file, và không bao giờ báo một con số mà ffprobe chưa đo lại.
@@ -10,7 +11,9 @@ tự đặt tên file, và không bao giờ báo một con số mà ffprobe chư
 import os
 import threading
 
-from PySide6.QtCore import Qt, QObject, QRunnable, Signal, QThreadPool, QSize
+from PySide6.QtCore import (
+    Qt, QEvent, QObject, QRunnable, Signal, QThreadPool, QSize,
+)
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox,
@@ -24,6 +27,18 @@ from widgets.common import Toast, font_icon, open_local_file
 MODE_LABELS = [
     (splitter.MODE_AUTO, "Nhanh — copy khi an toàn, mã hoá lại đoạn lệch"),
     (splitter.MODE_ENCODE, "Chính xác từng giây — mã hoá lại mọi đoạn"),
+]
+
+# Ba cach noi cung mot dieu. Kieu "moc tu dat" ton tai vi nguoi ta cat theo
+# noi dung (dau mot/canh quay), khong theo phep chia; kieu "doi dai co dinh"
+# vi muon mot lot bang nhau dang len tung.
+STYLE_COUNT = "count"
+STYLE_LENGTH = "length"
+STYLE_POINTS = "points"
+STYLE_LABELS = [
+    (STYLE_COUNT, "Chia đều N đoạn"),
+    (STYLE_LENGTH, "Mỗi đoạn dài cố định"),
+    (STYLE_POINTS, "Điểm cắt tự đặt"),
 ]
 
 
@@ -46,20 +61,20 @@ class _SplitSignals(QObject):
 
 
 class _SplitTask(QRunnable):
-    def __init__(self, file_path, out_dir, count, start, end, mode):
+    def __init__(self, file_path, out_dir, count, start, end, mode, plan_args):
         super().__init__()
-        self.args = (file_path, out_dir, count, start, end, mode)
+        self.args = (file_path, out_dir, count, start, end, mode, plan_args)
         self.cancel_event = threading.Event()
         self.signals = _SplitSignals()
 
     def run(self):
-        path, out_dir, count, start, end, mode = self.args
+        path, out_dir, count, start, end, mode, plan_args = self.args
         try:
             result = splitter.split_media(
                 path, out_dir, count=count, start=start, end=end, mode=mode,
                 progress=lambda done, total, record: self.signals.progress.emit(
                     int(done), int(total), record),
-                should_cancel=self.cancel_event.is_set)
+                should_cancel=self.cancel_event.is_set, **plan_args)
             self.signals.finished.emit(result)
         except Exception as exc:
             # str(exc) phai duoc copy TRUOC khi vuot bien: exception da bi
@@ -132,6 +147,13 @@ class SplitDialog(QDialog):
         self.combo_source.currentIndexChanged.connect(self._on_source_changed)
         layout.addWidget(self.combo_source)
 
+        self.combo_style = QComboBox()
+        for key, label in STYLE_LABELS:
+            self.combo_style.addItem(label, key)
+        self.combo_style.currentIndexChanged.connect(self._on_style_changed)
+        layout.addWidget(self._label("Kiểu cắt", "FieldLabel"))
+        layout.addWidget(self.combo_style)
+
         self.combo_mode = QComboBox()
         for key, label in MODE_LABELS:
             self.combo_mode.addItem(label, key)
@@ -142,18 +164,35 @@ class SplitDialog(QDialog):
         self.spin_count = self._spin(QSpinBox, 2, splitter.MAX_SEGMENTS, 3,
                                      " đoạn")
         self.spin_count.valueChanged.connect(self._update_summary)
+        self.spin_length = self._spin(QDoubleSpinBox, 0.5, 36000.0, 30.0, " s",
+                                      decimals=1)
+        self.spin_length.valueChanged.connect(self._update_summary)
         self.spin_start = self._spin(QDoubleSpinBox, 0.0, 0.0, 0.0, " s",
                                      decimals=2)
         self.spin_end = self._spin(QDoubleSpinBox, 0.0, 0.0, 0.0, " s",
                                    decimals=2)
+        self.edit_points = QLineEdit()
+        self.edit_points.setObjectName("SplitPoints")
+        self.edit_points.setPlaceholderText(
+            "12.5, 0:45, 1:02:03 — cách nhau bằng dấu phẩy")
         self.spin_start.valueChanged.connect(self._update_summary)
         self.spin_end.valueChanged.connect(self._update_summary)
+        self.edit_points.textChanged.connect(self._update_summary)
+        self.col_count = self._column("Số đoạn", self.spin_count)
+        self.col_length = self._column("Mỗi đoạn dài", self.spin_length)
+        # Ô danh sách mốc đi nguyên hàng: một chuỗi "0:05, 0:43, 1:12, 2:04"
+        # nhét vào cột 1/3 thì người ta không đọc nổi mình vừa nhập gì.
+        self.col_points = self._column("Điểm cắt (tính từ đầu file)",
+                                       self.edit_points)
         row = QHBoxLayout()
         row.setSpacing(10)
-        row.addWidget(self._column("Số đoạn", self.spin_count))
+        row.addWidget(self.col_count)
+        row.addWidget(self.col_length)
         row.addWidget(self._column("Từ", self.spin_start))
         row.addWidget(self._column("Đến", self.spin_end))
         layout.addLayout(row)
+        layout.addWidget(self.col_points)
+        self._apply_style()
 
         layout.addWidget(self._label("Thư mục lưu", "FieldLabel"))
         out_row = QHBoxLayout()
@@ -191,6 +230,13 @@ class SplitDialog(QDialog):
         self.lbl_status.setObjectName("SplitStatus")
         self.lbl_status.setWordWrap(True)
         layout.addWidget(self.lbl_status)
+        # Hai nhan nay la noi duy sinh them dong chu trong qua trinh cat
+        # (tom tat ke hoach, "dang luu doan 3/7 tai ...", ket qua cuoi cung),
+        # nen moi lan chung doi chieu cao thi cua phai rong ra theo — thay vi
+        # dap vao tung ham mot lenh fit. QLabel khong co signal sizeChanged,
+        # nen nghe trực tiep event Resize cua chung.
+        for lbl in (self.lbl_summary, self.lbl_status):
+            lbl.installEventFilter(self)
 
         scroll = QScrollArea()
         scroll.setObjectName("SplitScroll")
@@ -198,6 +244,7 @@ class SplitDialog(QDialog):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setWidget(body)
+        self._scroll = scroll
         root.addWidget(scroll, 1)
 
         bar = QFrame()
@@ -288,12 +335,13 @@ class SplitDialog(QDialog):
         #SplitBody, #SplitScroll { background: transparent; border: none; }
         #FieldLabel { font-size: 11px; font-weight: 700; color: #8A8F9C;
                   letter-spacing: 0.4px; }
-        QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit#SplitOut {
+        QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit#SplitOut,
+        QLineEdit#SplitPoints {
             background-color: #14151A; border: 1px solid #2A2D3A;
             border-radius: 6px; padding: 6px 8px; color: #E2E5EA;
             font-size: 13px; }
-        QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
-            border-color: #40E0D0; }
+        QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+        QLineEdit#SplitPoints:focus { border-color: #40E0D0; }
         QComboBox::drop-down { border: none; width: 22px; }
         #SplitSummary { color: #9AA0AC; font-size: 12px; }
         #SplitStatus { color: #D8DCE0; font-size: 12px; }
@@ -390,22 +438,97 @@ class SplitDialog(QDialog):
             "Không đọc được thời lượng của nguồn này.")
         self._update_summary()
 
+    def _style_key(self):
+        return self.combo_style.currentData() or STYLE_COUNT
+
+    def _apply_style(self):
+        """Kiểu cắt nào thì chỉ hiện ô của kiểu đó — ba ô cùng lúc trong một
+        hộp thoại 600 px sẽ khiến người ta không biết con số nào đang nói."""
+        key = self._style_key()
+        self.col_count.setVisible(key == STYLE_COUNT)
+        self.col_length.setVisible(key == STYLE_LENGTH)
+        self.col_points.setVisible(key == STYLE_POINTS)
+        self._fit_height()
+
+    def _fit_height(self):
+        """Cua phai cao du cho HET chu thich, khong duoc de no thu thanh cuon.
+
+        Do 22/10/2026: o kieu "moc tu dat" than hop thoai can 492 px trong khi
+        viewport tai chieu cao 520 cua chi la 410 px — dong "1 moc bi bo..."
+        (dong DUY NHAT cho biet nguoi dung nhap sai o dau) nam duoc fold, va
+        `grab()` cua probe cung khong nhin thay no. Chi LON LEN: thu nho khi
+        quay lai kieu ngan lam cua nhay giua luc nguoi dung dang goi lai kieu.
+        """
+        scroll = getattr(self, "_scroll", None)
+        body = scroll.widget() if scroll is not None else None
+        if body is None or not self.isVisible():
+            return
+        needed = (self.height() - scroll.viewport().height()
+                  + body.sizeHint().height())
+        if needed > self.height():
+            self.resize(self.width(), needed)
+
+    def eventFilter(self, watched, event):
+        """Moi dong chu them vao hai nhan cuoi PHAI nhin thay duoc, khong phai
+        cuon moi thay — nen do chieu cao chung thay doi la cua rong ra."""
+        if event.type() == QEvent.Resize and getattr(self, "_scroll", None):
+            if watched in (self.lbl_summary, self.lbl_status):
+                self._fit_height()
+        return super().eventFilter(watched, event)
+
+    def _on_style_changed(self):
+        self._apply_style()
+        self._update_summary()
+
+    def _plan_args(self):
+        """(tham so split_media, moc dang dung, token doc khong ra).
+
+        `count` khong nam o day: no la gia tri mac dinh cua `plan_segments`,
+        va truyen trung mot tham so hai noi la hai noi se lech nhau khi
+        nguoi dung doi kieu.
+        """
+        key = self._style_key()
+        if key == STYLE_LENGTH:
+            return {"length": self.spin_length.value()}, [], []
+        if key == STYLE_POINTS:
+            marks, bad = splitter.parse_cut_points(self.edit_points.text())
+            return {"points": marks}, marks, bad
+        return {}, [], []
+
     def _planned(self):
         if self._duration <= 0:
             return []
+        plan_args = self._plan_args()[0]
         return splitter.plan_segments(self._duration, self.spin_count.value(),
                                       self.spin_start.value(),
-                                      self.spin_end.value())
+                                      self.spin_end.value(), **plan_args)
 
     def _update_summary(self):
+        plan_args, marks, bad = self._plan_args()
+        if bad:
+            self.lbl_summary.setText(
+                "Không đọc được: %s — mỗi mốc phải kiểu 12.5, 0:45 hoặc "
+                "1:02:03." % ", ".join(bad))
+            return
         plan = self._planned()
         if not plan:
             self.lbl_summary.setText("Không có đoạn nào để cắt.")
             return
         begin, span = plan[0]
         stop = plan[-1][0] + plan[-1][1]
-        text = ("%d đoạn · mỗi đoạn %s · từ %s tới %s"
-                % (len(plan), _fmt(span), _fmt(begin), _fmt(stop)))
+        lengths = sorted(round(row[1], 2) for row in plan)
+        each = ("mỗi đoạn %s" % _fmt(span) if lengths[0] == lengths[-1]
+                else "ngắn nhất %s, dài nhất %s"
+                % (_fmt(lengths[0]), _fmt(lengths[-1])))
+        text = "%d đoạn · %s · từ %s tới %s" % (
+            len(plan), each, _fmt(begin), _fmt(stop))
+        dropped = len(marks) - (len(plan) - 1)
+        if dropped > 0:
+            # Mot chuoi moc ma vai moc bi bo im lang la ke hoach khong phai
+            # nguoi dung nghi — phai noi ro bao nhieu bi loai va vi sao.
+            text += ("\n%d mốc bị bỏ vì ngoài khoảng Từ→Đến hoặc vì hai mốc "
+                     "sát nhau dưới %s." % (dropped,
+                                            _fmt(splitter.MIN_SEGMENT_SECONDS)))
         if self.combo_mode.currentData() == splitter.MODE_AUTO:
             text += ("\nĐiểm cắt sẽ được chỉnh về đúng khung hình keyframe gần "
                      "nhất, nên các đoạn có thể lệch nhau vài phần mười giây.")
@@ -424,11 +547,19 @@ class SplitDialog(QDialog):
         if self._busy:
             return
         path = self._current_source()
+        plan_args = self._plan_args()[0]
         plan = self._planned()
         out_dir = self.edit_out.text().strip()
         if not path or not plan or not out_dir:
             self.lbl_status.setText(
                 "Thiếu nguồn, khoảng thời gian hoặc thư mục lưu.")
+            return
+        if self._style_key() == STYLE_POINTS and len(plan) < 2:
+            # Khong moc nao nam trong khoang thi ke hoach con MOT doan = ca
+            # file: dem mot lan roi ghi ra ban sao duoi ten khac la lenh "cat"
+            # vo nghia nhat co the.
+            self.lbl_status.setText(
+                "Chưa có điểm cắt nào nằm trong khoảng Từ→Đến.")
             return
         if not external_tools.find("ffmpeg"):
             # Không phải "một đoạn nào đó lỗi": không có trình thì không đoạn
@@ -456,7 +587,7 @@ class SplitDialog(QDialog):
 
         task = _SplitTask(path, out_dir, self.spin_count.value(),
                           self.spin_start.value(), self.spin_end.value(),
-                          self.combo_mode.currentData())
+                          self.combo_mode.currentData(), plan_args)
         task.signals.progress.connect(self._on_progress)
         task.signals.finished.connect(self._on_done)
         task.signals.failed.connect(self._on_failed)

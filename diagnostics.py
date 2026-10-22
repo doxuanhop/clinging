@@ -1332,10 +1332,10 @@ def _media_split_ok():
     Selftest nay khong trung lap scratch/media_split_probe.py: no tra loi mot
     cau hoi khac — LIEU BUNDLE dong goi co du `core.media_splitter` +
     `ui.split_dialog` va goi duoc ffmpeg cua PATH de ra N file doc lai duoc
-    hay khong. Ba dieu bat buoc: (1) ke hoach cat khong duoc an hay doi noi
-    dung (tong span == nguon, cac mei cat bang 0), (2) file ghi ra phai
-    duoc ffprobe doc lai bang thoi luong that, (3) doan nao cung khong duoc
-    rong.
+    hay khong. Ba dieu bat buoc cho MOI KIEU CAT (deu nhau / doi dai co dinh /
+    moc tu dat): (1) ke hoach khong duoc an hay doi noi dung (tong span ==
+    nguon, cac mei cat bang 0), (2) file ghi ra phai duoc ffprobe doc lai bang
+    thoi luong that, (3) doan nao cung khong duoc rong.
     """
     import subprocess
     import tempfile
@@ -1352,35 +1352,67 @@ def _media_split_ok():
         src = os.path.join(folder, "nguon.mp4")
         subprocess.run(
             [ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
-             "color=c=red:s=160x120:d=2:r=25,format=yuv420p",
+             "color=c=red:s=160x120:d=6:r=25,format=yuv420p",
              "-c:v", "libx264", "-preset", "veryfast", "-g", "10", src],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
             check=False, creationflags=0x08000000)
         total = splitter.probe_duration(src)
         if total <= 0:
             raise RuntimeError("bundle nay khong tao/doc duoc video ngan")
-        out = os.path.join(folder, "ra")
-        result = splitter.split_media(src, out, count=2)
-        rows = result["segments"]
-        if len(rows) != 2 or result["failed"] or result["cancelled"]:
-            raise RuntimeError("cat 2 doan that bai: %r" % result)
-        if abs(sum(row["span"] for row in rows) - total) > 0.05:
-            raise RuntimeError("ke hoach an/doi noi dung: %r vs %.3f"
-                               % ([row["span"] for row in rows], total))
-        for index, row in enumerate(rows, start=1):
-            if not os.path.isfile(row["path"]) or os.path.getsize(
-                    row["path"]) < 1000:
-                raise RuntimeError("doan %d khong co tren dia" % index)
-            if splitter.probe_duration(row["path"]) <= 0:
-                raise RuntimeError("doan %d ffprobe khong doc duoc" % index)
-            if index > 1 and abs(row["start"]
-                                 - (rows[index - 2]["start"]
-                                    + rows[index - 2]["span"])) > 1e-6:
-                raise RuntimeError("mei cat %d ho hoac choong" % index)
+
+        def one(label, expected, uneven=False, **plan_args):
+            """Cat MOT ke hoach va do tren FILE — khong phai do lenh cat tu khai."""
+            out = os.path.join(folder, "ra_" + label)
+            result = splitter.split_media(src, out, **plan_args)
+            rows = result["segments"]
+            if len(rows) != expected or result["failed"] or result["cancelled"]:
+                raise RuntimeError("kieu %s cat sai: %r" % (label, result))
+            spans = [row["span"] for row in rows]
+            if abs(sum(spans) - total) > 0.05:
+                raise RuntimeError("kieu %s an/doi noi dung: %r vs %.3f"
+                                   % (label, spans, total))
+            if uneven and max(spans) - min(spans) < 0.1 * total:
+                raise RuntimeError("kieu %s cho ra chia deu %r: moc/doi dai "
+                                   "nhap vao khong duoc dung" % (label, spans))
+            for index, row in enumerate(rows, start=1):
+                if not os.path.isfile(row["path"]) or os.path.getsize(
+                        row["path"]) < 1000:
+                    raise RuntimeError("kieu %s doan %d khong co tren dia"
+                                       % (label, index))
+                if splitter.probe_duration(row["path"]) <= 0:
+                    raise RuntimeError("kieu %s doan %d ffprobe khong doc duoc"
+                                       % (label, index))
+                if index > 1 and abs(row["start"]
+                                     - (rows[index - 2]["start"]
+                                        + rows[index - 2]["span"])) > 1e-6:
+                    raise RuntimeError("kieu %s mei cat %d ho hoac choong"
+                                       % (label, index))
+            return len(rows)
+
+        counts = [
+            one("deu", 2, count=2),
+            # 2,95 s tren nguon 6 s de lai du 0,10 s: doan du < 0,2 s phai ghep
+            # vao doan ke truoc (con 2 doan), khong vet noi dung va khong tao
+            # mot file 0,1 s khong ai xem.
+            one("doi dai", 2, length=2.95),
+            # Moc nguoi dung NHAP, khong phai so do vien ra: '1:02' la 62 s
+            # (ngoai khoang nen bi bo), '0:01.6' sat '0:01.5' duoi 0,2 s (bi bo),
+            # '5.95' sat met cuoi (bi ghep), 'abc' phai duoc bao ve.
+            one("moc", 4, uneven=True,
+                points=splitter.parse_cut_points(
+                    "0:01.5, 0:01.6, 0:03.25, 0:04.4, 1:02, 5.95, 99, abc")[0]),
+        ]
+        # Ke hoach dung moc hay khong la do tren dia; con loc duoc moc nao thi
+        # nguoi dung chi thay qua chinh dong bao loi nay.
+        if splitter.parse_cut_points("0:02, abc, 1:02:03")[1] != ["abc"]:
+            raise RuntimeError("moc sai khong duoc bao ve")
+        if splitter.parse_cut_points("1:02:03")[0] != [3723.0]:
+            raise RuntimeError("gio:phut:giay bi doc thanh so khac")
     finally:
         import shutil
         shutil.rmtree(folder, ignore_errors=True)
-    return "2 doan ghi ra that, tong span = nguon, ffprobe doc lai duoc"
+    return ("%d kieu cat (deu/doi dai/moc) ra %d doan that, tong span = nguon, "
+            "ffprobe doc lai duoc" % (len(counts), sum(counts)))
 
 
 def _media_compress_ok():

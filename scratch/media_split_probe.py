@@ -63,6 +63,7 @@ SPARSE = os.path.join(WORK, "sparse.mp4")      # keyframe chỉ mỗi 4 s (GOP 1
 GATED = os.path.join(WORK, "gated.wav")        # im lặng 0-2 s, tiếng 2-4 s
 EVIDENCE = os.path.join(OUT, "media_split_evidence.png")
 DIALOG_SHOT = os.path.join(OUT, "media_split_dialog.png")
+DIALOG_POINTS_SHOT = os.path.join(OUT, "media_split_dialog_points.png")
 DIALOG_RUN_SHOT = os.path.join(OUT, "media_split_dialog_running.png")
 DIALOG_OLD_SHOT = os.path.join(OUT, "media_split_dialog_oldstyle.png")
 DIALOG_BACK_SHOT = os.path.join(OUT, "media_split_dialog_restyled.png")
@@ -358,6 +359,49 @@ def main():
            splitter.align_boundaries([0.0, 2.0, 4.0, 6.0], [])],
           [(0.0, False), (2.0, False), (4.0, False)])
 
+    print("\n== 2b. Ba kieu cat: doi dai co dinh va moc tu dat (toan thuan) ==")
+    check("doi dai co dinh: 65s buoc 30s ra doan cuoi mang du",
+          splitter.plan_boundaries_length(65.0, 30.0), [0.0, 30.0, 60.0, 65.0])
+    check("doi dai chan van: 60s buoc 30s khong them doan rong",
+          splitter.plan_boundaries_length(60.0, 30.0), [0.0, 30.0, 60.0])
+    check("du < nguong thi ghep vao doan ke truoc, khong vet",
+          splitter.plan_boundaries_length(60.0, 29.95), [0.0, 29.95, 60.0])
+    check("buoc du ngan thi khong co ke hoach",
+          splitter.plan_boundaries_length(60.0, 0.1), [])
+    capped = splitter.plan_boundaries_length(100000.0, 1.0)
+    check("cham tran MAX_SEGMENTS thi keo dai buoc thay vi mat noi dung",
+          [len(capped) - 1, round(capped[1] - capped[0], 3), capped[-1]],
+          [splitter.MAX_SEGMENTS, 500.0, 100000.0])
+    check("moc tu dat: loai moc ngoai khoang, moc trung, moc sat nhau",
+          splitter.plan_boundaries_points(
+              60.0, [5.0, 12.5, 12.5, 0.0, 60.0, 200.0, 59.99]),
+          [0.0, 5.0, 12.5, 60.0])
+    check("moc tu dat khong co gi thi con mot doan bang ca nguon",
+          splitter.plan_boundaries_points(60.0, []), [0.0, 60.0])
+    check("moc duoc sap xep lai, khong phu thuoc thu tu nguoi dung go",
+          splitter.plan_boundaries_points(60.0, [40.0, 10.0, 25.0]),
+          [0.0, 10.0, 25.0, 40.0, 60.0])
+    check("kieu moc thang kieu doi dai khi goi build_boundaries",
+          splitter.build_boundaries(60.0, 3, 20.0, [7.0]), [0.0, 7.0, 60.0])
+    check("doc moc: giay le, phut:giay, gio:phut:giay",
+          [splitter.parse_timecode("12.5"), splitter.parse_timecode("0:45"),
+           splitter.parse_timecode("1:02:03.5")], [12.5, 45.0, 3723.5])
+    check("chuoi khong phai thoi gian thi tra None chu khong phai 0",
+          [splitter.parse_timecode(x) for x in
+           ("abc", "1,5:30", "1:", "", "1:2:3:4")],
+          [None, None, None, None, None])
+    check("tach chuoi moc: giu nguyen token doc khong ra de hop thoai in ten",
+          splitter.parse_cut_points("0:05, 0:12; 20\nabc, 1:00"),
+          ([5.0, 12.0, 20.0, 60.0], ["abc"]))
+    for label, kwargs in (("doi dai", {"length": 2.5}), ("moc", {"points": [1.5, 3.5]})):
+        rows_style = splitter.plan_segments(6.0, 3, 0.0, 6.0, **kwargs)
+        check("ke hoach %s: tong do dai bang khoang cat" % label,
+              round(sum(row[1] for row in rows_style), 3), 6.0)
+        check("ke hoach %s: bien sau = bien truoc + do dai" % label,
+              [round(rows_style[i][0], 3) for i in range(1, len(rows_style))],
+              [round(rows_style[i - 1][0] + rows_style[i - 1][1], 3)
+               for i in range(1, len(rows_style))])
+
     print("\n== 3. Cat that: video keyday, che do tu dong ==")
     folder = out_dir("dense_auto")
     dense = splitter.split_media(DENSE, folder, count=3)
@@ -422,6 +466,48 @@ def main():
          forced["segments"][0]["actual"], sparse_total / 3.0, 0.06)
     check("che do ma hoa: bien cat nguyen si",
           [row["start"] for row in forced["segments"]], [0.0, 2.0, 4.0])
+
+    print("\n== 5b. Cat THAT theo ba kieu tren video 6s (do tren FILE) ==")
+    style_cases = []
+    for label, expected, kwargs in (
+            ("deu", 3, {"count": 3}),
+            ("doi dai", 3, {"length": 2.5}),
+            ("moc", 3, {"points": [1.0, 4.5]})):
+        folder = out_dir("style_" + label.replace(" ", "_"))
+        case = splitter.split_media(DENSE, folder, **kwargs)
+        rows_style = case["segments"]
+        check("kieu %s: ra dung %d file tren dia" % (label, expected),
+              len(rows_style), expected)
+        check("kieu %s: khong doan nao that bai, khong bi huy" % label,
+              [len(case["failed"]), case["cancelled"]], [0, False])
+        check("kieu %s: mei cat khong ho khong choong" % label,
+              joints(rows_style), [0.0] * (expected - 1))
+        near("kieu %s: tong ke hoach bang thoi luong nguon" % label,
+             sum(row["span"] for row in rows_style), dense_total, 0.02)
+        worst_gap = max(hue_gap(claimed, actual)
+                        for _, _, claimed, actual in hue_of_parts(rows_style,
+                                                                  DENSE))
+        check("kieu %s: NOI DUNG tung doan dung cua no (lech mau < 22 do)"
+              % label, worst_gap < 22.0, True)
+        for index, row in enumerate(rows_style, start=1):
+            near("kieu %s: doan %d ffprobe doc duoc nhu ke hoach"
+                 % (label, index), row["actual"], row["span"],
+                 splitter.COPY_OVERSHOOT_TOLERANCE + 0.05)
+        style_cases.append((label, case))
+    # Loi ich duy nhat cua kieu moc: cat theo NOI DUNG, khong theo phep chia.
+    # Keyframe thua hop copy lech toi 0,4s, nen "dung" la trong tam do lech ay.
+    marks = [row["start"] for row in style_cases[2][1]["segments"]][1:]
+    check("kieu moc: cat THAT gan hai moc 1,0s va 4,5s da nhap",
+          [round(abs(m - r), 3) <= splitter.COPY_DRIFT_TOLERANCE
+           for m, r in zip([1.0, 4.5], marks)], [True, True])
+    check("kieu moc: doan giua KHONG bang 1/3 nguon (khong phai chia deu)",
+          abs(style_cases[2][1]["segments"][1]["span"] - dense_total / 3.0)
+          > 0.15, True)
+    lengths = [row["span"] for row in style_cases[1][1]["segments"]]
+    check("kieu doi dai: moi doan gan 2,5s trich doan cuoi mang du",
+          [round(value, 1) for value in lengths[:2]], [2.4, 2.4])
+    above("kieu doi dai: doan cuoi la phan du, ngan hon cac doan truoc",
+          lengths[0] - lengths[-1], 0.5)
 
     print("\n== 6. Cat AUDIO: RMS chung doan nao ra vung nay ==")
     folder = out_dir("wav")
@@ -536,6 +622,23 @@ def main():
           <= real_tol * len(sparse_rows), True)
 
     print("\n== 10. Cua so that: chuot phai card -> hop thoai -> cat ==")
+    # `cache_root()` tro thang vao %APPDATA%\Clinging\cache. Duong dan fixture
+    # %TEMP% cua probe doi MOI LAN chay, nen moi lan chay de lai mot file cache
+    # vo nghia trong tho cua nguoi dung (do 22/10/2026: diff 1925 -> 1926 file,
+    # THEM cache/image/7c67e845abbb9240931e0c98). Van di qua DUNG duong ghi
+    # that (khoa = duong dan + mtime + size, temp + os.replace, budget), chi
+    # doi GOC de khong lai rac.
+    from core import media_cache
+    real_cache_root = media_cache.cache_root
+
+    def cache_tree():
+        return sum(len(f) for _r, _d, f in os.walk(real_cache_root()))
+
+    user_cache_before = cache_tree()
+    redirect = os.path.join(WORK, "cache_redirect")
+    os.makedirs(redirect, exist_ok=True)
+    media_cache.cache_root = lambda: redirect
+
     from ui.main_window import MainWindow
     win = MainWindow()
     win.resize(1500, 900)
@@ -574,10 +677,63 @@ def main():
     above("hop thoai ve ra co noi dung", alpha_count(dialog.grab()), 40000)
     grab_png(dialog, DIALOG_SHOT)
 
+    style_keys = [dialog.combo_style.itemData(i)
+                  for i in range(dialog.combo_style.count())]
+
+    def fits(tag):
+        """Khong duoc PHAI CUON moi thay chu thich. Do 22/10/2026 o kieu moc:
+        viewport 410 px trong khi than hop thoai can 492 px, nen dong "1 moc
+        bi bo..." — dong DUY NHAT noi nguoi dung nhap sai o dau — nam duoc
+        fold, va `grab()` chung minh cung khong nhin thay no."""
+        sa = dialog._scroll
+        check("hop thoai %s khong phai cuon moi thay het chu" % tag,
+              [sa.verticalScrollBar().maximum(),
+               sa.widget().sizeHint().height() <= sa.viewport().height()],
+              [0, True])
+
+    fits("kieu deu")
+    dialog.combo_style.setCurrentIndex(style_keys.index("length"))
+    pump(2)
+    check("chuyen kieu doi dai thi chi con o do dai",
+          [dialog.col_count.isHidden(), dialog.col_length.isHidden(),
+           dialog.col_points.isHidden()], [True, False, True])
+    check("kieu doi dai truyen length, khong truyen count/moc",
+          dialog._plan_args()[0], {"length": dialog.spin_length.value()})
+    fits("kieu doi dai")
+
+    # KIEU MOC TU DAT tren widget that: ke hoach hien ra PHAI la ke hoach se
+    # chay, neu hai ben tinh khac nhau thi nguoi dung thay mot con so trong
+    # khi file ra mot con so khac.
+    dialog.combo_style.setCurrentIndex(style_keys.index("points"))
+    pump(2)
+    check("chuyen kieu thi chi con o nhap moc",
+          [dialog.col_count.isHidden(), dialog.col_length.isHidden(),
+           dialog.col_points.isHidden()], [True, True, False])
+    dialog.edit_points.setText("1.2, 0:04.5, sai")
+    pump(2)
+    check("token doc khong ra duoc in thang ten ra",
+          "sai" in dialog.lbl_summary.text(), True)
+    fits("token sai")
+    dialog.edit_points.setText("1.2, 0:04.5, 99:00")
+    pump(2)
+    check("moc ngoai khoang bi bo va hop thoai noi ro bao nhieu bi bo",
+          [len(dialog._planned()), "bị bỏ" in dialog.lbl_summary.text()],
+          [3, True])
+    fits("moc tu dat")
+    above("kieu moc: cua PHAI rong ra so voi kieu deu",
+          dialog.height() - 520, 40)
+    grab_png(dialog, DIALOG_POINTS_SHOT)
+    dialog.combo_style.setCurrentIndex(style_keys.index("count"))
+    pump(2)
+    check("quay lai kieu deu thi het chuyen lo moc",
+          [dialog.col_count.isHidden(), "bị bỏ" in dialog.lbl_summary.text()],
+          [False, False])
+
     folder = out_dir("dialog")
     dialog.edit_out.setText(folder)
     dialog.spin_count.setValue(2)
     dialog.combo_mode.setCurrentIndex(0)
+    dialog.edit_points.setText("1.0, 4.5")
     pump(2)
     dialog._on_run()
     for _ in range(200):
@@ -592,11 +748,40 @@ def main():
     status = dialog.lbl_status.text()
     true("status ke ro so doan va thu muc",
          "2 đoạn" in status and os.path.basename(folder) in status)
+    fits("status ket qua (2 doan)")
     print("     status:", status)
+
+    # Lan chay THU HAI cua cung hop thoai, lan nay theo MOC: noi duong tu o
+    # nhap den FILE tren dia, khong dung o danh sach doan tinh trong dau.
+    folder = out_dir("dialog_points")
+    dialog.edit_out.setText(folder)
+    dialog.combo_style.setCurrentIndex(style_keys.index("points"))
+    pump(2)
+    dialog._on_run()
+    for _ in range(200):
+        pump(1, 0.05)
+        if dialog.last_result is not None and not dialog._busy:
+            break
+    rows_p = dialog.last_result["segments"]
+    check("hop thoai theo moc: 3 doan trong widget = 3 file tren dia",
+          [len(rows_p), len([n for n in listing(folder)
+                             if n.endswith(".mp4")])], [3, 3])
+    near("hop thoai theo moc: tong do dai van bang nguon",
+         sum(row["span"] for row in rows_p), dense_total, 0.02)
+    check("hop thoai theo moc: ba doan ba do dai khac nhau (khong phai chia deu)",
+          len({round(row["span"], 1) for row in rows_p}), 3)
+    fits("status ket qua cat theo moc")
+    print("     status moc:", dialog.lbl_status.text())
 
     # NGUON GOP THUA: 4/6 doan buoc phai ma hoa lai -> ca lan chay keu hon mot
     # giay, de thanh tien trinh con dang o giua khi do.
     dialog2 = win._open_media_split(SPARSE)
+    check("hop thoai cat duoc DUNG LAI chu khong mo lan hai", dialog2 is dialog,
+          True)
+    # Cung MOT hop thoai duoc dung lai (main_window giu _split_dialog), nen
+    # kieu van dang o "moc" cua lan chay thu hai phia tren — phai dat lai kieu
+    # truoc khi do thang tien trinh, neu khong doan 6 thanh doan 3.
+    dialog2.combo_style.setCurrentIndex(style_keys.index("count"))
     dialog2.edit_out.setText(out_dir("dialog_cancel"))
     dialog2.spin_count.setValue(6)
     dialog2._on_run()
@@ -643,6 +828,14 @@ def main():
     print("     huy luc sau: %d file, status: %s"
           % (files, dialog2.lbl_status.text()))
 
+    # Phan chung cua chinh cua do: neu redirect khong co file nao thi "khong
+    # them file vao tho nguoi dung" xanh vi khong ghi lan nao, khong phai vi
+    # do dung GOC.
+    above("anh nho fixture ghi THAT (qua redirect, khong phai do rong)",
+          len(listing(os.path.join(redirect, "image"))), 0)
+    check("probe khong de lai file trong cache anh cua nguoi dung",
+          cache_tree(), user_cache_before)
+
     print("\n== 11. Anh chung minh ==")
     bench = measure_bench()
     print("     1080p 5s: copy %.2fs vs ma hoa lai %.2fs (%.1fx)"
@@ -650,7 +843,7 @@ def main():
     above("copy that su nhanh hon duong ma hoa lai cua ban Tk",
           bench["ratio"], 3.0)
     sheet = make_evidence(dense_total, dense, sparse, forced, audio, naive,
-                          lying, hue_rows, lying_hue, bench)
+                          lying, hue_rows, lying_hue, bench, style_cases)
     sheet.save(EVIDENCE, "PNG")
     true("anh chung minh nam tren dia", os.path.isfile(EVIDENCE))
     colours = len(sheet.convert("RGB").getcolors(400000) or [])
@@ -675,10 +868,10 @@ def swatch(degrees):
 
 
 def make_evidence(total, dense, sparse, forced, audio, naive, lying, hue_rows,
-                  lying_hue, bench):
+                  lying_hue, bench, style_cases):
     """Pan A so do cua tung doan, B mau noi dung, C counterfactual, D+E so lieu
-    that va chang trai cua hop thoai."""
-    width, height = 1560, 1400
+    that va chang trai cua hop thoai, G ba kieu cat tren cung mot nguon."""
+    width, height = 1560, 1780
     sheet = Image.new("RGB", (width, height), (18, 19, 24))
     draw = ImageDraw.Draw(sheet)
     try:
@@ -826,6 +1019,31 @@ def make_evidence(total, dense, sparse, forced, audio, naive, lying, hue_rows,
     for fill, line in lines:
         text(792, y, line, fill=fill)
         y += 30
+
+    panel(24, 1400, 1512, 340,
+          "G. ba kieu cat tren CUNG mot nguon 6s: deu / doi dai co dinh / "
+          "moc tu dat")
+    y = 1446
+    for label, case in style_cases:
+        rows_g = case["segments"]
+        scale_g = 700.0 / max(1.0, total)
+        x = 210
+        for index, row in enumerate(rows_g):
+            width = max(2.0, row["span"] * scale_g)
+            draw.rectangle([x, y, x + width, y + 26],
+                           fill=palette[index % len(palette)])
+            text(x + 3, y + 30, "%.2fs" % row["actual"], fill=dim)
+            x += width
+        text(48, y + 4, "kieu %s" % label, fill=teal)
+        gaps = joints(rows_g)
+        text(960, y + 4, "%d doan   mei %s   tong %.3f/%.3fs"
+             % (len(rows_g), ", ".join("%+.3f" % j for j in gaps) or "-",
+                sum(row["span"] for row in rows_g), total), fill=good)
+        text(960, y + 28, "start: %s"
+             % ", ".join("%.2f" % row["start"] for row in rows_g), fill=dim)
+        y += 78
+    text(48, y, "ca ba kieu deu cat tren FILE: khong doan nao ho/choong, "
+                "tong span = nguon, mau tung doan khop mau nguon", fill=dim)
     return sheet
 
 

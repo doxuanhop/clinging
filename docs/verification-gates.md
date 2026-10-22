@@ -230,12 +230,20 @@ python scratch/compress_evidence.py               # -> menu video/audio phan bie
                                                   # -> scratch/_compress_ev_evidence.png
 python scratch/compress_cost_probe.py             # -> bang chi phi preset/codec do xen ke 1 vong
 
-# 4l) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
+# 4l) Kieu cat moc thu cong + doi dai co dinh (nhom J, 2026-10-22): so hoc
+#     nam het trong core/media_splitter.py, gate do tren FILE cat ra dia
+python scratch/split_plan_counterfactual.py       # -> 14/14 do dung ly do, ~2,2 phut
+                                                  #    (khuon loc --only + 1 SPOT du 38 dong)
+python scratch/media_split_probe.py               # -> 167 cua PASS, 78,6 s; anh 3 kieu
+                                                  #    cat + hop thoai moc KHONG phai cuon
+python scratch/split_gate_counterfactual.py       # -> 26/26, 0,5 s (thang do --split-report)
+
+# 4m) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
 #     chung (lat _internal/styles, an core/ cua tree nguon) + do boot
 python scratch/frozen_bundle_probe.py             # -> ALL PASS (0 fail), rc=0
 dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json
 
-# 4m) Chinh bo cai loc --only va dau que cua cac probe phan chung
+# 4n) Chinh bo cai loc --only va dau que cua cac probe phan chung
 python scratch/selftest_filter_counterfactual.py  # -> 10/10 cua, 218,8 s; loi "xanh vi
                                                   #     dau vao rong" phai do bang dong tu
 python scratch/needle_canary.py                   # -> "ALL CLEAN: n/m probe con nguyen
@@ -943,6 +951,63 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
   **1835 → 1835 file**, `THEM: 7 / MAT: 7 / DOI: 0`, và 7+7 nằm trọn trong
   `~\.clinqing\recovery\` với hai stem fixture (`Kiem karaoke` 5, `Kiem recap` 2).
 
+## Cổng "kiểu cắt" (nhóm J, 2026-10-22)
+
+Nguồn ý tưởng: ảnh chụp bảng "Cắt video" mà người dùng đưa
+(`6546454694.PNG`) — trong đó có **Mốc thủ công** và **Độ dài cố định**. Chuỗi
+đó thuộc layout `legacy_tk` đã đóng băng, nên bản PORT nhắm đường Qt đang chạy:
+`core/media_splitter.py` (toán) + `ui/split_dialog.py` (ba cột chọn kiểu).
+Không thêm preset mã hoá lại, không overlap, không nạp kết quả vào timeline —
+người dùng chỉ chọn một nhóm.
+
+| Dòng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `cat file thanh N doan ra dia` | Một dòng selftest bây giờ cắt **BA** kế hoạch ra đĩa thật: `đều` (`count=2`), `độ dài` (`length=2,95` trên nguồn 6 s), `mốc` (chuỗi NGƯỜI NHẬP `"0:01.5, 0:01.6, 0:03.25, 0:04.4, 1:02, 5.95, 99, abc"`). Với mỗi kế hoạch, gate không đọc lời khai của hàm lập mốc mà đọc **file**: `span` từng đoạn, `ffprobe` mở lại từng file, tổng `span` khớp thời lượng nguồn (±0,05 s), và mỗi mei nối khít (`start[i] == start[i-1] + span[i-1]`, ±1e-6) nên không đoạn nào rơi hoặc chồng. Kèm hai điều kiện về bộ lọc mốc: `abc` phải bị **báo** (`bad_tokens`), `1:02:03` phải đọc ra `3723.0` chứ không phải `102.03`. | `split_plan_counterfactual.py`: 14 phép đổi byte trên `core/media_splitter.py`, mỗi phép chạy lại `--only="cat file"` THẬT |
+
+Vì sao ba con số fixture lại là những con số đó (`2,95` và `0:01.5` sát
+`0:01.6`): chúng chặn đúng hai chỗ dễ hỏng nhất của kiểu mới — **doan du** và
+**moc sat nhau**. `length=2,95` trên nguồn 6 s để lại 0,10 s thừa; nếu code
+cắt tiếp thì người dùng nhận một file 0,1 s không ai xem, nếu code bỏ luôn thì
+mất nội dung. `MIN_SEGMENT_SECONDS = 0,2` ghép cả hai trường hợp, và phép thử
+"độ dài" đòi **2** đoạn chứ không 3.
+
+Số đo thật của lần kiểm (tree nguồn, 2026-10-22):
+
+* `--selftest`: 38 dòng, `failed = []`, rc=0. Chi tiết dòng cắt: `3 kieu cat
+  (deu/doi dai/moc) ra 8 doan that, tong span = nguon, ffprobe doc lai duoc` —
+  8 = 2 (`đều`) + 2 (`độ dài`, phần dư đã ghép) + 4 (`mốc`: 8 token nhập vào
+  còn 4 mốc hợp lệ).
+* `scratch/split_plan_counterfactual.py`: `14/14 PHAN BIET`, `ALL PASS`,
+  **rc đọc từ chính probe = 0**, ~2,2 phút (khuôn `--only`: 14 lần chạy 1 dòng
+  ≈ 5,4 s + MỘT lần SPOT đủ 38 dòng để chứng minh red đúng một dòng, rồi
+  `khoi_phuc_xanh`). SPOT: `rc=1 rows=38 failed=['cat file thanh N doan ra
+  dia']`; khôi phục: `rc=0 rows=38 failed=[]`.
+* `scratch/media_split_probe.py`: `ALL PASS (0 fail)`, **167 cửa**, rc=0,
+  **78,6 s** (đọc bằng `subprocess.run`) — gồm các cửa mới
+  `hop thoai moc tu dat khong phai cuon moi thay het chu (got=[0, True])`,
+  `kieu moc: cua PHAI rong ra so voi kieu deu (got=82 want> 40)`,
+  `anh nho fixture ghi THAT (qua redirect, khong phai do rong) (got=2)` và
+  `probe khong de lai file trong cache anh cua nguoi dung (got=1896)`.
+* `scratch/split_gate_counterfactual.py` (thang đo `--split-report`, không đổi
+  trong nhóm này): `ALL PASS 26/26`. `--split-report` trên tree nguồn vẫn rc=1
+  vì đúng một cửa `frozen` — cửa đó chỉ xanh trên bundle.
+* Snapshot dữ liệu người dùng quanh lần chạy cuối: **1926 → 1926 file,
+  `THEM: 0 / MAT: 0 / DOI: 0`**, rc của lệnh diff = 0. Lần chạy ĐẦU tiên (trước
+  khi redirect cache) ra `1925 → 1926, THEM: 1` ở
+  `Roaming\Clinging\cache\image\7c67e845…` — xem bảng "Thất bại đã ghi".
+* Ảnh: `scratch/media_split_evidence.png` (panel G — ba kiểu cắt, mỗi kiểu hàng
+  đoạn + file trên đĩa) và `scratch/media_split_dialog_points.png` (600×602,
+  hộp thoại "Mốc tự đặt" với CẢ BA dòng giải thích, kể dòng
+  `1 mốc bị bỏ vì ngoài khoảng Từ→Đến hoặc vì hai mốc sát nhau dưới 0.20s.`).
+  Đã mở cả hai ảnh ra xem; bản trước của ảnh thứ hai thiếu dòng đó vì nó nằm
+  dưới fold.
+
+Hộp thoại: ba cột `col_count` / `col_length` / `col_points` đổi theo `combo_style`,
+`_plan_args()` trả đúng một từ khoá cho kiểu đang chọn, và `_on_run()` từ chối
+chạy khi kiểu mốc không còn mốc hợp lệ nào (thay vì âm thầm cắt đều). Logic cắt
+giữ nguyên như cam kết "chỉ thay giao diện" — mọi con số mới nằm trong
+`build_boundaries()` và được dòng selftest đo lại trên file.
+
 ## Thất bại đã ghi (để không lặp)
 
 | Hiện tượng | Nguyên nhân thật | Hệ quả thành quy tắc |
@@ -974,6 +1039,10 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
 | Một loạt phản chứng chạy nhanh hơn 6 lần nhưng báo "38 dòng xanh" dù chỉ 1 dòng được gọi | `--only=` cắt bớt bảng, `failed=[]` của lần chạy lọc mang nghĩa KHÁC `failed=[]` của lần chạy đủ | Consumer phải đọc `payload["only"]` (phải là `null`) và `len(checks)` so với `nfull` đo từ baseline; bản thân bộ lọc có gate đỏ riêng khi nó không trạch dòng nào (`selftest_filter_counterfactual.py`), và giữ tính chất "đỏ một mình" bằng một lần SPOT đủ bảng |
 
 | Sau khi chữa chạy trùng probe bằng `git checkout -- core/clip_effects.py`, canary báo `popart_project_counterfactual ... mau tim thay 0 lan` | Repo có `core.autocrlf=true` + `.gitattributes text=auto`, nên checkout ghi lại file bằng CRLF mà `git status` vẫn báo sạch; mọi mẫu nối bằng `L(*lines)` (LF) trên file đó thành 0 lần khớp — bốn file nguồn bị dính (clip_effects, frame_composer, export_dialog, `src/asr/*`) | Khôi phục bằng `data.replace(b"\r\n", b"\n")` rồi đòi `open(f,"rb").read() == git show HEAD:<file>`; mẫu nhiều dòng chỉ an toàn khi file nguồn còn LF, nên canary phải chạy sau MỌI lệnh checkout |
+| Vết phản chứng đầu tiên của kiểu cắt làm ĐỎ HAI dòng selftest, trong đó có `nen toi uu tep video` không liên quan | `if points and len(points) > 1:` đổi thành `if False:  # CU` để lại một `if` rỗng → `IndentationError: expected an indented block after 'if' statement`; module không import được nên MỌI row chạm `media_splitter` cùng chết | Một phép đổi byte phải giữ module còn chạy được (thêm `pass`), và SPOT phải đòi `failed == [ROW]` — đúng MỘT dòng — chứ không phải "có dòng đỏ" |
+| Vết "mốc nhập vào bị chia thành đều" chạy XANH (false negative) | Vết đổi byte đúng là ép `plan_boundaries_points` rơi về chia đều, nhưng `align_boundaries` neo mốc vào keyframe trước nó: 1,5/3,0/4,5 thành 1,2/2,8/4,4, spread 0,4 s — lọt qua ngưỡng tuyệt đối `max-min < 0,2` | Điều kiện "không được ra chia đều" phải đo theo **tỷ lệ thời lượng nguồn** (`0,1 * total`), không phải một số giây cố định; trên nguồn 6 s thì 0,4 s chênh đã là 1/15 nguồn và vẫn là chia đều trong mắt người dùng |
+| `media_split_probe.py` xanh nhưng ảnh "hộp thoại Mốc tự đặt" thiếu dòng duy nhất nói người dùng nhập sai ở đâu | Body cần 492 px trong khi viewport của cửa cao 520 px chỉ 410 px → dòng đó nằm dưới fold, và `widget.grab()` KHÔNG cuộn; đo trên `QT_QPA_PLATFORM=offscreen` còn báo 423 < 480 (an toàn giả) vì offscreen không có font nào, sizeHint thấp hơn thật | Cửa đo chiều cao phải chạy trên platform thật và đòi `verticalScrollBar().maximum() == 0` ở MỌI trạng thái hộp thoại (`_fit_height()` + `eventFilter` trên `QEvent.Resize` của hai nhãn), rồi MỞ ảnh ra xem — log PASS và ảnh thiếu nội dung cùng tồn tại |
+| Diff dữ liệu người dùng quanh lần chạy probe báo `THEM: 1` — `Roaming\Clinging\cache\image\7c67e845…` | Probe mở `MainWindow` và `library_panel.add_resource()` cho fixture, nên ảnh nhỡ đi vào cache THẬT của người dùng; khoá cache gồm mtime+size của fixture nên mỗi lần chạy thêm MỘT mục mới, phình mãi | Probe dựng của sổ thật phải redirect `core.media_cache.cache_root` về gốc tạm (vẫn đi qua đúng đường ghi temp + `os.replace`), và gate phải có cả cửa phản chứng "redirect có file thật" — nếu không, "không thêm file vào tho người dùng" xanh vì không ghi lần nào |
 
 ## Liên quan
 

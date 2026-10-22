@@ -47,9 +47,11 @@ python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
 python main.py --split-report [out.json]        # cua cat file, thang do la diagnostics.split_report_fails
 python scratch/split_gate_counterfactual.py     # phan chung: 21 vet tren 14 dieu kien cua --split-report (~0,5 s)
+python scratch/split_plan_counterfactual.py     # phan chung: 14 vet tren toan cat 3 kieu (deu/doi dai/moc), ~2,2 phut, co 1 lan SPOT tron 38 dong
+python scratch/media_split_probe.py             # 79 s: cat THAT tren dia + anh chung minh 3 kieu (panel G), 167 cua
 python scratch/icon_name_audit.py               # ten glyph + tham so tren toan bo nguon
 python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi dung ly do
-python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 12 probe, probe khong chay duoc = probe im lang
+python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 13 probe, probe khong chay duoc = probe im lang
 python scratch/selftest_filter_counterfactual.py # phan chung: bo loc --only, 10 cua (~3,7 phut)
 python scratch/boot_laziness_counterfactual.py  # phan chung: boot khong duoc keo trang dung phim/psutil/hop thoai nen
 python scratch/save_atomic_counterfactual.py    # phan chung: 4 phep doi byte o duong luu du an
@@ -167,6 +169,25 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   nguồn mà nằm ở chính thang đo ship ra. Từ lần này thang đo đặt tên từng cửa
   (`diagnostics.SPLIT_REPORT_CHECKS`) và so với `VIDEO_CARD_MENU`, phản chứng
   `scratch/split_gate_counterfactual.py` (21 vet / 14 cua, 0,5 s, rc=0).
+- **Hằng số chiều cao trong hộp thoại là một cửa đo, không phải một sở thích.**
+  Them kieu cat "diem cat tu dat" lam than `SplitDialog` can 492 px trong khi
+  `resize(600, 520)` chi cho viewport 410 px: dong "1 moc bi bo..." — dong
+  DUY NHAT noi nguoi dung nhap sai o dau — nam duoc fold, va `grab()` cua probe
+  cung khong nhin thay no nen khong bao gio do. Chua: `SplitDialog._fit_height()`
+  (chi LON LEN theo `body.sizeHint()`, nghe QEvent.Resize cua hai nhan cuoi)
+  + cua do `verticalScrollBar().maximum() == 0` o BON trang thai (deu / doi dai
+  / moc / status ket qua) trong `scratch/media_split_probe.py`. Do cua nay tren
+  `QT_QPA_PLATFORM=offscreen` cho 423 < 480 ("an toan" gia) vi platform do
+  khong co font nao, sizeHint thap hon that: chieu cao phai do platform that.
+- **Probe mo `MainWindow` de lai rac trong tho nguoi dung.**
+  `library_panel.add_resource()` cua `media_split_probe.py` giai anh nho cho
+  fixture va ghi thang vao `%APPDATA%\Clinging\cache\image`; khoa cache gom
+  duong dan + mtime + size nen moi lan chay them MOT muc moi (do 22/10/2026:
+  diff 1925 -> 1926 file, `THEM: 1`). Chua: probe redirect
+  `core.media_cache.cache_root` ve goc tam — van di qua dung duong ghi that
+  (temp + `os.replace` + budget) — kem cua phan chung "anh nho fixture ghi
+  THAT o redirect" de cua "khong them file vao cache nguoi dung" khong xanh vi
+  khong ghi lan nao.
 - **Mọi thẻ pixel đều trả phí round-trip, không chỉ phí bộ lọc.** Chuỗi chung
   `apply_color_effects` (QImage→numpy→proxy 640 px→QImage) tự nó ngốn 65–85
   ms/frame ở 720p/1080p — đo 21/10/2026 qua `FrameComposer`: không thẻ 30 ms,

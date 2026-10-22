@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import bisect
 import json
+import math
 import os
+import re
 import subprocess
 
 from core import external_tools
@@ -156,15 +158,61 @@ def unique_output_dir(file_path: str) -> str:
     return "%s_%d" % (folder, index)
 
 
+TIMECODE_SEPARATOR = re.compile(r"[;,\n\r]+")
+
+
+def parse_timecode(text):
+    """'12.5' / '0:45' / '1:02:03.5' -> giay; None neu khong doc duoc.
+
+    Phut va gio phai la so nguyen: '1,5:30' khong ai nhap the, va neu cho
+    thi no bi doc thanh mot con so khac han y nguoi dung.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    parts = raw.split(":")
+    if len(parts) > 3:
+        return None
+    for lead in parts[:-1]:
+        if not re.fullmatch(r"\d+", lead.strip()):
+            return None
+    try:
+        values = [float(part) for part in parts]
+    except ValueError:
+        return None
+    if any(value < 0 for value in values):
+        return None
+    seconds = 0.0
+    for value in values:
+        seconds = seconds * 60.0 + value
+    return round(seconds, 3)
+
+
+def parse_cut_points(text):
+    """(moc tang dan khong trung, token doc khong ra) tu '0:05, 0:12; 1:00'.
+
+    Tra ve ca danh sach loi de hop thoai in duoc ten tung token — im lang
+    bo qua 'abc' thi nguoi dung tu hien tai sao so doan khong doi.
+    """
+    marks, bad = [], []
+    for token in TIMECODE_SEPARATOR.split(str(text or "")):
+        token = token.strip()
+        if not token:
+            continue
+        seconds = parse_timecode(token)
+        if seconds is None:
+            bad.append(token)
+        else:
+            marks.append(seconds)
+    return sorted(set(marks)), bad
+
+
 def plan_boundaries(total_seconds, count=3, start=0.0, end=None):
     """N+1 bien cat cach deu nhau trong [start, end], tang dan chat che."""
-    total = max(0.0, float(total_seconds or 0.0))
-    if total <= 0:
+    window = _window(total_seconds, start, end)
+    if window is None:
         return []
-    begin = min(max(0.0, float(start)), total)
-    stop = total if end is None else min(max(begin, float(end)), total)
-    if stop - begin <= 0:
-        return []
+    begin, stop = window
     wanted = max(1, min(int(count), MAX_SEGMENTS))
     while wanted > 1 and (stop - begin) / wanted < MIN_SEGMENT_SECONDS:
         wanted -= 1
@@ -174,12 +222,91 @@ def plan_boundaries(total_seconds, count=3, start=0.0, end=None):
     return points
 
 
-def plan_segments(total_seconds, count=3, start=0.0, end=None):
-    """[(bat_dau, do_dai)] theo o deu nhau — phan TOAN hoc thuan cua ke hoach,
-    chua co rang buoc keyframe. `split_media()` moi la noi alignment xay ra."""
-    points = plan_boundaries(total_seconds, count, start, end)
-    return [(points[i], round(points[i + 1] - points[i], 3))
-            for i in range(len(points) - 1)]
+def plan_boundaries_length(total_seconds, length_seconds, start=0.0, end=None):
+    """Bien cat cach nhau dung `length_seconds`, doan cuoi mang phan du.
+
+    Phan du khong bao gio bi vet: no ghep vao doan ke truoc, vi mot doan
+    0,1 s la mot file khong ai xem ma van phai tra thoi gian cat. Khi so doan
+    cham tran `MAX_SEGMENTS` thi buoc nhay bi keo dai ra, that bai theo huong
+    doan dai hon yeu cau con hon la mat noi dung.
+    """
+    window = _window(total_seconds, start, end)
+    if window is None:
+        return []
+    begin, stop = window
+    span = stop - begin
+    step = float(length_seconds or 0.0)
+    if step < MIN_SEGMENT_SECONDS:
+        return []
+    step = max(step, span / MAX_SEGMENTS)
+    wanted = int(math.ceil(span / step - 1e-6))
+    if wanted < 1:
+        return []
+    points = [round(begin + i * step, 3) for i in range(wanted)]
+    points.append(round(stop, 3))
+    if len(points) > 2 and stop - points[-2] < MIN_SEGMENT_SECONDS:
+        points.pop(-2)
+    return points
+
+
+def plan_boundaries_points(total_seconds, points, start=0.0, end=None):
+    """Bien cat theo moc nguoi dung dat: [begin] + moc giu + [stop].
+
+    Moc ngoai khoang, moc trung nhau hoac moc tao ra doan ngan hon
+    `MIN_SEGMENT_SECONDS` bi loai im lang — ke hoach tra ve luon bat dau o
+    `start` va ket thuc o `end`, nen mot con so nhap sai khong an hay doi
+    duoc noi dung.
+    """
+    window = _window(total_seconds, start, end)
+    if window is None:
+        return []
+    begin, stop = window
+    kept = [round(begin, 3)]
+    for value in sorted(float(point) for point in (points or [])):
+        if value <= begin or value >= stop:
+            continue
+        if value - kept[-1] < MIN_SEGMENT_SECONDS:
+            continue
+        kept.append(round(value, 3))
+    if len(kept) > 1 and stop - kept[-1] < MIN_SEGMENT_SECONDS:
+        kept.pop()
+    kept.append(round(stop, 3))
+    return kept
+
+
+def build_boundaries(total_seconds, count=3, length=None, points=None,
+                     start=0.0, end=None):
+    """Ba kieu cat quy ve MOT danh sach bien: deu nhau / doi dai co dinh / moc tu dat.
+
+    `points` thang la kieu manh nhat (no dinh so doan), den `length`, cuoi
+    cung moi den `count` — moi lan goi chi nen dung mot trong ba.
+    """
+    if points is not None:
+        return plan_boundaries_points(total_seconds, points, start, end)
+    if length:
+        return plan_boundaries_length(total_seconds, length, start, end)
+    return plan_boundaries(total_seconds, count, start, end)
+
+
+def _window(total_seconds, start, end):
+    """(begin, stop) da guoc ve [0, total] va con rong; None neu khong cat duoc."""
+    total = max(0.0, float(total_seconds or 0.0))
+    if total <= 0:
+        return None
+    begin = min(max(0.0, float(start)), total)
+    stop = total if end is None else min(max(begin, float(end)), total)
+    if stop - begin <= 0:
+        return None
+    return begin, stop
+
+
+def plan_segments(total_seconds, count=3, start=0.0, end=None, length=None,
+                  points=None):
+    """[(bat_dau, do_dai)] — phan TOAN hoc thuan cua ke hoach, chua co rang
+    buoc keyframe. `split_media()` moi la noi alignment xay ra."""
+    marks = build_boundaries(total_seconds, count, length, points, start, end)
+    return [(marks[i], round(marks[i + 1] - marks[i], 3))
+            for i in range(len(marks) - 1)]
 
 
 def align_boundaries(points, keyframes, tolerance=COPY_DRIFT_TOLERANCE):
@@ -297,8 +424,13 @@ def cut_segment(source_path, output_path, start, span, info, encode=False):
 
 
 def split_media(file_path, output_dir, count=3, start=0.0, end=None,
-                mode=MODE_AUTO, progress=None, should_cancel=None):
+                mode=MODE_AUTO, progress=None, should_cancel=None,
+                length=None, points=None):
     """Cat toan bo (hoac mot khoang) file ra N doan.
+
+    `count`, `length`, `points` la ba cach NOI CUNG MOT DIEU — bien cat deu
+    nhau, doan dai co dinh, moc tu dat (xem `build_boundaries`); `points` thang
+    quyet khi duoc dua vao.
 
     Tra ve {"segments", "failed", "cancelled", "planned", "duration", "mode"}:
     `segments` chi chua file THAT su ton tai tren dia va ffprobe doc duoc, moi
@@ -315,15 +447,16 @@ def split_media(file_path, output_dir, count=3, start=0.0, end=None,
               "mode": mode}
     if total <= 0 or not (info.get("has_video") or info.get("has_audio")):
         return result
-    points = plan_boundaries(total, count, start, end)
+    plan_points = build_boundaries(total, count, length, points, start, end)
     frames = keyframe_times(file_path) if info.get("has_video") else []
     if mode == MODE_ENCODE:
         plan = [{"start": round(point, 3),
-                 "span": round(points[index + 1] - point, 3), "encode": True}
-                for index, point in enumerate(points[:-1])
-                if points[index + 1] - point > 0]
+                 "span": round(plan_points[index + 1] - point, 3),
+                 "encode": True}
+                for index, point in enumerate(plan_points[:-1])
+                if plan_points[index + 1] - point > 0]
     else:
-        plan = align_boundaries(points, frames)
+        plan = align_boundaries(plan_points, frames)
     result["planned"] = plan
     if not plan:
         return result
