@@ -1083,7 +1083,10 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-22):
 * `scratch/needle_canary.py`: `export_range_counterfactual 18 vet OK`,
   `ALL CLEAN: 12/14`.
 * Snapshot dữ liệu người dùng quanh lần chạy: **1926 → 1926 file,
-  `THEM: 7 / MAT: 7 / DOI: 0`**, rc lệnh diff = 0. Cả 14 đường đều nằm trong
+  `THEM: 7 / MAT: 7 / DOI: 0`**, rc lệnh diff = **1** — `user_data_snapshot.py`
+  trả 1 khi có thêm/mất (`scratch/user_data_snapshot.py:98`), nên "rc=0" ở đây
+  chưa bao giờ là đích; con số phải đọc là `DOI` và danh sách đường dẫn. Cả 14
+  đường đều nằm trong
   `.clinqing\recovery` và đúng hai stem fixture của `--selftest`
   (`Kiem karaoke` 5, `Kiem recap` 2) — vòng quay keep-5, không phải dữ liệu
   người dùng.
@@ -1147,17 +1150,23 @@ mọi con số dưới đây là số của **exe đóng gói**, không phải t
 | Canary mẫu byte | `python scratch/needle_canary.py` | `ALL CLEAN: 12/14` — 12 probe còn nguyên mẫu (`export_range_counterfactual 18 vet OK`, `split_plan 14`, `compress 17`, `chroma 20`, `color_grading 13`, `trim 12`, `detach 10`, `text_styling 7`, `media_locator 6`, `save_atomic 4`, `clipboard 4`, `popart 6`); hai probe KHÔNG có bảng vết nên canary không nói được gì: `undo_text_transform_counterfactual`, `boot_laziness_counterfactual` (vết inline) |
 | Metadata ba nguồn + hai file cài | `python scratch/release_meta.py build/installer/ClingingSetup-1.0.5.msi build/installer/ClingingSetup-1.0.5.exe` | rc=0; sáu readings `1.0.5` KHOP; MSI `ProductVersion 1.0.5`, `ProductCode {83F5569F-5490-427E-9E6A-B28CE97BFF99}` (mới), `UpgradeCode {322A4294-…}` giữ nguyên; setup.exe `FixedFileInfo 1.0.5.0` |
 | Payload MSI == bundle | `python scratch/msi_payload_check.py` | **ALL PASS (0 fail)**, rc=0 — 363 file / 514.159.312 B, có `Clinging.exe` + `ffmpeg.exe` + `ffprobe.exe` + bộ glyph, không còn qtawesome |
+| Bản cài thật (Inno) | `python scratch/installed_app_probe.py` | **ALL PASS (0 fail)**, `TRUE_RC=0`, 22/10/2026. Installer rc=0; `Clinging.exe` đã cài **6.997.295 B** sha256[:16] `33cbadb850d55464` **trùng byte** với `dist`; `--selftest` từ thư mục cài rc=0 `failed=[]`; `--split-report` **rc=0** + card video ba hành động + 3 đoạn `mei [0.0, 0.0]`; `_internal` 495,5 MB, sweep **75 module nap / 0 loi**; boot **0,642 s**, **68.880 KiB** lúc cửa sổ, **82.524 KiB** lúc nghỉ, **chín cửa `True`**; style/layout/alignment/audio/chrome/thumbnail/graph/project report rc=0; shortcut Desktop + Start Menu + ARP trỏ đúng cây Inno; ảnh `scratch/installed_app_window.png` |
+| Cây cài == bundle (set-diff) | so đường dẫn tương đối `%LOCALAPPDATA%\Programs\Clinging` vs `dist\Clinging` | **363 lá (dist) vs 365 (bản cài): 0 thiếu**, hai phần thừa đúng là `unins000.exe` + `unins000.dat` — không phán bằng size/mtime |
+| Data người dùng quanh lần cài | `user_data_snapshot.py capture/diff` | 1.927 → 1.968 mục, **`THEM: 47 / MAT: 6 / DOI: 0`**, rc diff = 1 (script trả 1 khi có thêm/mất — đọc `DOI`, không đọc rc). Toàn bộ nằm trong `~/.clinqing/recovery` của fixture selftest (`Kiem karaoke` 5 thêm + 5 mất, `Kiem recap` 1 thêm + 1 mất — vòng quay keep-5) và `Roaming\Clinging\cache\image` (41 mục dựng lại được); **không đường nào** thuộc `Clinging_Projects\`, và dự án THẬT `Dự án 2.clinq` vẫn **nguyên byte** sau cả lượt đo |
 
 Artifact: `ClingingSetup-1.0.5.exe` 141.574.633 B (Inno, compile 331,4 s),
 `ClingingSetup-1.0.5.msi` 161.113.765 B (WiX 3.11). Bundle
 `dist\Clinging\Clinging.exe` 6.997.295 B, PE `1.0.5.0`, dựng với `--clean`
 22/10/2026 14:13.
 
-**Chưa cài lên máy phát triển**: `msiserver` còn kẹt từ 22/10 (bốn lệnh `msiexec`
-bị `timeout` cắt giữa giao dịch — xem dòng "Người dung yeu cau dong goi 1.0.4.1"
-ở bảng Thất bại), và cài đè là thao tác shared-state. Vì vậy cổng
-`scratch/installed_app_probe.py` **chưa** có số cho 1.0.5; các bản trước ghi số đo
-trong `docs/release-1.0.4.md`.
+**Trạng thái máy sau lần dựng 1.0.5 (22/10/2026)**: cây Inno
+`%LOCALAPPDATA%\Programs\Clinging` **đã là 1.0.5** và `installed_app_probe.py`
+ALL PASS (0 fail) — số đo ở bốn dòng cuối bảng trên. Cây MSI
+`%LOCALAPPDATA%\Programs\ClingingMSI` **vẫn là 1.0.4**: `msiserver` còn kẹt từ
+22/10 (bốn lệnh `msiexec` bị `timeout`
+cắt giữa giao dịch — xem dòng "Người dung yeu cau dong goi 1.0.4.1" ở bảng Thất
+bại), nên mọi `/i` `/x` đều treo cho tới khi reboot; hai product probe
+`{B3C15772-…}` / `{706DC2C6-…}` vẫn còn trong database Windows Installer.
 
 
 

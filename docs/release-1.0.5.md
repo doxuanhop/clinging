@@ -112,10 +112,11 @@ file nguồn thật (`core/export_range.py`, `ui/export_dialog.py`, `diagnostics
   ra khỏi lệnh.
 - **`--split-report` của bản đóng gói tự trả 0.** Bản 1.0.4 dựng từ cùng tree
   nguồn vẫn giữ hằng số cũ `len(menu_actions) == 2` trong bundle — thang đo bị
-  đóng gói cùng sản phẩm — nên exe đã cài đỏ rc=1 trên một app cắt **đúng** (3
-  đoạn, mối nối 0,0, lệch màu 0,0). Lần dựng này đưa thang đo mới vào payload:
-  `dist\Clinging\Clinging.exe --split-report` → **rc=0**, `failed=[]`,
-  `menu_actions` ba hành động theo đúng thứ tự.
+  đóng gói cùng sản phẩm — nên exe 1.0.4 đã cài khi đó đỏ rc=1 trên một app cắt
+  **đúng** (3 đoạn, mối nối 0,0, lệch màu 0,0). Lần dựng này đưa thang đo mới vào
+  payload: `dist\Clinging\Clinging.exe --split-report` → **rc=0**, `failed=[]`,
+  `menu_actions` ba hành động theo đúng thứ tự — và bản 1.0.5 đang cài trên máy
+  phát triển cũng trả **rc=0** (xem mục Lưu ý).
 - **Số phát hành bốn thành phần bị chặn ngay từ nguồn.** `1.0.4.1` nghe như một
   bản vá hợp lệ, nhưng `ProductVersion` của Windows Installer chỉ định nghĩa
   `a.b.c`: đo 22/10/2026, hai package probe cùng UpgradeCode (1.0.4 rồi 1.0.4.1)
@@ -151,13 +152,35 @@ file nguồn thật (`core/export_range.py`, `ui/export_dialog.py`, `diagnostics
   `scratch/msi_payload_check.py`: **ALL PASS, 0 fail, rc=0** — bảng `File` của MSI
   đúng bằng **363 file / 514.159.312 B** của `dist\Clinging`, có `Clinging.exe`,
   `ffmpeg.exe`, `ffprobe.exe`, bộ glyph fontawesome6 và **không còn** qtawesome.
-- **Bản này chưa cài lên máy phát triển.** Dịch vụ Windows Installer trên máy này
-  đang kẹt từ 22/10/2026 (bốn lệnh `msiexec` bị `timeout` cắt giữa giao dịch →
-  `msiserver` deadlock; `sc stop` báo Access denied vì cần Admin; chỉ reboot mới
-  sạch), nên mọi `/i` `/x` đều treo. Bản Inno thì cài được — nhưng cài đè là thao
-  tác shared-state, nên dừng lại ở hai file đã verify. Muốn cài: reboot, gỡ hai
-  product probe `{B3C15772-…}` / `{706DC2C6-…}`, rồi chạy
-  `scratch/installed_app_probe.py` như các bản trước.
+- **Đã cài lên máy phát triển theo đường Inno, 22/10/2026.**
+  `python scratch/installed_app_probe.py`: **ALL PASS, 0 fail**, `TRUE_RC=0`
+  (14 tầng bằng chứng). Số đo lại được từ chính bản cài:
+  `Clinging.exe` **6.997.295 B**, sha256[:16] `33cbadb850d55464` — **trùng từng
+  byte** với `dist\Clinging\Clinging.exe`; `--selftest` từ thư mục cài **rc=0,
+  `failed=[]`**; `--split-report` **rc=0** với thẻ video ba hành động
+  (Trích xuất ảnh thu nhỏ / Cắt thành nhiều đoạn / Nén tối ưu tệp) và cắt thật
+  3 đoạn `mei [0.0, 0.0]`; `_internal` **495,5 MB**, sweep **75 module nạp, 0 lỗi**;
+  boot **0,642 s** tới cửa sổ, **68.880 KiB** lúc cửa sổ hiện, **82.524 KiB** lúc
+  nghỉ, **cả chín cửa khởi động `True`**; style/layout/alignment/audio/chrome/
+  thumbnail/graph/project report đều rc=0.
+- **Thư mục cài không thiếu file nào.** Set-diff đường dẫn tương đối giữa
+  `%LOCALAPPDATA%\Programs\Clinging` và `dist\Clinging`: **363 lá (dist) so với
+  365 (bản cài)** — `0 thiếu`, hai phần thừa đúng là `unins000.exe` +
+  `unins000.dat` của Inno.
+- **Dữ liệu người dùng còn nguyên.** `user_data_snapshot` 1.927 → 1.968 mục,
+  **`THEM: 47 / MAT: 6 / DOI: 0`** (mã thoát của lệnh diff là 1 vì có thêm/mất —
+  con số phải đọc là `DOI`). Toàn bộ mục thay đổi nằm trong `~/.clinqing/recovery`
+  của fixture selftest (thêm 6, mất 6 do vòng quay keep-5) và `cache\image` của
+  ứng dụng (41 mục dựng lại được); **không** đường nào thuộc `Clinging_Projects\`.
+  Dự án THẬT của người dùng
+  (`Clinging_Projects\Dự án 2\Dự án 2.clinq`) mở qua bản cài và **vẫn nguyên byte**
+  so với lúc trước khi probe chạy.
+- **Cây MSI vẫn là 1.0.4.** Dịch vụ Windows Installer trên máy này còn kẹt từ
+  22/10 (bốn lệnh `msiexec` bị `timeout` cắt giữa giao dịch → `msiserver`
+  deadlock; `sc stop` báo Access denied vì cần Admin; chỉ reboot mới sạch), nên
+  mọi `/i` `/x` đều treo. Muốn cài `ClingingSetup-1.0.5.msi` vào
+  `%LOCALAPPDATA%\Programs\ClingingMSI`: reboot, gỡ hai product probe
+  `{B3C15772-…}` / `{706DC2C6-…}`, rồi cài có `INSTALLFOLDER=` rõ ràng như mọi lần.
 - Nâng cấp từ 1.0.4: cài đè trực tiếp được. Inno xoá `_internal` cũ trước khi giải
   nén; MSI dùng cùng `UpgradeCode` nên lần cài mới gỡ bản cũ trước khi ghi.
 - Dự án `.clinq` mở được hai chiều giữa 1.0.4 và 1.0.5 vì mọi khoá mới đều có giá

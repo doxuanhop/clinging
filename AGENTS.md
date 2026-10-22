@@ -23,8 +23,10 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   `MSYS_NO_PATHCONV=1 msiexec /i <msi> INSTALLFOLDER="%LOCALAPPDATA%\Programs\ClingingMSI" /qn`
   rồi đọc lại cả hai cây + khóa HKCU Uninstall, đừng tin mỗi mã thoát (trả giá
   21/10/2026 khi ship 1.0.3).
-- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.4` (hai asset
-  `.exe` + `.msi`, tag gắn trên `155cef5`; `msi_payload_check.py` đọc bảng File của
+- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.5` (hai asset
+  `.exe` + `.msi`, tag gắn trên commit tài liệu cuối), notes `docs/release-1.0.5.md`.
+  `v1.0.4` là cặp liền trước
+  (tag gắn trên `155cef5`; `msi_payload_check.py` đọc bảng File của
   MSI và so từng tên với `dist\Clinging` — 363 file, 514.130.264 B). `v1.0.3` là
   bundle liền trước (đã có chroma key + chỉnh màu nhưng CHƯA có tách tiếng, thẻ
   Cắt, nén tệp), `v1.0.1` vẫn tồn tại nhưng là bundle còn qtawesome.
@@ -32,13 +34,18 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   6.967.178 B, sha256[:16] `6785b32b92e8d0b3` giống hệt `dist\Clinging`,
   `installed_app_probe.py` ALL PASS rc=0 — nhưng bundle vẫn mang
   `--split-report` với hằng số menu cũ (xem bẫy "cổng đóng gói trong bundle").
-  **1.0.5 đã dựng + verify cùng ngày nhưng CHƯA cài và CHƯA public**:
+  **1.0.5 là bản hiện hành — đã dựng, đã verify, đã cài cây Inno, đã public**:
   `dist\Clinging\Clinging.exe` 6.997.295 B (PE `1.0.5.0`), selftest bundle
   **39 dòng `failed=[]` rc=0**, `--split-report` **rc=0** (thang đo mới đã nằm
   trong payload), `frozen_bundle_probe.py` ALL PASS, hai file cài
   `ClingingSetup-1.0.5.exe` 141.574.633 B / `.msi` 161.113.765 B, payload MSI
-  363 file / 514.159.312 B. Lý do chưa cài: `msiserver` kẹt từ 22/10 (mục
-  "Đừng cắt `msiexec` bằng `timeout`") và cài đè là thao tác shared-state.
+  363 file / 514.159.312 B. Bản cài Inno
+  (`%LOCALAPPDATA%\Programs\Clinging`) là 1.0.5: exe sha256[:16] `33cbadb850d55464`
+  trùng từng byte với `dist`, `installed_app_probe.py` **ALL PASS 0 fail**,
+  `--split-report` của exe đã cài **rc=0**, boot 0,642 s / 68.880 KiB, cây cài
+  365 lá = 363 payload + `unins000.*` (0 thiếu). **Cây MSI vẫn 1.0.4**:
+  `msiserver` kẹt từ 22/10 (mục "Đừng cắt `msiexec` bằng `timeout`") nên chưa
+  `/i` được — phải reboot rồi gỡ hai product probe.
   Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
@@ -185,6 +192,9 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   1.0.5 (22/10) đã đưa thang đo mới vào payload: `dist\Clinging\Clinging.exe
   --split-report` giờ **rc=0**, `menu_actions` ba chuỗi — tức lời "chỉ một lần
   dựng lại bundle mới làm exe tự trả 0" giờ là sự thật đã đo, không còn là hứa.
+  Vòng khép lại ở bước cuối: **exe đã cài** (cây Inno 1.0.5) cũng trả **rc=0**
+  trong `installed_app_probe.py`, nên không còn surface nào của máy này đỏ vì
+  hằng số cũ — trừ cây MSI, vẫn đang 1.0.4.
 - **Hằng số chiều cao trong hộp thoại là một cửa đo, không phải một sở thích.**
   Them kieu cat "diem cat tu dat" lam than `SplitDialog` can 492 px trong khi
   `resize(600, 520)` chi cho viewport 410 px: dong "1 moc bi bo..." — dong
@@ -232,8 +242,9 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   treo chờ người dùng; `timeout` giết nó giữa giao dịch làm `msiserver`
   deadlock: `sc start` vẫn chạy, `sc stop` báo Access denied (cần admin), và
   MỌI lệnh `/i` `/x` sau đó treo tới hết timeout — chỉ reboot mới sạch. Trạng
-  thái này còn trên máy từ 22/10/2026, nên bản 1.0.5 dựng và verify metadata
-  được nhưng CHƯA cài được; hai product probe (`{B3C15772-…}`,
+  thái này còn trên máy từ 22/10/2026, nên bản 1.0.5 **cài được bằng Inno**
+  (`installed_app_probe.py` ALL PASS 0 fail) mà **không cài được bằng MSI**: cây
+  `ClingingMSI` vẫn 1.0.4 cho tới khi reboot; hai product probe (`{B3C15772-…}`,
   `{706DC2C6-…}`) vẫn còn trong database Windows Installer, gỡ sau khi reboot.
 - **Inno chỉ ghi đè file nó biết**, nên bản nâng cấp giữ file lạ trong `_internal`;
   chứng minh cây bằng set-diff đường dẫn tương đối so với `dist` (chấp nhận lệch
