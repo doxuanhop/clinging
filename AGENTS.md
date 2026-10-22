@@ -23,9 +23,13 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   `MSYS_NO_PATHCONV=1 msiexec /i <msi> INSTALLFOLDER="%LOCALAPPDATA%\Programs\ClingingMSI" /qn`
   rồi đọc lại cả hai cây + khóa HKCU Uninstall, đừng tin mỗi mã thoát (trả giá
   21/10/2026 khi ship 1.0.3).
-- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.3` (hai asset
-  `.exe` + `.msi`, tag gắn trên `7ee04b6`). Release `v1.0.2` là bundle liền trước,
-  `v1.0.1` vẫn tồn tại nhưng là bundle còn qtawesome.
+- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.4` (hai asset
+  `.exe` + `.msi`, tag gắn trên `155cef5`; `msi_payload_check.py` đọc bảng File của
+  MSI và so từng tên với `dist\Clinging` — 363 file, 514.130.264 B). `v1.0.3` là
+  bundle liền trước (đã có chroma key + chỉnh màu nhưng CHƯA có tách tiếng, thẻ
+  Cắt, nén tệp), `v1.0.1` vẫn tồn tại nhưng là bundle còn qtawesome.
+  **Bản 1.0.4 chưa cài lên máy này** — không ai yêu cầu cài đè, nên app đang chạy
+  và mọi số đo `installed_app_probe.py` gần nhất vẫn là của 1.0.3.
   Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
