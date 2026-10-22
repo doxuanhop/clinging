@@ -28,8 +28,10 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   MSI và so từng tên với `dist\Clinging` — 363 file, 514.130.264 B). `v1.0.3` là
   bundle liền trước (đã có chroma key + chỉnh màu nhưng CHƯA có tách tiếng, thẻ
   Cắt, nén tệp), `v1.0.1` vẫn tồn tại nhưng là bundle còn qtawesome.
-  **Bản 1.0.4 chưa cài lên máy này** — không ai yêu cầu cài đè, nên app đang chạy
-  và mọi số đo `installed_app_probe.py` gần nhất vẫn là của 1.0.3.
+  **1.0.4 đã cài lên máy này cả hai cây (22/10/2026)**: `Clinging.exe`
+  6.967.178 B, sha256[:16] `6785b32b92e8d0b3` giống hệt `dist\Clinging`,
+  `installed_app_probe.py` ALL PASS rc=0 — nhưng bundle vẫn mang
+  `--split-report` với hằng số menu cũ (xem bẫy "cổng đóng gói trong bundle").
   Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
@@ -43,6 +45,8 @@ python main.py --selftest out.json --only="chinh mau"   # mot dong thoi (~5 s vs
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
+python main.py --split-report [out.json]        # cua cat file, thang do la diagnostics.split_report_fails
+python scratch/split_gate_counterfactual.py     # phan chung: 21 vet tren 14 dieu kien cua --split-report (~0,5 s)
 python scratch/icon_name_audit.py               # ten glyph + tham so tren toan bo nguon
 python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi dung ly do
 python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 12 probe, probe khong chay duoc = probe im lang
@@ -154,6 +158,15 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   (đúng kiểu `ui.split_dialog`); phản chứng bằng cách **đổi tên vật lý**
   `ui/compress_dialog.py` (đỏ đúng một dòng, `ModuleNotFoundError`) và bằng cửa
   "an `ui/` cua tree nguon" trong `frozen_bundle_probe.py`.
+- **Cổng tự chấm cũng bị đóng gói.** `run_split_report` kết luận bằng
+  `len(menu_actions) == 2`, và `b88f59f` thêm hành động "Nen / toi uu tep…" vào
+  card video mà không chạy lại `--split-report` — nên hằng số cũ vào luôn bundle,
+  và bản 1.0.4 đã cài trả rc=1 trên một app cắt đúng (3 đoạn, mei 0,0, lech mau
+  0,0 — đo 22/10/2026). Hệ quả quy trình: đổi một **bề mặt sản phẩm** (menu, nút,
+  thẻ) thì phải chạy lại mọi `--*-report` có chạm bề mặt đó, vì lỗi không nằm ở
+  nguồn mà nằm ở chính thang đo ship ra. Từ lần này thang đo đặt tên từng cửa
+  (`diagnostics.SPLIT_REPORT_CHECKS`) và so với `VIDEO_CARD_MENU`, phản chứng
+  `scratch/split_gate_counterfactual.py` (21 vet / 14 cua, 0,5 s, rc=0).
 - **Mọi thẻ pixel đều trả phí round-trip, không chỉ phí bộ lọc.** Chuỗi chung
   `apply_color_effects` (QImage→numpy→proxy 640 px→QImage) tự nó ngốn 65–85
   ms/frame ở 720p/1080p — đo 21/10/2026 qua `FrameComposer`: không thẻ 30 ms,

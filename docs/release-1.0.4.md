@@ -131,11 +131,27 @@ Số đo trên máy phát triển (fixture 6 s 1280×720, 1.951.137 B, 8 CPU log
 - `scratch/release_meta.py` đọc metadata từ chính hai file: `ProductVersion` 1.0.4,
   `FixedFileInfo 1.0.4.0`, `ProductCode {510B10E9-AE65-4B47-A3AC-4FB608873CA2}` mới,
   `UpgradeCode {322A4294-D740-42B3-9414-555BA07FDB88}` giữ nguyên như mọi bản trước.
-- **Bản 1.0.4 này chưa được cài lên máy phát triển** — không ai yêu cầu cài đè, và
-  `INSTALLFOLDER` mặc định của MSI trùng cây Inno nên cài sai tham số là mất bản
-  đang dùng. Vì vậy các số khởi động ở trên là của bundle `dist\Clinging` (đúng
-  payload mà hai file cài đóng gói), chưa phải số đo từ cây đã cài như mục
-  "installed_app_probe" của bản 1.0.3.
+- **Đã cài lên máy phát triển (22/10/2026), cả hai cây.** MSI bằng
+  `msiexec /i ClingingSetup-1.0.4.msi INSTALLFOLDER="%LOCALAPPDATA%\Programs\ClingingMSI" /qn`
+  (rc=0, 39,7 s); Inno bằng `ClingingSetup-1.0.4.exe /VERYSILENT` chạy trong
+  `scratch/installed_app_probe.py`. Hai cây đọc lại bằng nội dung, không bằng rc:
+  `Clinging.exe` **6.967.178 B, sha256[:16] `6785b32b92e8d0b3`** — khớp `dist\Clinging`
+  từng byte; cây Inno 365 leaf = 363 payload + `unins000.*`, set-diff đường dẫn
+  tương đối với `dist` ra **0 thiếu / 0 thừa** ngoài cặp unins. Bản Inno cài sau nên
+  giữ `.clinq` + shortcut Desktop (`Clinging.Project` → `...\Programs\Clinging\Clinging.exe "%1"`).
+  `scratch/installed_app_probe.py`: **ALL PASS, 0 fail, rc=0**, 284,6 s, 221 dòng —
+  gồm selftest của exe đã cài khớp bundle (38 dòng), cửa sổ thật capture,
+  `.clinq` double-click, dự án THẬT của người dùng (`Dự án 2`) mở đúng thang cua
+  dung phim và **còn nguyên byte** sau cả lần đo.
+- **Một cổng trong bundle 1.0.4 báo đỏ trên một app lành**: `--split-report` của
+  chính exe đã cài vẫn giữ `len(menu_actions) == 2`, mà menu card video từ bản này
+  có ba hành động (thêm "Nén / tối ưu tệp…"). Số đo thật trong payload của nó đều
+  đạt: 3 đoạn trên đĩa, mei cat `[0.0, 0.0]`, lệch màu `[0.0, 0.0, 0.0]`, thanh tiến
+  trình 10 px @ DPR 1,25, 383 màu trong ảnh. Sửa nằm ở nguồn
+  (`diagnostics.VIDEO_CARD_MENU` + `split_report_fails`, phản chứng
+  `scratch/split_gate_counterfactual.py` **26/26, rc=0**), nên `installed_app_probe`
+  chấm payload do exe đã cài bằng thang nguồn và ghi rc của exe thành một dòng
+  chú. **Chỉ một lần dựng lại bundle mới làm exe tự trả 0.**
 - Nâng cấp từ 1.0.3: cài đè trực tiếp được. Inno xoá `_internal` cũ trước khi giải
   nén; MSI dùng cùng `UpgradeCode` nên lần cài mới gỡ bản cũ trước khi ghi.
 - Dự án `.clinq` hai chiều: 1.0.3 mở được file của 1.0.4 vì mọi khoá mới

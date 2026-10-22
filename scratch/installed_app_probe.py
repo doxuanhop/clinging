@@ -71,6 +71,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
 def _app_version():
     """MyAppVersion trong clinging.iss la nguon duy nhat, dung nhu make_msi.py.
 
@@ -949,9 +951,17 @@ def main():
     shutil.rmtree(split_out, ignore_errors=True)
     split_run = subprocess.run([DEST_EXE, "--split-report", split_path],
                                timeout=900)
-    check("split report exit 0", split_run.returncode, 0)
     with open(split_path, encoding="utf-8") as handle:
         split = json.load(handle)
+    # Bundle 1.0.4 chua `len(menu_actions) == 2` trong diagnostics cua chinh no,
+    # nen rc cua exe do RED tren mot app cat dung — xem
+    # scratch/split_gate_counterfactual.py. Pham chat lay tu exe da cai, thang
+    # cham la nguon da sua: do la duong production ma khong can dung lai bundle.
+    from diagnostics import split_report_fails, VIDEO_CARD_MENU
+    check("exe da cai: split report qua het dieu kien cua nguon",
+          split_report_fails(split), [])
+    note("rc cua exe khi tu cham (bundle chua gate da sua)",
+         split_run.returncode)
     note("cat file cua ban da cai",
          {"menu": split["menu_actions"], "tieu de": split["dialog_title"],
           "doan tren dia": split["on_disk"], "mei cat": split["joints"],
@@ -959,9 +969,10 @@ def main():
           "mau trong anh": split["distinct_colors"]})
     check("exe da cai: bundle doc duoc module cat file (frozen)",
           split["frozen"], True)
-    check("exe da cai: card video co 2 hanh dong, hanh dong 2 la cat file",
-          [len(split["menu_actions"]), "Cắt" in split["menu_actions"][-1]],
-          [2, True])
+    check("exe da cai: card video co dung 3 hanh dong ban, thu 2 la cat file",
+          [split["menu_actions"], "Cắt" in split["menu_actions"][1]],
+          [["Trích xuất ảnh thu nhỏ…", "Cắt thành nhiều đoạn…",
+            "Nén / tối ưu tệp…"], True])
     check("exe da cai: chuot phai mo hop thoai dung nguon vua bam",
           split["selected_source"], os.path.abspath(split["source"]))
     check("exe da cai: 3 file nam tren dia, khong doan nao that bai",

@@ -2544,6 +2544,53 @@ def _mean_hue(path, seconds):
                                    float(np.cos(angle).mean()))) % 360.0
 
 
+# Menu cua card video LA BANG CHUNG SAN PHAM, khong phai chi mot con so.
+# `--split-report` tung gate `len(menu_actions) == 2`, nen khi "Nen / toi uu
+# tep" ra doi (commit b88f59f, dong 38 cua selftest) chinh report do do RED
+# o may hom sau, tren may da cai, chu khong luc viet tinh nang. Danh dau du
+# toan bo thu tu: them hay xoa mot hanh dong deu phai ngang qua day.
+VIDEO_CARD_MENU = ["Trích xuất ảnh thu nhỏ…", "Cắt thành nhiều đoạn…",
+                   "Nén / tối ưu tệp…"]
+
+# Tung dieu kien mot ten, de phan chung (scratch/split_gate_counterfactual.py)
+# do duoc vet cua RIENG no va bao khong term nao lang cung.
+SPLIT_REPORT_CHECKS = (
+    ("frozen", lambda p: p["frozen"]),
+    ("dung nguon vua bam",
+     lambda p: p["selected_source"] == os.path.abspath(p["source"])),
+    ("menu card video", lambda p: p["menu_actions"] == VIDEO_CARD_MENU),
+    ("3 doan nam tren dia", lambda p: len(p["on_disk"]) == 3),
+    ("danh sach ham = danh sach dia",
+     lambda p: p["on_disk"] == sorted(r["name"] for r in p["segments"])),
+    ("khong doan nao that bai",
+     lambda p: not p["failed"] and not p["cancelled"]),
+    ("ffprobe doc lai tung doan",
+     lambda p: all(r["probe"] > 0.5 for r in p["segments"])),
+    ("mei cat khong ho khong choong",
+     lambda p: all(abs(j) <= 1e-3 for j in p["joints"])),
+    ("mau tung doan la mau trong nguon",
+     lambda p: len(p["hue_gaps"]) == 3 and all(
+         g is not None and g < 22.0 for g in p["hue_gaps"])),
+    ("status ke so doan", lambda p: "3 đoạn" in p["status"]),
+    # grab() cua widget an van ve duoc, nen con so do day phai di kem
+    # "no dang hien tren man" — neu khong thi no chi la mot hinh chu nhat.
+    ("thang tien do dang hien", lambda p: p["progress_visible_after"] is True),
+    ("do day thang tien do hop ly",
+     lambda p: 3 < p["progress_band_px"] <= p["progress_dpr"] * 8 + 3),
+    ("cua so ve co that", lambda p: p["distinct_colors"] > 40),
+    ("anh bang chung nam tren dia", lambda p: os.path.isfile(p["screenshot"])),
+)
+
+
+def split_report_fails(payload):
+    """Ten cua tung dieu kien ma `--split-report` do khong dat (rong = dat het).
+
+    Tach khoi run_split_report de phan chung chay duoc tren chinh payload do
+    exe da cai ghi ra, khong phai mo lai hop thoai cat.
+    """
+    return [name for name, ok in SPLIT_REPORT_CHECKS if not ok(payload)]
+
+
 def run_split_report(argv=None):
     """Cắt file thành N đoạn — mở bằng CHUỘT PHẢI thật, cắt thật, do từ bản exe
     đã cài.
@@ -2706,25 +2753,10 @@ def run_split_report(argv=None):
     with open(out, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
 
-    gaps = payload["hue_gaps"]
-    ok = (payload["frozen"]
-          and payload["selected_source"] == os.path.abspath(src)
-          and len(payload["menu_actions"]) == 2
-          and len(payload["on_disk"]) == 3
-          and payload["on_disk"] == sorted(r["name"]
-                                           for r in payload["segments"])
-          and not payload["failed"] and not payload["cancelled"]
-          and all(r["probe"] > 0.5 for r in payload["segments"])
-          and all(abs(j) <= 1e-3 for j in payload["joints"])
-          and all(g is not None and g < 22.0 for g in gaps)
-          and len(gaps) == 3
-          and "3 đoạn" in payload["status"]
-          # grab() cua widget an van ve duoc, nen con so do day phai di kem
-          # "no dang hien tren man" — neu khong thi no chi la mot hinh chu nhat.
-          and payload["progress_visible_after"] is True
-          and 3 < payload["progress_band_px"] <= payload["progress_dpr"] * 8 + 3
-          and payload["distinct_colors"] > 40 and os.path.isfile(shot))
-    return 0 if ok else 1
+    fails = split_report_fails(payload)
+    for name in fails:
+        print("  split-report DO: %s" % name)
+    return 0 if not fails else 1
 
 
 # Gia tri that cua tung loai property, dung cho fixture "du 6 lane" o ca

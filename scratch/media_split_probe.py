@@ -543,7 +543,11 @@ def main():
     pump(8)
     card = win.library_panel.add_resource("dense.mp4", "video", DENSE)
     menu = card.context_menu()
-    check("card video co 2 hanh dong", len(menu.actions()), 2)
+    # Lay danh sach ban dung cua gate `--split-report`, khong luu mot con so:
+    # "Nen / toi uu tep" vao menu cung luc probe nay van bao "2 hanh dong" xanh.
+    from diagnostics import VIDEO_CARD_MENU
+    check("card video co dung menu ban dang dong goi",
+          [a.text() for a in menu.actions()], VIDEO_CARD_MENU)
     check("hanh dong thu hai la cat file", menu.actions()[1].text(),
           "Cắt thành nhiều đoạn…")
     above("icon keo cua hanh dong net that",

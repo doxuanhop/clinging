@@ -593,6 +593,7 @@ def main():
     print("\n== 14. Chuot phai card thu vien mo dung hop thoai ==")
     from ui.library_panel import ResourceCard
     from ui.main_window import MainWindow
+    from diagnostics import VIDEO_CARD_MENU
     win = MainWindow()
     win.resize(1500, 900)
     win.show()
@@ -601,7 +602,8 @@ def main():
                                           SOURCE)
     menu = card.context_menu()
     true("card video co menu", menu is not None)
-    check("menu video co dung hai hanh dong", len(menu.actions()), 2)
+    check("menu video la dung menu ban dang dong goi",
+          [a.text() for a in menu.actions()], VIDEO_CARD_MENU)
     check("ten hanh dong dung chu de", menu.actions()[0].text(),
           "Trích xuất ảnh thu nhỏ…")
     above("icon cua hanh dong to that",
