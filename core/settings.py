@@ -19,7 +19,7 @@ APP_NAME = "Clinging"
 # tới 1.0.3 dòng này bị QUÊN (vẫn "1.0.0") nên hộp "Về" nói sai bản đang chạy,
 # và gate cũ `settings.APP_VERSION in about` luôn đúng vì nó tự so với chính nó.
 # Giờ release_meta.py so ba nguồn (.iss / version_info.txt / đây) và chết nếu lệch.
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 
 # Cho phép probe/diagnostics trỏ tới một file settings tạm.
 ENV_PATH = "CLINGING_SETTINGS_PATH"

@@ -32,6 +32,13 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   6.967.178 B, sha256[:16] `6785b32b92e8d0b3` giống hệt `dist\Clinging`,
   `installed_app_probe.py` ALL PASS rc=0 — nhưng bundle vẫn mang
   `--split-report` với hằng số menu cũ (xem bẫy "cổng đóng gói trong bundle").
+  **1.0.5 đã dựng + verify cùng ngày nhưng CHƯA cài và CHƯA public**:
+  `dist\Clinging\Clinging.exe` 6.997.295 B (PE `1.0.5.0`), selftest bundle
+  **39 dòng `failed=[]` rc=0**, `--split-report` **rc=0** (thang đo mới đã nằm
+  trong payload), `frozen_bundle_probe.py` ALL PASS, hai file cài
+  `ClingingSetup-1.0.5.exe` 141.574.633 B / `.msi` 161.113.765 B, payload MSI
+  363 file / 514.159.312 B. Lý do chưa cài: `msiserver` kẹt từ 22/10 (mục
+  "Đừng cắt `msiexec` bằng `timeout`") và cài đè là thao tác shared-state.
   Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
@@ -46,7 +53,7 @@ python main.py --startup-report                 # boot theo tung pha + control c
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
 python main.py --split-report [out.json]        # cua cat file, thang do la diagnostics.split_report_fails
-python scratch/split_gate_counterfactual.py     # phan chung: 21 vet tren 14 dieu kien cua --split-report (~0,5 s)
+python scratch/split_gate_counterfactual.py     # phan chung: 26 vet tren 14 dieu kien cua --split-report (~0,5 s, do 22/10: ALL PASS 26/26)
 python scratch/split_plan_counterfactual.py     # phan chung: 14 vet tren toan cat 3 kieu (deu/doi dai/moc), ~2,2 phut, co 1 lan SPOT tron du bang
 python scratch/media_split_probe.py             # 79 s: cat THAT tren dia + anh chung minh 3 kieu (panel G), 167 cua
 python scratch/export_range_counterfactual.py   # phan chung: 18 vet tren vung xuat in/out + preset (178 s, 1 lan SPOT du 39 dong)
@@ -87,9 +94,10 @@ python scratch/compress_cost_probe.py           # do chi phi 10 cau hinh preset/
 python scratch/boot_low_spec_probe.py           # 5 vong xuyen tat: boot/WS/private + seam icon (may phai yen)
 python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
 python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile
-python scratch/frozen_bundle_probe.py           # gate TRONG exe dong goi: 38 dong + 3 phan chung
-                                                #   (bundle 1.0.4 CHUA co dong 39 "vung xuat": tree
-                                                #   nguon da 39, dung lai bundle phai cho xin phep)
+python scratch/frozen_bundle_probe.py           # gate TRONG exe dong goi: 39 dong + 3 phan chung
+                                                #   (bundle 1.0.5 DAU CO dong 39 "vung xuat" + dong
+                                                #   38 "nen tep", ca hai xanh trong PYZ; bundle 1.0.4
+                                                #   khong co - do la cach probe bat bundle cu)
                                                 # (lat _internal/styles, an core/ roi an ui/ cua tree nguon)
 dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json  # boot cua ban dong goi
 python scratch/user_data_snapshot.py capture scratch/_snap_before.json  # truoc khi do
@@ -173,7 +181,10 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   thẻ) thì phải chạy lại mọi `--*-report` có chạm bề mặt đó, vì lỗi không nằm ở
   nguồn mà nằm ở chính thang đo ship ra. Từ lần này thang đo đặt tên từng cửa
   (`diagnostics.SPLIT_REPORT_CHECKS`) và so với `VIDEO_CARD_MENU`, phản chứng
-  `scratch/split_gate_counterfactual.py` (21 vet / 14 cua, 0,5 s, rc=0).
+  `scratch/split_gate_counterfactual.py` (26 vet / 14 cua, 0,5 s, rc=0). Lần dựng
+  1.0.5 (22/10) đã đưa thang đo mới vào payload: `dist\Clinging\Clinging.exe
+  --split-report` giờ **rc=0**, `menu_actions` ba chuỗi — tức lời "chỉ một lần
+  dựng lại bundle mới làm exe tự trả 0" giờ là sự thật đã đo, không còn là hứa.
 - **Hằng số chiều cao trong hộp thoại là một cửa đo, không phải một sở thích.**
   Them kieu cat "diem cat tu dat" lam than `SplitDialog` can 492 px trong khi
   `resize(600, 520)` chi cho viewport 410 px: dong "1 moc bi bo..." — dong
@@ -205,6 +216,25 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   lẻ lệch nhau 8–12 ms chỉ vì drift đọc đĩa.
 - **`QT_QPA_PLATFORM=offscreen` ở đây không có font nào** (`QFontDatabase` trả 0
   family): ảnh offscreen luôn là tofu, chỉ phán bố cục.
+- **Số phát hành chỉ có ba thành phần.** `1.0.4.1` nghe như một bản vá hợp lệ
+  nhưng Windows Installer chỉ định nghĩa `ProductVersion` dạng `a.b.c`
+  (`MajorUpgrade` so đúng ba trường đầu). Bằng chứng thô ngày 22/10/2026: sau
+  khi cài probe 1.0.4 rồi 1.0.4.1 (cùng UpgradeCode), `MsiEnumRelatedProducts`
+  trả về CẢ HAI ProductCode, không bản nào bị gỡ. Lan do co nhieu loan —
+  `msiexec` tra loi truoc khi giao dich xong nen hai lan cai gan nhu de len
+  nhau — nhung dinh dang cong khai du de tu choi, vi WiX 3.11 `candle`/`light`
+  van chay ngon va ghi nguyen van `1.0.4.1` vao bang Property: loi chi lo ra
+  luc cai. `release_meta.source_versions()` chắn từ nguồn: `filevers`/`prodvers`
+  có thành phần thứ 4 khác 0 là `SystemExit` (phản chứng một byte: rc=1 đúng
+  dòng đó, restore: rc=0).
+- **Đừng cắt `msiexec` bằng `timeout`.** Package probe có bảng `Error` rỗng
+  (`SELECT Message FROM Error WHERE Error = 1302` fail) nên khi thiếu nguồn nó
+  treo chờ người dùng; `timeout` giết nó giữa giao dịch làm `msiserver`
+  deadlock: `sc start` vẫn chạy, `sc stop` báo Access denied (cần admin), và
+  MỌI lệnh `/i` `/x` sau đó treo tới hết timeout — chỉ reboot mới sạch. Trạng
+  thái này còn trên máy từ 22/10/2026, nên bản 1.0.5 dựng và verify metadata
+  được nhưng CHƯA cài được; hai product probe (`{B3C15772-…}`,
+  `{706DC2C6-…}`) vẫn còn trong database Windows Installer, gỡ sau khi reboot.
 - **Inno chỉ ghi đè file nó biết**, nên bản nâng cấp giữ file lạ trong `_internal`;
   chứng minh cây bằng set-diff đường dẫn tương đối so với `dist` (chấp nhận lệch
   `unins000.*`) và sha256[:16] của `Clinging.exe`, không phán bằng size/mtime.

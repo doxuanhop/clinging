@@ -110,6 +110,13 @@ def source_versions():
     pv = re.search(r"prodvers=\((\d+), (\d+), (\d+), (\d+)\)", vi)
     if not ff or not pv:
         raise SystemExit("khong doc duoc filevers/prodvers")
+    # Thanh phan thu 4 PHAI la 0 va bi bo khi so: Windows Installer chi hieu
+    #ProductVersion dang a.b.c, nen so 4 thanh phan (lan do 22/10/2026 voi
+    #"1.0.4.1") khong bao gio di duoc thang MSI. Bat o day som hon de lan build
+    #sau khong phai tra gia bang mot lenh msiexec treo.
+    if ff.group(4) != "0" or pv.group(4) != "0":
+        raise SystemExit("filevers/prodvers co thanh phan thu 4 khac 0 - "
+                         "MSI khong doc duoc so do")
     out["version_info.txt filevers"] = ".".join(ff.groups()[:3])
     out["version_info.txt prodvers"] = ".".join(pv.groups()[:3])
     out["core/settings.py APP_VERSION"] = grab(

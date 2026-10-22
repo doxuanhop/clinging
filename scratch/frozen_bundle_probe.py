@@ -136,6 +136,15 @@ def main():
     if nen_rows:
         check("selftest dong goi: nen tep OK", nen_rows[0]["ok"], True)
 
+    # Cung kieu cho vung xuat in/out: row do dung ExportDialog that (va
+    # RenderWorker cua `ui.export_dialog`), nen no xanh trong PYZ la bang chung
+    # `core.export_range` + `ui.export_dialog` co mat trong bundle, khong phai
+    # duoc doc lai tu tree nguon.
+    vung_rows = [r for r in report["checks"] if "vung xuat in/out" in r["name"]]
+    check("bundle co dong selftest vung xuat in/out", len(vung_rows), 1)
+    if vung_rows:
+        check("selftest dong goi: vung xuat in/out OK", vung_rows[0]["ok"], True)
+
     # Counterfactual: lat resource cua bundle -> selftest PHAI fail.
     styles = os.path.join(INTERNAL, "styles")
     hidden = os.path.join(INTERNAL, "styles__probe_hidden")

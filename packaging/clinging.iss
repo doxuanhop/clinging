@@ -5,7 +5,7 @@
 ; nen ban cai chay duoc tren may khong co FFmpeg trong PATH.
 
 #define MyAppName      "Clinging"
-#define MyAppVersion   "1.0.4"
+#define MyAppVersion   "1.0.5"
 #define MyAppPublisher "Qeafivels Software"
 #define MyAppExeName   "Clinging.exe"
 #define BundleDir      "..\dist\Clinging"
