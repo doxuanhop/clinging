@@ -23,7 +23,7 @@ PROBES = ["chroma_key_counterfactual", "color_grading_counterfactual",
           "media_locator_counterfactual", "save_atomic_counterfactual",
           "clipboard_counterfactual", "undo_text_transform_counterfactual",
           "popart_project_counterfactual", "boot_laziness_counterfactual",
-          "split_plan_counterfactual"]
+          "split_plan_counterfactual", "export_range_counterfactual"]
 
 
 def entries(mod):

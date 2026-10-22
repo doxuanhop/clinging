@@ -2010,6 +2010,492 @@ def _trim_card_ok():
             "duration=1.0 + adelay=2500, ripple keo clip sau ve 2.0, Ctrl+Z 4/4")
 
 
+def _export_range_ok():
+    """Mot dong trong --selftest: xuat theo VUNG in/out + preset chat luong,
+    do tren FILE mp4 that.
+
+    Nam cau hoi ma khong probe nao khac tra loi duoc:
+      (1) doan 1,2->2,4 s cua mot du an 2,4 s co ra file 1,2 s doc lai duoc
+          khong, khi doan do KHONG CO TIENG — day chinh la noi `-shortest`
+          tung an noi dung (model 1,9 s ra file 1,6 s, do 21/10/2026);
+      (2) file vung co phai DUNG la cat cua file toan bo khong. So goc mau
+          tung khung hinh, vi do dai thi "dat" ngay ca khi RenderWorker tu
+          doi thoi diem;
+      (3) preset "Tep nhe" co that su doi so byte cua file (CUNG noi dung,
+          khac CRF) chu khong chi doi nhan tren combo;
+      (4) hop thoai Xuat co dung hai che do vung + dung bang preset cua
+          export_range, keo cuon toi nut xuat o chieu cao SHIP nho nhat, va
+          vung sai thi `QFileDialog` KHONG duoc mo;
+      (5) hai cua so nam TRONG doan co tieng (0->0,6 am, 0,6->1,2 tam) co
+          ra dung do dai va dung tieng cua doan do khong — do la cach duy nhat
+          phan biet `-ss`/`-t` cua export_range that su di qua lenh xuat video,
+          vi `co_names` nhin thay ca duong mp3 sidecar nen khong do duoc no.
+
+    Nam lan xuat, 60 khung hinh 256x144 @10fps + mot lan dung ExportDialog
+    that — do la gia that cua viec do tren san pham, khong phai do tren ham phong.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    from core import external_tools, export_range
+    from core.timeline_model import TimelineModel, TrackType
+    # Import thang trong dong test: PyInstaller chi nhin thay module khi co
+    # lenh import duoc goi that, khong phai trong than mot nut bam.
+    from ui.export_dialog import ExportDialog, RenderWorker  # noqa: F401
+
+    ffmpeg = external_tools.find("ffmpeg")
+    ffprobe = external_tools.find("ffprobe")
+    if not ffmpeg or not ffprobe:
+        raise RuntimeError(external_tools.missing_message("ffmpeg"))
+
+    FPS = 10
+    WIDTH, HEIGHT = 256, 144
+    LOUD, QUIET = 1.2, 1.2
+    TOTAL = LOUD + QUIET
+    # Diem noi tieng trong doan dau ro rang: 0 -> RAMP am, RAMP -> LOUD tam.
+    RAMP = 0.6
+
+    def run(command):
+        return subprocess.run(command, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=300, check=False,
+                              creationflags=0x08000000 if os.name == "nt" else 0)
+
+    def measure(path):
+        """Do file bang ffprobe -count_frames: so khung hinh PHAI la so that
+        giai ma duoc, khong phai con so trong lenh cat. Lay theo KHOA-TEN
+        ("nb_read_frames=24"), khong lay theo thu tu dong: vo khoa thi dong
+        "24" bi doc thanh thoi luong va doan cuoi lai "bien mat" gian tiep
+        (lan chay 22/10/2026 bao 0 frame tren mot file 24 frame)."""
+        probe = run([ffprobe, "-v", "error", "-select_streams", "v:0",
+                     "-count_frames", "-show_entries",
+                     "stream=nb_read_frames:format=duration",
+                     "-of", "default=nw=1", path])
+        if probe.returncode != 0:
+            raise RuntimeError("ffprobe khong doc duoc file: %s"
+                               % probe.stderr.decode("utf-8", "replace")[-200:])
+        frames = 0
+        seconds = 0.0
+        for line in probe.stdout.decode("utf-8", "replace").splitlines():
+            key, _, value = line.partition("=")
+            value = value.strip()
+            if key.strip() == "nb_read_frames":
+                frames = int(float(value or 0))
+            elif key.strip() == "duration":
+                seconds = float(value or 0.0)
+        if not frames or not seconds:
+            raise RuntimeError("ffprobe khong tra du frame/thoi luong: %r"
+                               % probe.stdout.decode("utf-8", "replace"))
+        return frames, seconds, os.path.getsize(path)
+
+    def rms(path):
+        """RMS cua TIENG trong file, doc bang ffmpeg (`-vn -f f32le`) roi tinh
+        bang numpy — khong phai do lenh cat. None khi file khong co audio
+        stream de `vung` im lang khong bi tinh thanh 0,0 (rat yen)."""
+        proc = run([ffmpeg, "-v", "error", "-i", path,
+                    "-vn", "-ac", "1", "-ar", "8000", "-f", "f32le", "-"])
+        if proc.returncode != 0 or not proc.stdout:
+            return None
+        import numpy as np
+        data = np.frombuffer(proc.stdout, np.float32)
+        if not data.size:
+            return None
+        return float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+
+    def angle_between(a, b):
+        return min(abs(a - b), 360.0 - abs(a - b))
+
+    folder = tempfile.mkdtemp(prefix="clinging_export_range_")
+    try:
+        # ── 1. toan cua so, khong cham file ──
+        full = export_range.resolve_window(0.0, TOTAL, TOTAL, FPS)
+        if not full.get("ok") or full["mode"] != export_range.RANGE_FULL:
+            raise RuntimeError("vung toan bo bi nhan dien sai: %r" % full)
+        if full["frames"] != int(TOTAL * FPS):
+            raise RuntimeError("toan bo sinh %d frame thay vi %d"
+                               % (full["frames"], int(TOTAL * FPS)))
+        clamped = export_range.resolve_window(-5.0, 999.0, TOTAL, FPS)
+        if not clamped.get("ok") or clamped["start"] != 0.0:
+            raise RuntimeError("ngoai pham vi khong duoc kep ve: %r" % clamped)
+        # `clamped` tren day KHONG do duoc chan dau tren: khi start bi kep ve 0
+        # thi nhanh RANGE_FULL reset moi thu nen bo qua luon lenh `end`. Cua so
+        # 1,0 -> 999,0 moi nhin thay chan: khong chan thi ffmpeg ghi 9980 frame
+        # (lan chay 22/10/2026 dong kep ve XANH vi ly do sai).
+        low = export_range.resolve_window(-5.0, 1.0, TOTAL, FPS)
+        if (low["mode"] != export_range.RANGE_WINDOW or low["start"] != 0.0
+                or low["frames"] != FPS or abs(low["span"] - 1.0) > 1e-9):
+            raise RuntimeError("kep ve dau duoi sinh ra %r" % low)
+        high = export_range.resolve_window(1.0, 999.0, TOTAL, FPS)
+        if (high["mode"] != export_range.RANGE_WINDOW
+                or high["frames"] != int((TOTAL - 1.0) * FPS)
+                or abs(high["span"] - (TOTAL - 1.0)) > 1e-9):
+            raise RuntimeError("kep ve dau tren sinh ra %r" % high)
+        tiny = export_range.resolve_window(TOTAL - 0.05, TOTAL, TOTAL, FPS)
+        if tiny.get("ok") or tiny["frames"] or not tiny["error"]:
+            raise RuntimeError("vung 0,05 s phai bi tu che: %r" % tiny)
+        # Loi phai nen duoc CON SO, khong phai noi "qua ngan": nguoi dung
+        # chinh ly do 0,05 s bi tu che khi biet toi thieu la bao nhieu.
+        if str(export_range.MIN_WINDOW_FRAMES) not in tiny["error"]:
+            raise RuntimeError("loi vung ngan khong nen toi thieu: %r"
+                               % tiny["error"])
+        # span PHAI la frames/fps, khong phai hieu hai so nhap tay: lech 1/fps
+        # giua audio va video la lan lap moi lan xuat.
+        quantal = export_range.resolve_window(0.0, 1.25, TOTAL, FPS)
+        if quantal["span"] * FPS != quantal["frames"]:
+            raise RuntimeError("span khong sinh tu so khung hinh: %r" % quantal)
+        if export_range.audio_input_args(full):
+            raise RuntimeError("xuat toan bo van -ss vo nghia")
+        windowed = export_range.resolve_window(LOUD, TOTAL, TOTAL, FPS)
+        if export_range.audio_input_args(windowed) != ["-ss", "%.6f" % LOUD]:
+            raise RuntimeError("vung khong cat audio bang -ss truoc -i: %r"
+                               % export_range.audio_input_args(windowed))
+        keys = export_range.preset_keys()
+        if len(set(keys)) != len(keys) or len(keys) != len(export_range.QUALITY_PRESETS):
+            raise RuntimeError("preset trung key hoac thieu: %r" % (keys,))
+        if export_range.encode_args(None) != export_range.encode_args(keys[0]):
+            raise RuntimeError("preset la khong roi mac dinh CRF 18")
+        if "-shortest" in " ".join(export_range.output_args(windowed)):
+            raise RuntimeError("output_args dung lai -shortest")
+
+        # ── 2. RenderWorker phai di qua export_range, khong ban phuc bac ──
+        used = RenderWorker.run.__code__.co_names
+        missing = [name for name in ("resolve_window", "frame_time",
+                                     "encode_args", "audio_input_args",
+                                     "output_args") if name not in used]
+        if missing:
+            raise RuntimeError("RenderWorker.run khong goi %s"
+                               % ", ".join(missing))
+        # `-shortest` tim trong co_consts cua HAM, khong bang grep van ban: grep
+        # cham vao chinh dong comment giai thich no (lan chay 22/10/2026 dong
+        # nay do RED vi mot dong chu), va `inspect.getsource` khong ton tai
+        # trong bundle dong goi — co_consts thi co.
+        if "-shortest" in RenderWorker.run.__code__.co_consts:
+            raise RuntimeError("lenh xuat van mang hang so '-shortest'")
+        # Hop thoai KHONG duoc tu phat cong thuc: o xem truoc, o loi va lenh
+        # xuat phai la CUNG mot so do (bai hoc the Cat `9ed6125` — hinh hoc di
+        # qua mot seam duy nhat de con chuot va spinner khong bao gio bat
+        # dong). Do tren `co_names` cua ham, bundle dong goi van con no.
+        if "resolve_window" not in ExportDialog._current_window.__code__.co_names:
+            raise RuntimeError("ExportDialog._current_window khong goi "
+                               "export_range.resolve_window: hop thoai tu tinh "
+                               "cua so cua no")
+
+        # ── 3. fixture: hai nua nguon khac nhau, mot nua co tieng ──
+        # HAI nguon khac nhau: moi clip chay nguon cua no tu source t=0, nen
+        # mot nguon duy nhat khiem mau cho ca hai nua va phep so sanh "vung =
+        # cat cua toan bo" truong thanh lech 1 do (do lan chay 22/10/2026).
+        # Nguon sau IM LANG va hue lech 72 do.
+        # Tieng cua nguon dau CO RAMP bien doi (to den RAMP, thi bat sau do):
+        # khong co no thi moi cua so nam trong doan co tieng deu cho cung mot
+        # con so RMS va phep thu "-ss co mat hay khong" vo nghia. Do 22/10/2026:
+        # 440 Hz gain 1,0 = 0,088, gain 0,02 = 0,0068 (hop le 12 lan).
+        loud = os.path.join(folder, "dau.mp4")
+        quiet = os.path.join(folder, "cuoi.mp4")
+        make = run([ffmpeg, "-v", "error", "-y",
+                    "-f", "lavfi", "-i",
+                    "testsrc2=size=160x120:rate=25:duration=%g,hue=h=t*60"
+                    % TOTAL,
+                    "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=%g,"
+                    "volume=volume='if(lt(t,%g),1.0,0.02)':eval=frame"
+                    % (LOUD, RAMP),
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000",
+                    "-t", "%.6f" % TOTAL, loud])
+        if make.returncode != 0 or not os.path.isfile(loud):
+            raise RuntimeError("khong dung duoc fixture co tieng: %s"
+                               % make.stderr.decode("utf-8", "replace")[-200:])
+        make = run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=160x120:rate=25:duration=%g,hue=h=72+t*60"
+                    % QUIET,
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                    "-pix_fmt", "yuv420p", "-an", quiet])
+        if make.returncode != 0 or not os.path.isfile(quiet):
+            raise RuntimeError("khong dung duoc fixture im lang: %s"
+                               % make.stderr.decode("utf-8", "replace")[-200:])
+
+        model = TimelineModel()
+        model.project_ratio = "16:9"
+        track = model.add_track(TrackType.VIDEO)
+        model.add_clip(track.track_id, loud, "video", 0.0, LOUD, "dau")
+        model.add_clip(track.track_id, quiet, "video", LOUD, QUIET, "cuoi")
+        if abs(model.duration - TOTAL) > 1e-6:
+            raise RuntimeError("du an %r s thay vi %r s" % (model.duration, TOTAL))
+
+        # ── 4. hop thoai va worker phai cung MỘT cửa sổ ──
+        # ExportDialog lay model truc tiep (khong can MainWindow), nen doan
+        # nay cham mat tien san pham that ma van khong doc du an cua nguoi
+        # dung. `_update_preview` ve pixmap tuong trung, khong doc file nen
+        # khong lai rac vao `core.media_cache` cua nguoi dung.
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is None:
+            raise RuntimeError("selftest khong co QApplication")
+        dialog = ExportDialog(model)
+        original_dialog = getattr(sys.modules["ui.export_dialog"],
+                                  "QFileDialog", None)
+        stubbed = []
+        try:
+            if [dialog.combo_quality.itemData(i)
+                    for i in range(dialog.combo_quality.count())] != list(keys):
+                raise RuntimeError("combo preset khong dung bang export_range: %r"
+                                   % [dialog.combo_quality.itemData(i)
+                                      for i in range(dialog.combo_quality.count())])
+            modes = [dialog.combo_range.itemData(i)
+                     for i in range(dialog.combo_range.count())]
+            if modes != [export_range.RANGE_FULL, export_range.RANGE_WINDOW]:
+                raise RuntimeError("combo vung xuat khong co dung hai che do: %r"
+                                   % (modes,))
+            if (dialog.content_scroll.verticalScrollBarPolicy()
+                    != Qt.ScrollBarAsNeeded):
+                raise RuntimeError("thanh cuon bi tat trong khi hai cot can "
+                                   "555 px hon cua so 520 px")
+            dialog.resize(1120, 520)   # chieu cao SHIP nho nhat cua no
+            dialog.show()
+            for _ in range(4):
+                app.processEvents()
+            # Keo cuon toi han o CA HAI che do roi do: `grab()` khong cuon nen
+            # anh khong bao gio thay phan duoi fold, chi so do nay moi do
+            # duoc (bay SplitDialog: 492 px can trong 410 px viewport).
+            # Do bang mapTo(viewport): `content_scroll.mapFrom()` tra toa do lech
+            # nen moi hat nam trong scroll area deu ra am o lan chay
+            # 22/10/2026. Nut xuat lai nam o footer NGOAI scroll area (QFrame
+            # 1120x62 tai y 458 cua dialog) nen no phai do theo rect cua dialog.
+            scroll = dialog.content_scroll
+            inner = scroll.widget()
+            bar = scroll.verticalScrollBar()
+            view_h = scroll.viewport().height()
+
+            def reach(widget):
+                bar.setValue(bar.maximum())
+                for _ in range(3):
+                    app.processEvents()
+                if inner.isAncestorOf(widget):
+                    top = widget.mapTo(scroll.viewport(), QPoint(0, 0)).y()
+                    return top, top + widget.height(), view_h
+                pos = widget.mapTo(dialog, QPoint(0, 0))
+                return pos.y(), pos.y() + widget.height(), dialog.height()
+
+            for index, widgets in (
+                    (0, ((dialog.combo_quality, "combo preset"),
+                         (dialog.toggle_audio, "nut am thanh"),
+                         (dialog.btn_export, "nut xuat"))),
+                    (1, ((dialog.combo_range, "combo vung"),
+                         (dialog.spin_from, "o Tu"),
+                         (dialog.spin_to, "o Den"),
+                         (dialog.btn_export, "nut xuat")))):
+                dialog.combo_range.setCurrentIndex(index)
+                for _ in range(4):
+                    app.processEvents()
+                for widget, label in widgets:
+                    top, bottom, limit = reach(widget)
+                    if not (0 <= top and bottom <= limit + 1):
+                        raise RuntimeError("%s nam ngoai khung nhin o chieu "
+                                           "cao 520 px (y %d..%d trong %d px, "
+                                           "che do %s)" % (label, top, bottom,
+                                                            limit, index))
+
+            # 1,25 s le theo fps cua hop thoai: neu no tu do dai bang hieu hai
+            # so nhap tay thi span lech so khung hinh va phep so nay do duoc.
+            # PHAI chang qua 30 fps: o 24 fps (mac dinh cua combo) 1,25 s tron
+            # ven 30 frame nen `span` nhap tay bang y het `frames / fps`, va
+            # vet phan chung "hop thoai tu do dai" XANH như không (do
+            # 22/10/2026). 37,5 frame thi khong bao gio sinh ra tu phep nguyen
+            # hoa nao.
+            fps_index = dialog.combo_fps.findData(30)
+            if fps_index < 0:
+                raise RuntimeError("combo fps khong co 30 de do le so khung "
+                                   "hinh: %r" % dialog.combo_fps.currentData())
+            dialog.combo_fps.setCurrentIndex(fps_index)
+            dialog.combo_range.setCurrentIndex(
+                dialog.combo_range.findData(export_range.RANGE_WINDOW))
+            dialog.spin_from.setValue(0.0)
+            dialog.spin_to.setValue(1.25)
+            for _ in range(3):
+                app.processEvents()
+            fps_d = float(dialog._current_fps())
+            shown = dialog._current_window()
+            if not shown.get("ok"):
+                raise RuntimeError("hop thoai tu che vung 0->1,25 s: %s"
+                                   % shown["error"])
+            if abs(shown["span"] * fps_d - shown["frames"]) > 1e-6:
+                raise RuntimeError("hop thoai do do dai bang hieu so nhap tay, "
+                                   "khong bang khung hinh: %r" % shown)
+            want = export_range.resolve_window(dialog.spin_from.value(),
+                                               dialog.spin_to.value(),
+                                               model.duration, fps_d)
+            if shown != want:
+                raise RuntimeError("hop thoai va worker ra hai cua so khac nhau:"
+                                   " %r vs %r" % (shown, want))
+
+            # Nguoi dung doc do dai o `lbl_duration`, khong doc dict. Vung
+            # duoi mot giay la hop le (toi thieu 2 frame) nen chuoi mm:ss cua
+            # toan bo bai video se in "00:00" ngay canh nut Xuat (do
+            # 22/10/2026: vung 1,2 s in "00:01"). Do bang con so ma chinh
+            # seam sinh ra, khong do bang do dai chuoi.
+            dialog.spin_to.setValue(RAMP)
+            for _ in range(3):
+                app.processEvents()
+            label = dialog.lbl_duration.text()
+            tiny_w = dialog._current_window()
+            if ("%d frame" % tiny_w["frames"]) not in label or "00:00" in label:
+                raise RuntimeError("do dai vung %r s in ra %r — phai la con so "
+                                   "giay + khung hinh, khong phai mm:ss"
+                                   % (RAMP, label))
+
+            # bam nut THAT voi vung sai: hop thoai chon cho luu khong duoc mo.
+            # Cai bi thay la TEN TRONG MODULE `ui.export_dialog` (no import
+            # QFileDialog vo namespace), khong phai static method cua Qt —
+            # cai do PySide6 khong cho ghi de.
+            class _NoSaveDialog(object):
+                @staticmethod
+                def getSaveFileName(*_args, **_kwargs):
+                    stubbed.append(1)
+                    return "", False
+
+            sys.modules["ui.export_dialog"].QFileDialog = _NoSaveDialog
+            dialog.spin_to.setValue(0.01)     # 0,01 s: duoi toi thieu khung hinh
+            dialog._on_export_clicked()
+            status = dialog.lbl_status.text()
+            if stubbed or "Loi" not in status and "Lỗi" not in status:
+                raise RuntimeError("vung 0,01 s van mo hop thoai luu file hoac "
+                                   "khong in loi: status=%r" % status)
+        finally:
+            if original_dialog is not None:
+                sys.modules["ui.export_dialog"].QFileDialog = original_dialog
+            dialog.close()
+            dialog.deleteLater()
+
+        # ── 5. nam lan xuat THAT qua RenderWorker ──
+        def export(label, start, end, quality):
+            """Xuat qua RenderWorker THAT roi do file — khong do lenh cat."""
+            out = os.path.join(folder, label + ".mp4")
+            window = None
+            if start is not None:
+                window = export_range.resolve_window(start, end,
+                                                     model.duration, FPS)
+                if not window.get("ok"):
+                    raise RuntimeError("vung %s bi tu che: %s"
+                                       % (label, window["error"]))
+            errors, done = [], []
+            worker = RenderWorker(model, out, WIDTH, HEIGHT, FPS, "16:9", False,
+                                  window=window, quality=quality)
+            worker.errorOccurred.connect(errors.append)
+            worker.finished_ok.connect(done.append)
+            worker.run()
+            if errors or not done:
+                raise RuntimeError("%s: RenderWorker bao loi %r" % (label, errors))
+            if not os.path.isfile(out):
+                raise RuntimeError("%s: xong ma khong co file tren dia" % label)
+            results = measure(out)
+            return results
+
+        # "toan bo" di duong MAC DINH (window=None): phai giu hanh vi cu.
+        f_frames, f_seconds, _f_bytes = export("toan_bo", None, None, None)
+        w_frames, w_seconds, w_bytes = export("vung", LOUD, TOTAL, "cao")
+        n_frames, n_seconds, n_bytes = export("vung_nhe", LOUD, TOTAL, "nhe")
+        # HAI cua so NAM TRONG DOAN CO TIENG. `vung` o tren nam hoan toan trong
+        # doan im lang, nen no khong do duoc duong audio: `worker_bo_audio_seek`
+        # XANH vi ly do do (lan chay 22/10/2026). 0->RAMP am, RAMP->LOUD tam:
+        # bo `-ss` thi hai file giong het nhau ve tieng, bo `-t` thi ca hai dai
+        # 2,4 s vi audio duoi day van chay het.
+        t_frames, t_seconds, _t_bytes = export("tieng", 0.0, RAMP, "cao")
+        c_frames, c_seconds, _c_bytes = export("vung_cat", RAMP, LOUD, "cao")
+
+        if f_frames != int(TOTAL * FPS):
+            raise RuntimeError("toan bo ra %d frame: doan cuoi im lang van bi an"
+                               % f_frames)
+        if abs(f_seconds - TOTAL) > 1.0 / FPS:
+            raise RuntimeError("toan bo dai %r s thay vi %r s"
+                               % (f_seconds, TOTAL))
+        if w_frames != int(QUIET * FPS):
+            raise RuntimeError("vung 1,2->2,4 s ra %d frame" % w_frames)
+        if abs(w_seconds - QUIET) > 1.0 / FPS:
+            raise RuntimeError("vung dai %r s thay vi %r s" % (w_seconds, QUIET))
+
+        # Do dai cua hai cua so co tieng do bang NOI DUNG file ra, khong phai
+        # do bang con so ma export_range tu sinh ra cho chinh no.
+        for label, frames, seconds in (("tieng", t_frames, t_seconds),
+                                       ("vung_cat", c_frames, c_seconds)):
+            if frames != int(RAMP * FPS) or abs(seconds - RAMP) > 1.0 / FPS:
+                raise RuntimeError(
+                    "%s: %d frame/%r s thay vi %d/%r s — do dai file ra khong "
+                    "phai do chinh export quyet" % (label, frames, seconds,
+                                                    int(RAMP * FPS), RAMP))
+        r_loud = rms(os.path.join(folder, "tieng.mp4"))
+        r_quiet = rms(os.path.join(folder, "vung_cat.mp4"))
+        if r_loud is None or r_quiet is None:
+            raise RuntimeError("cua so co tieng ma file ra khong co audio "
+                               "stream: %r vs %r" % (r_loud, r_quiet))
+        # Ty le, khong hang so tuyet doi: AAC + aresample lam so nho doi, con
+        # thieu `-ss` thi hai doan tra ve CUNG mot tieng to. Nguon fixture mat
+        # ramp thi cung bi bat o day (r_loud < 0,01 hoac tieng gan bang nhau).
+        if r_loud < 0.01 or r_quiet * 4.0 >= r_loud:
+            raise RuntimeError("audio cua vung_cat khong duoc -ss cat theo "
+                               "RAMP: RMS %r (am) vs %r (tam)"
+                               % (r_loud, r_quiet))
+
+        # ── 6. vung PHAI la cat cua toan bo, khong phai noi dung khac ──
+        # So theo CHI SO FRAME (frame i cua vung = frame 12+i cua toan bo),
+        # khong theo giay: `extract_frame_image` dat `-ss` TRUOC `-i` la fast
+        # seek va file nay chi co MOT keyframe, nen lan chay 22/10/2026 no bao
+        # lech 26,1 do tai 0,15 s trong khi ba lech con lai (0,5 / 1,05 s)
+        # duoi 7 do — do la loi cua dong ho mua, khong phai cua RenderWorker.
+        # Cung mot nhieu testsrc2 ma hai ben deu giai ra tu DUNG mot nguon nen
+        # lech con lai la lech cat noi dung that (do duoc <=6,6 do).
+        path_full = os.path.join(folder, "toan_bo.mp4")
+        path_win = os.path.join(folder, "vung.mp4")
+        shots = {}
+        for label in ("full", "win"):
+            shots[label] = os.path.join(folder, "frames_" + label)
+            os.mkdir(shots[label])
+        full_hue = _frame_hue_track(path_full, shots["full"])
+        win_hue = _frame_hue_track(path_win, shots["win"])
+        if len(full_hue) != int(TOTAL * FPS) or None in full_hue:
+            raise RuntimeError("toan bo giai ra %r khung hinh mau, mong %d"
+                               % (full_hue, int(TOTAL * FPS)))
+        if len(win_hue) != int(QUIET * FPS) or None in win_hue:
+            raise RuntimeError("vung giai ra %r khung hinh mau, mong %d"
+                               % (win_hue, int(QUIET * FPS)))
+        skip = int(LOUD * FPS)
+        deltas = [round(angle_between(full_hue[skip + i], win_hue[i]), 1)
+                  for i in range(len(win_hue))]
+        if max(deltas) > 15.0:
+            raise RuntimeError("frame %d+%d cua vung khong phai frame cua toan "
+                               "bo: lech %r do" % (skip, deltas.index(max(deltas)),
+                                                   deltas))
+        # So 12 frame cua vung voi 12 frame DAU cua toan bo thi phai khac nhau
+        # o MOI frame: neu hai nua nguon giong het nhau thi cua so o tren cung
+        # XANH du cat sai noi dung. Nguon sau lech hue 72 do nen lech nho nhat
+        # o day do duoc la 72 tru bien do cat.
+        head = [round(angle_between(full_hue[i], win_hue[i]), 1)
+                for i in range(len(win_hue))]
+        if min(head) < 20.0:
+            raise RuntimeError("vung giong ca doan dau toan bo (%r do): hai nua "
+                               "nguon khong khac nhau, gate khong phan biet "
+                               "duoc gi" % head)
+
+        # ── 7. preset doi that so byte, cung noi dung ──
+        if n_frames != w_frames:
+            raise RuntimeError("preset doi ca so khung hinh: %d vs %d"
+                               % (n_frames, w_frames))
+        if not n_bytes * 1.15 < w_bytes:
+            raise RuntimeError("CRF 24 khong nho hon CRF 18 nhuan 1,15: "
+                               "%d vs %d B" % (n_bytes, w_bytes))
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+    return ("%d frame/%.2fs toan bo giu du doan im lang, vung %.2fs = %d frame "
+            "cat cua no (lech mau %r do <=15), tieng %d f RMS %.4f vs tam %d f "
+            "RMS %.4f (%.1f×), CRF24 %d B < CRF18 %d B cung frame"
+            % (f_frames, f_seconds, w_seconds, w_frames, deltas,
+               t_frames, r_loud, c_frames, r_quiet, r_loud / max(r_quiet, 1e-9),
+               n_bytes, w_bytes))
+
+
 def _captions_strip_ok():
     """Mot dong trong --selftest: thanh tien do Auto Captions mong trong bundle nay.
 
@@ -2230,6 +2716,7 @@ def run_selftest(argv=None):
         ("cat file thanh N doan ra dia", _media_split_ok),
         ("tach tieng video thanh clip audio rieng", _detach_audio_ok),
         ("the Cat in/out trong bang thuoc tinh", _trim_card_ok),
+        ("vung xuat in/out + preset chat luong", _export_range_ok),
         ("nen toi uu tep video: moov + codec-hop-container",
          _media_compress_ok),
         ("thanh tien do Auto Captions 8px", _captions_strip_ok),
@@ -2541,18 +3028,14 @@ def run_thumbnail_report(argv=None):
     return 0 if ok else 1
 
 
-def _mean_hue(path, seconds):
-    """Góc màu trung bình của khung hình tại một giây, đọc bằng ĐÚNG decoder mà
-    preview dùng. Màu là đồng hồ: một doan replay doan khac lech ngay tuc la
-    lech hang chuc do, con thoi luong thi van 'dat'."""
+def _image_mean_hue(image):
+    """Góc màu trung bình (vòng tròn) của một QImage; None khi khung hinh tron."""
     import math
 
     import numpy as np
     from PySide6.QtGui import QImage
-    from core.media_frame import extract_frame_image
 
-    image = extract_frame_image(path, seconds)
-    if image.isNull():
+    if image is None or image.isNull():
         return None
     image = image.convertToFormat(QImage.Format_RGB32)
     stride = image.bytesPerLine() // 4
@@ -2574,6 +3057,57 @@ def _mean_hue(path, seconds):
         return None
     return math.degrees(math.atan2(float(np.sin(angle).mean()),
                                    float(np.cos(angle).mean()))) % 360.0
+
+
+def _mean_hue(path, seconds):
+    """Góc màu tại MỘT giây, đọc bằng đúng decoder preview dùng (cv2/`-ss`).
+
+    Chi dung cho phep do gan (mo cua, doan cat le nhau): `-ss` dat TRUOC `-i`
+    la fast seek nen no nam len keyframe gan nhat, khong phai frame can tim.
+    Doan nay do 22/10/2026: file 24 frame khong keyframe trung gian, goi tai
+    0,15 s va 1,35 s ra HAI frame lech nhau 26 do chi vi dong ho mua, khong
+    phai vi noi dung. So khung hinh voi nhau thi dung ``_frame_hue_track``.
+    """
+    from core.media_frame import extract_frame_image
+
+    return _image_mean_hue(extract_frame_image(path, seconds))
+
+
+def _frame_hue_track(path, out_dir):
+    """Goc mau cua TUNG khung hinh theo thu tu, giai ma ca file MOT lan.
+
+    ffmpeg ghi `f001.png, f002.png, ...` cung `-fps_mode passthrough` (khong
+    nhan doi, khong drop), nen thu tu file tren dia = thu tu frame trong file.
+    Thang do nay khong the noi gian: khong co seek, khong co keyframe, khong
+    doan thoi luong ra so frame. `-vsync 0` KHONG dung duoc o day — ffmpeg 9.0.1
+    trong `tools/ffmpeg` da xoa tuy chon do (rc khac 0, "Unrecognized option").
+    `out_dir` phai ton tai va rong truoc lan goi.
+    """
+    from PySide6.QtGui import QImage
+
+    from core import external_tools
+
+    ffmpeg = external_tools.find("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError(external_tools.missing_message("ffmpeg"))
+    proc = subprocess.run([ffmpeg, "-v", "error", "-y", "-i", path, "-an",
+                           "-fps_mode", "passthrough",
+                           os.path.join(out_dir, "f%03d.png")],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=300, check=False,
+                          creationflags=0x08000000 if os.name == "nt" else 0)
+    if proc.returncode != 0:
+        raise RuntimeError("ffmpeg khong giai ma duoc %s: %s"
+                           % (os.path.basename(path),
+                              proc.stderr.decode("utf-8", "replace")[-160:]))
+    track = []
+    for name in sorted(os.listdir(out_dir)):
+        if not name.startswith("f") or not name.endswith(".png"):
+            continue
+        image = QImage()
+        if image.load(os.path.join(out_dir, name)):
+            track.append(_image_mean_hue(image))
+    return track
 
 
 # Menu cua card video LA BANG CHUNG SAN PHAM, khong phai chi mot con so.

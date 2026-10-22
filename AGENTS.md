@@ -40,18 +40,21 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
 
 ```bash
 python main.py                                  # chay app binh thuong
-python main.py --selftest                       # 38 dong cong, bao JSON co "failed"
-python main.py --selftest out.json --only="chinh mau"   # mot dong thoi (~5 s vs ~31 s); khong bao gio duoc bao cao la "38 dong xanh", doc payload["only"] truoc khi tin
+python main.py --selftest                       # 39 dong cong, bao JSON co "failed"
+python main.py --selftest out.json --only="chinh mau"   # mot dong thoi (~5-12 s vs ~49 s); khong bao gio duoc bao cao la "39 dong xanh", doc payload["only"] truoc khi tin
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
 python main.py --split-report [out.json]        # cua cat file, thang do la diagnostics.split_report_fails
 python scratch/split_gate_counterfactual.py     # phan chung: 21 vet tren 14 dieu kien cua --split-report (~0,5 s)
-python scratch/split_plan_counterfactual.py     # phan chung: 14 vet tren toan cat 3 kieu (deu/doi dai/moc), ~2,2 phut, co 1 lan SPOT tron 38 dong
+python scratch/split_plan_counterfactual.py     # phan chung: 14 vet tren toan cat 3 kieu (deu/doi dai/moc), ~2,2 phut, co 1 lan SPOT tron du bang
 python scratch/media_split_probe.py             # 79 s: cat THAT tren dia + anh chung minh 3 kieu (panel G), 167 cua
+python scratch/export_range_counterfactual.py   # phan chung: 18 vet tren vung xuat in/out + preset (178 s, 1 lan SPOT du 39 dong)
+python scratch/export_range_evidence.py         # anh: 2 che do ExportDialog + 24/12 khung hue + ffprobe -count_frames + RMS, 16 cua
+python scratch/export_quality_cost_probe.py     # do 8 cau hinh preset/CRF, xen ke 2 vong -> scratch/export_quality_cost.json
 python scratch/icon_name_audit.py               # ten glyph + tham so tren toan bo nguon
 python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi dung ly do
-python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 13 probe, probe khong chay duoc = probe im lang
+python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 14 probe, probe khong chay duoc = probe im lang
 python scratch/selftest_filter_counterfactual.py # phan chung: bo loc --only, 10 cua (~3,7 phut)
 python scratch/boot_laziness_counterfactual.py  # phan chung: boot khong duoc keo trang dung phim/psutil/hop thoai nen
 python scratch/save_atomic_counterfactual.py    # phan chung: 4 phep doi byte o duong luu du an
@@ -85,6 +88,8 @@ python scratch/boot_low_spec_probe.py           # 5 vong xuyen tat: boot/WS/priv
 python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
 python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile
 python scratch/frozen_bundle_probe.py           # gate TRONG exe dong goi: 38 dong + 3 phan chung
+                                                #   (bundle 1.0.4 CHUA co dong 39 "vung xuat": tree
+                                                #   nguon da 39, dung lai bundle phai cho xin phep)
                                                 # (lat _internal/styles, an core/ roi an ui/ cua tree nguon)
 dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json  # boot cua ban dong goi
 python scratch/user_data_snapshot.py capture scratch/_snap_before.json  # truoc khi do
@@ -229,10 +234,32 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   bang `git status`, phuc bang `git checkout -- <file>` (file do khong nam trong
   dam thay doi co y). KHONG bai dung hai vong probe song song.
 - **`--only` cat nua bang do luu do.** Lan chay loc co `failed=[]` khong nghia la
-  38 dong xanh; doc `payload["only"]` (phai la `null`) truoc khi bao cao. Probe
+  39 dong xanh; doc `payload["only"]` (phai la `null`) truoc khi bao cao. Probe
   phan chung da theo khuon: baseline du bang -> vet chay `--only` -> MOT lan SPOT
-  du bang -> khoi phuc du bang. Gia do: tron bang 31,1 s, mot dong 5,0 s; nen tep
-  17 vet 377,2 s -> 183,7 s, chroma 19 vet = 147,9 s, chinh mau 13 vet = 133,6 s.
+  du bang -> khoi phuc du bang. Gia do: tron bang 48,8 s (39 dong; 38 dong la
+  31,1 s), mot dong 5,0-12,4 s; nen tep 17 vet 377,2 s -> 183,7 s, chroma 19 vet
+  = 147,9 s, chinh mau 13 vet = 133,6 s, vung xuat 18 vet = 178,0 s.
+- **`co_names` khong nhin duoc hai dieu.** (a) HAI loi cung mot ham trong cung
+  mot than: `audio_input_args` duoi go o duong video LAN LUOT duong mp3 sidecar,
+  nen xoa `-ss` o duong video thi cua van xanh (do 22/10/2026 — vet
+  `worker_bo_audio_seek`). (b) MOT CHUOI FORMAT: doi `lbl_duration` tu `mm:ss`
+  sang con so khong doi ten cung khong doi hang nao. Chua cho ca hai: do bang
+  CON SO tren san pham that — RMS hai cua so tieng (bo `-ss` thi hai con so
+  giong het nhau), va chinh chu nguoi dung doc (`00:00`).
+- **Mac dinh cua widget co the lam phep thu thanh tron.** `combo_fps` mo ra o
+  24 fps, va cua so 1,25 s tron ven 30 khung hinh nen `span` tinh bang hieu hai
+  so nhap tay trung khit `frames / fps` — vet `hop_thoai_tu_tinh_span` XANH nhu
+  khong. Dong do phai ghim 30 fps (1,25 s -> 37,5 frame, khong phep nguyen hoa
+  nao sinh ra duoc con so do) roi moi so.
+- **Nhan `mm:ss` an mat noi dung duoi mot giay.** Cua so 2 khung hinh la HOP LE
+  (`MIN_WINDOW_FRAMES = 2`) nhung `_fmt_time` in "00:00" ngay canh nut Xuat —
+  cung kieu im lang nhu `-shortest` an doan cuoi. Do dai cua vung in phai in
+  bang con so giay + khung hinh; che do toan bo gi dong ho.
+- **Anh chung minh toa do cung co "dong duoi fold".** Panel A cua
+  `export_range_evidence.py` cao 372 px trong khi anh 700 px (325 px) + hai dong
+  chu thich can 401 px: chu A de duong len tieu de B, va probe van PASS vi no
+  khong do toa do cua sheet. Nong panel len 420 px va di B/C/D xuong 48 px —
+  mo anh ra xem la buoc duy nhat bat duoc loi nay.
 
 ## Cấm
 

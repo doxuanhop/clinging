@@ -7,13 +7,14 @@ import os
 import math
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QFileDialog, QWidget, QFrame,
+    QComboBox, QFileDialog, QWidget, QFrame, QDoubleSpinBox,
     QGraphicsDropShadowEffect, QApplication, QScrollArea
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QThread, QObject, QSize, QUrl
 from PySide6.QtGui import QColor, QFont, QPixmap, QPainter, QBrush, QPen, QIcon
 
 from core import external_tools
+from core import export_range
 from widgets.common import font_icon, set_label_icon, Toast, open_local_file
 
 
@@ -162,6 +163,21 @@ class ExportDialog(QDialog):
                 selection-background-color: #2C6E64;
                 padding: 4px;
             }
+            QDoubleSpinBox {
+                background-color: #252636;
+                border: 1px solid #3A3B50;
+                border-radius: 6px;
+                padding: 5px 8px;
+                color: #E0E0E0;
+                min-height: 20px;
+            }
+            QDoubleSpinBox:hover { border-color: #40E0D0; }
+            QDoubleSpinBox:disabled { color: #5A5D6E; background-color: #1E1F2B; }
+            QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+                background-color: #2E3040;
+                border: none;
+                width: 16px;
+            }
             QPushButton {
                 border: none;
                 border-radius: 6px;
@@ -179,6 +195,10 @@ class ExportDialog(QDialog):
         # Combo độ phân giải tạo sau khi signal aspect ban đầu đã
         # phát, nên luôn populate tường minh để submenu không rỗng.
         self._update_resolution_options(ratio_key)
+        # O in/out can do dai du an truoc lan ve dau tien; nean gia tri bang 0
+        # se khiem khat "tu 0 den 0 s" ngay khi mo hop thoai.
+        self._sync_range_spins()
+        self._on_range_mode_changed()
         self._update_preview()
 
     def _build_ui(self):
@@ -213,8 +233,13 @@ class ExportDialog(QDialog):
         content_scroll.setWidgetResizable(True)
         content_scroll.setFrameShape(QFrame.NoFrame)
         content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        content_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # AlwaysOff o day tung an nut "Xuat rieng am thanh" hoan toan vo hinh:
+        # cua so cao 520 px (minimumHeight cua man 768) chi con viewport 408 px
+        # trong khi hai cot can 555 px, va grab() khong bao gio cuoc. AsNeeded
+        # de nut "Chat luong" voi o in/out den duoc bang cuon o man thap.
+        content_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         content_scroll.setWidget(content_host)
+        self.content_scroll = content_scroll
         root.addWidget(content_scroll, 1)
 
         # Move the action row out of the progress card and anchor it to the
@@ -412,6 +437,49 @@ class ExportDialog(QDialog):
 
         layout.addWidget(info_frame)
 
+        # ── Vung xuat (in/out) + chat luong ──
+        # Dat o COT PHAI, khong phai cot cai dat: cot trai dang day dan va hop
+        # thoai dung QScrollArea co hai thanh luon AlwaysOff, nen cong them 226
+        # px vao cot trai lam "Xuat rieng am thanh" nam ngoai viewport hoan
+        # toan vo hinh (do 22/10/2026: sizeHint 705 > viewport 580). Cot phai
+        # con gia: preview_frame chi can 260 px nen them 122 px van duoi
+        # sizeHint 479 px cua cot trai.
+        lbl_range = QLabel("Vùng xuất")
+        lbl_range.setStyleSheet("font-size: 13px; font-weight: bold; color: #E0E0E0; background: transparent; border: none;")
+        layout.addWidget(lbl_range)
+
+        self.combo_range = QComboBox()
+        self.combo_range.addItem("Toàn bộ dự án", export_range.RANGE_FULL)
+        self.combo_range.addItem("Vùng chỉ định (từ → đến)", export_range.RANGE_WINDOW)
+        self.combo_range.currentIndexChanged.connect(self._on_range_mode_changed)
+        layout.addWidget(self.combo_range)
+
+        self.range_row = QHBoxLayout()
+        self.range_row.setSpacing(8)
+        self.spin_from = QDoubleSpinBox()
+        self.spin_to = QDoubleSpinBox()
+        for spin, name in ((self.spin_from, "Từ"), (self.spin_to, "Đến")):
+            caption = QLabel(name)
+            caption.setStyleSheet("font-size: 12px; color: #888; background: transparent; border: none;")
+            self.range_row.addWidget(caption)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.1)
+            spin.setSuffix(" s")
+            spin.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            spin.valueChanged.connect(self._update_preview)
+            self.range_row.addWidget(spin)
+        layout.addLayout(self.range_row)
+
+        lbl_quality = QLabel("Chất lượng")
+        lbl_quality.setStyleSheet("font-size: 13px; font-weight: bold; color: #E0E0E0; background: transparent; border: none;")
+        layout.addWidget(lbl_quality)
+
+        self.combo_quality = QComboBox()
+        for key, label, _preset, _crf in export_range.QUALITY_PRESETS:
+            self.combo_quality.addItem(label, key)
+        self.combo_quality.currentIndexChanged.connect(self._update_preview)
+        layout.addWidget(self.combo_quality)
+
         return panel
 
     def _build_progress_section(self):
@@ -566,6 +634,42 @@ class ExportDialog(QDialog):
                 return True
         return False
 
+    def _project_duration(self):
+        return float(self.model.duration) if self.model is not None else 0.0
+
+    def _current_fps(self):
+        return int(self.combo_fps.currentData() or 30)
+
+    def _range_mode(self):
+        return self.combo_range.currentData() or export_range.RANGE_FULL
+
+    def _sync_range_spins(self):
+        """Nean hai o in/out theo do dai du an THAT, khong phai theo do dai
+        cua lan mo hop thoai truoc do (dung model co the doi sau undo)."""
+        duration = self._project_duration()
+        for spin, target in ((self.spin_from, 0.0), (self.spin_to, duration)):
+            spin.blockSignals(True)
+            spin.setMaximum(duration)
+            spin.setValue(target)
+            spin.blockSignals(False)
+
+    def _current_window(self):
+        """Cua so RenderWorker se dung. Goi thang vao export_range.resolve_window
+        nhu worker — khong co ban phuc bac thu hai o day."""
+        duration = self._project_duration()
+        if self._range_mode() == export_range.RANGE_WINDOW:
+            return export_range.resolve_window(
+                self.spin_from.value(), self.spin_to.value(), duration,
+                self._current_fps())
+        return export_range.resolve_window(0.0, duration, duration,
+                                           self._current_fps())
+
+    def _on_range_mode_changed(self):
+        windowed = self._range_mode() == export_range.RANGE_WINDOW
+        self.spin_from.setEnabled(windowed)
+        self.spin_to.setEnabled(windowed)
+        self._update_preview()
+
     def _update_preview(self):
         ratio_key = self.combo_aspect.currentData() or "16:9"
         res_data = self.combo_resolution.currentData()
@@ -574,12 +678,30 @@ class ExportDialog(QDialog):
         else:
             w, h = 1920, 1080
 
-        fps = self.combo_fps.currentData() or 30
-        duration = self.model.duration if self.model else 0.0
+        fps = self._current_fps()
+        duration = self._project_duration()
         has_audio = self.toggle_audio.isChecked()
 
-        self.lbl_duration.setText(f"Thời lượng: {self._fmt_time(duration)}")
-        self.lbl_format.setText("Định dạng: MP4 (H.264)")
+        window = self._current_window()
+        row = export_range.preset_of(self.combo_quality.currentData())
+        shown = window["span"] if window.get("ok") else 0.0
+        # Vung duoi mot giay la HOP LE (toi thieu 2 frame), nen do dai cua no
+        # phai in ra CON SO. `mm:ss` cua toan bo bai video lam vung 0,6 s in
+        # thanh "00:00" ngay canh nut Xuat — do lan chay 22/10/2026 khi do bang
+        # cua so 1,2 s (no in "00:01", mat mat 0,2 s).
+        if window.get("mode") == export_range.RANGE_WINDOW and window.get("ok"):
+            do_dai = "%.2f s, %d frame" % (shown, window["frames"])
+        else:
+            do_dai = self._fmt_time(shown)
+        self.lbl_duration.setText(
+            "Thời lượng: %s / %s" % (do_dai, self._fmt_time(duration)))
+        # preset/CRF in ra la dung chuoi ffmpeg di vao lenh, khong phai mot
+        # nhan marketing. Khi vung in/out sai, loi nguoi dung doc duoc dat
+        # canh con so 00:00 de khong co "xuat duoc 0 giay" im lang.
+        self.lbl_format.setText(
+            "Định dạng: MP4 · x264 %s · CRF %d%s"
+            % (row[2], row[3],
+               "" if window.get("ok") else " · " + window["error"]))
 
         # Draw preview
         max_preview_h = 240
@@ -619,9 +741,17 @@ class ExportDialog(QDialog):
             return
 
         w, h = res_data
-        fps = self.combo_fps.currentData() or 30
+        fps = self._current_fps()
         ratio_key = self.combo_aspect.currentData() or "16:9"
         export_audio = self.toggle_audio.isChecked()
+        quality = self.combo_quality.currentData()
+
+        window = self._current_window()
+        if not window.get("ok"):
+            # Bao loi TRUOC khi mo hop thoai chon cho luu: nguoi dung dung
+            # 15 giay de tim thu muc roi moi biet range sai thi toi te.
+            self.lbl_status.setText("Lỗi: " + window["error"])
+            return
 
         # Ask output path
         default_name = "export.mp4"
@@ -635,9 +765,11 @@ class ExportDialog(QDialog):
         if not path.lower().endswith(".mp4"):
             path += ".mp4"
 
-        self._start_render(path, w, h, fps, ratio_key, export_audio)
+        self._start_render(path, w, h, fps, ratio_key, export_audio,
+                           window=window, quality=quality)
 
-    def _start_render(self, output_path, width, height, fps, ratio_key, export_audio):
+    def _start_render(self, output_path, width, height, fps, ratio_key,
+                      export_audio, window=None, quality=None):
         self._rendering = True
         self._cancelled = False
         self.btn_export.setEnabled(False)
@@ -651,7 +783,8 @@ class ExportDialog(QDialog):
         # Start render worker
         self._render_thread = QThread()
         self._render_worker = RenderWorker(
-            self.model, output_path, width, height, fps, ratio_key, export_audio
+            self.model, output_path, width, height, fps, ratio_key, export_audio,
+            window=window, quality=quality
         )
         self._render_worker.moveToThread(self._render_thread)
 
@@ -781,7 +914,8 @@ class RenderWorker(QObject):
     errorOccurred = Signal(str)
     cancelled = Signal()
 
-    def __init__(self, model, output_path, width, height, fps, ratio_key, export_audio):
+    def __init__(self, model, output_path, width, height, fps, ratio_key,
+                 export_audio, window=None, quality=None):
         super().__init__()
         self.model = model
         self.output_path = output_path
@@ -790,6 +924,9 @@ class RenderWorker(QObject):
         self.fps = fps
         self.ratio_key = ratio_key
         self.export_audio = export_audio
+        # `window`/`quality` de trong = hanh vi cu: ca du an, CRF 18 medium.
+        self.window = window
+        self.quality = quality
         self._cancel_requested = False
 
     def request_cancel(self):
@@ -811,7 +948,13 @@ class RenderWorker(QObject):
                 self.errorOccurred.emit("Thời lượng dự án bằng 0")
                 return
 
-            total_frames = int(duration * self.fps)
+            window = self.window or export_range.resolve_window(
+                0.0, duration, duration, self.fps)
+            if not window.get("ok"):
+                self.errorOccurred.emit(window["error"])
+                return
+            total_frames = window["frames"]
+            start = window["start"]
             tmp_dir = tempfile.mkdtemp(prefix="clinqing_render_")
 
             # Check ffmpeg — ban di kem trong _internal/tools thang, PATH chi la
@@ -838,6 +981,13 @@ class RenderWorker(QObject):
                 # PTS before mixing prevents them from reaching the final AAC
                 # encoder as non-monotonic timestamps. afade cho vùng chuyển
                 # tiếp được gắn trong chính chuỗi filter này (core/audio_mix).
+                #
+                # Audio van duoc dung cho CA DU AN roi moi cat cua so bang -ss
+                #/-t o input: fade in/out va transition tinh theo truc thoi
+                # gian tuyet doi cua timeline, nen doan 2,0->4,0 cua ban xuat
+                # vung PHAI la dung doan do cua ban xuat toan bo. Cat ngay
+                # trong render_audio la mot duong thong ke thu hai, va hai
+                # duong thong ke tung tra so khac nhau o day (bai hoc the Cat).
                 audio_file = os.path.join(tmp_dir, "audio.wav")
                 audio_mix.render_audio(
                     self.model, audio_clips, duration, audio_file)
@@ -866,18 +1016,21 @@ class RenderWorker(QObject):
                 "-i", "-",
             ]
             if audio_file and os.path.exists(audio_file):
+                cmd.extend(export_range.audio_input_args(window))
                 cmd.extend(["-i", audio_file])
-            cmd.extend([
-                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                "-pix_fmt", "yuv420p",
-            ])
+            cmd.extend(export_range.encode_args(self.quality))
             if audio_file and os.path.exists(audio_file):
                 cmd.extend([
                     "-af", "aresample=48000:async=1:first_pts=0",
-                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-shortest",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
                 ])
             else:
                 cmd.extend(["-an"])
+            # `-t` cua ung dung thay cho `-shortest`: do dai file ra la con so
+            # do chinh export quyet (frames/fps), khong phai "cai nao ngan hon
+            # thi cat cai kia". Cũ: model 1,9 s ra file 1,6 s vi doan cuoi
+            # khong co tieng — clip chu bien mat lang lang.
+            cmd.extend(export_range.output_args(window))
             cmd.append(self.output_path)
 
             # stderr -> file: tránh deadlock khi buffer pipe stderr đầy lúc render dài.
@@ -909,7 +1062,8 @@ class RenderWorker(QObject):
                         self.cancelled.emit()
                         return
 
-                    current_time = frame_idx / self.fps
+                    current_time = export_range.frame_time(
+                        start, frame_idx, self.fps)
                     frame_bytes = composer.render_frame_bytes(current_time)
                     try:
                         proc.stdin.write(frame_bytes)
@@ -920,8 +1074,12 @@ class RenderWorker(QObject):
                     progress = 15 + int((frame_idx + 1) / total_frames * 80)
                     self.progressChanged.emit(progress)
                     self.statusChanged.emit(f"Đang xử lý video ({progress}%)...")
+                    # Dong ho tien te tinh TU CUA SO, khong tinh theo truc
+                    # timeline: xuat doan 2,0->4,0 phai chay 00:00 -> 00:02
+                    # thi nguoi dung moi doc duoc "con bao lau".
                     self.timeUpdate.emit(
-                        self._fmt(current_time), self._fmt(duration)
+                        self._fmt(current_time - start),
+                        self._fmt(window["span"]),
                     )
             finally:
                 composer.close()
@@ -961,12 +1119,13 @@ class RenderWorker(QObject):
                     ffmpeg, "-y", "-loglevel", "error",
                 ]
                 if audio_file and os.path.exists(audio_file):
+                    cmd_audio.extend(export_range.audio_input_args(window))
                     cmd_audio.extend(["-i", audio_file])
                     cmd_audio.extend([
                         "-vn", "-af", "aresample=48000:async=1:first_pts=0",
                         "-c:a", "libmp3lame", "-b:a", "192k",
-                        "-t", f"{duration:.6f}",
                     ])
+                    cmd_audio.extend(export_range.output_args(window))
                 else:
                     cmd_audio.extend(["-vn"])
                 cmd_audio.append(mp3_path)

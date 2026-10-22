@@ -35,10 +35,11 @@ máy này 22/10/2026:
 
 | Lệnh | Thời gian |
 | --- | --- |
-| `main.py --selftest` (đủ 38 dòng) | ~31,1 s |
+| `main.py --selftest` (đủ 39 dòng) | 48,8 s (38 dòng: ~31,1 s) |
 | `main.py --selftest --only="chinh mau"` (1 dòng) | ~5,0 s (~6,2× nhanh hơn) |
+| `main.py --selftest --only="vung xuat"` (1 dòng) | 11,4 s |
 
-Quy tắc: **một lần chạy lọc không bao giờ được báo cáo là "38 dòng xanh"**. Báo
+Quy tắc: **một lần chạy lọc không bao giờ được báo cáo là "39 dòng xanh"**. Báo
 cáo JSON có sẵn bằng chứng — khóa `"only"` là `null` khi chạy đủ bảng, là danh
 sách token khi chạy lọc — nên mọi consumer phải kiểm `payload["only"] is None`
 trước khi tuyên bố cả bảng. Bản thân bộ lọc có gate riêng
@@ -138,11 +139,11 @@ python scratch/user_data_snapshot.py capture scratch/_snap_before.json
 # 1) Audit tên icon + tham số color= trên toàn bộ nguồn
 python scratch/icon_name_audit.py
 
-# 2) Selftest 38 dòng trên tree nguồn
+# 2) Selftest 39 dòng trên tree nguồn
 python main.py --selftest
 
-# 2b) Cùng gate nhưng chỉ một dòng (dev tool, ~5 s thay vi ~31 s). KHONG bao gio
-#     duoc báo cáo là "38 dòng xanh"; payload trả về có khóa "only" để kiểm chứng.
+# 2b) Cùng gate nhưng chỉ một dòng (dev tool, ~5-12 s thay vi ~49 s). KHONG bao gio
+#     duoc báo cáo là "39 dòng xanh"; payload trả về có khóa "only" để kiểm chứng.
 python main.py --selftest t.json --only="chinh mau"
 
 # 3) Đo khởi động (bao gồm control cùng lần, xem mục dưới đây)
@@ -238,12 +239,20 @@ python scratch/media_split_probe.py               # -> 167 cua PASS, 78,6 s; anh
                                                   #    cat + hop thoai moc KHONG phai cuon
 python scratch/split_gate_counterfactual.py       # -> 26/26, 0,5 s (thang do --split-report)
 
-# 4m) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
+# 4m) Vung xuat in/out + preset chat luong (nhom K, 2026-10-22): mot seam
+#     core/export_range.py cho ca nhan lan lenh ffmpeg, va -shortest bi nhac ra
+python scratch/export_range_counterfactual.py     # -> 18/18 do dung ly do, 178,0 s
+                                                  #    (khuon loc --only + 1 SPOT du 39 dong)
+python scratch/export_range_evidence.py           # -> 16 cua PASS, 14,7 s; anh 1560x1380
+                                                  #    2 che do hop thoai + 24/12 khung hue
+python scratch/export_quality_cost_probe.py       # -> 8 cau hinh preset/CRF do xen ke 2 vong
+
+# 4n) Ban dong goi (dist/Clinging/Clinging.exe): gate chay TRONG exe, hai phan
 #     chung (lat _internal/styles, an core/ cua tree nguon) + do boot
 python scratch/frozen_bundle_probe.py             # -> ALL PASS (0 fail), rc=0
 dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json
 
-# 4n) Chinh bo cai loc --only va dau que cua cac probe phan chung
+# 4o) Chinh bo cai loc --only va dau que cua cac probe phan chung
 python scratch/selftest_filter_counterfactual.py  # -> 10/10 cua, 218,8 s; loi "xanh vi
                                                   #     dau vao rong" phai do bang dong tu
 python scratch/needle_canary.py                   # -> "ALL CLEAN: n/m probe con nguyen
@@ -1007,6 +1016,84 @@ Hộp thoại: ba cột `col_count` / `col_length` / `col_points` đổi theo `c
 chạy khi kiểu mốc không còn mốc hợp lệ nào (thay vì âm thầm cắt đều). Logic cắt
 giữ nguyên như cam kết "chỉ thay giao diện" — mọi con số mới nằm trong
 `build_boundaries()` và được dòng selftest đo lại trên file.
+
+## Cổng "xuất theo vùng in/out + preset" (nhóm K, 2026-10-22)
+
+Nguồn ý tưởng: người dùng xuất cả bài rồi cắt lại bằng tay, và hộp thoại Xuất
+chỉ có một chất lượng cố định (CRF 18 `medium`). Nhóm này thêm **hai** thứ vào
+cùng một đường: cửa sổ `Từ → Đến` (kèm chế độ toàn bộ) và bốn preset
+`Cao / Cân bằng / Nhẹ / Nhanh`. Nó cũng **nhổ `-shortest`** khỏi lệnh xuất —
+lỗi đã parked từ nhóm I: `-shortest` ở mux cắt file MP4 xuống đúng độ dài
+tiếng, nên một clip chữ nằm sau clip tiếng cuối cùng biến mất im lặng
+(model 1,9 s → file 1,6 s).
+
+Toán quyết định nằm ở MỘT chỗ duy nhất: `core/export_range.py`
+(`resolve_window`, `frame_time`, `audio_input_args`, `output_args`,
+`QUALITY_PRESETS`). `ui/export_dialog.py` gọi nó ở cả hai đầu — hộp thoại để
+in nhãn, `RenderWorker` để dựng lệnh ffmpeg — nên không thể có chuyện "nhãn
+nói một đằng, lệnh làm một nẻo" (bài học của commit `9ed6125` ở thẻ Cắt).
+
+| Dòng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `vung xuat in/out + preset chat luong` (dòng 39) | Bảy khúc, trong đó chỉ có khúc 1–4 chạm `export_range` trên giấy: (1) toàn bộ cửa số — `MIN_WINDOW_FRAMES = 2`, `span` sinh từ `frames / fps` chứ không từ hiệu hai số nhập tay, **hai đầu đều bị kẹp** (`-5 → 0` và `1,0 → 999 → 1,4 s`); (2) `RenderWorker` phải đi qua seam (`co_names`); (3) fixture hai nửa khác nhau và chỉ một nửa có tiếng; (4) hộp thoại và worker phải trả về CÙNG một cửa sổ, nhãn `lbl_duration` phải đọc ra **con số**, và bấm nút THAT với vùng sai thì hộp thoại lưu không được mở; (5) **năm lần xuat THAT** qua `RenderWorker`, đo lại bằng `ffprobe -count_frames` + `os.path.getsize`; (6) vùng phải là **cắt** của toàn bộ: giải mã cả file theo chỉ số khung hình và so hue từng khung (mọi `cat` ≤ 15°, mọi `dau` > 20°); (7) preset đổi thật số byte trên cùng nội dung (CRF 24 nhỏ hơn CRF 18 ít nhất 15%). | `scratch/export_range_counterfactual.py`: 18 phép đổi byte trên BA file nguồn thật (`core/export_range.py`, `ui/export_dialog.py`, `diagnostics.py`), mỗi phép chạy lại `--only` của đúng dòng này |
+
+Vì sao các con số fixture lại là những con số đó:
+
+* `FPS = 10`, nguồn `TOTAL = 2,4 s` → 24 khung, vùng `1,2 → 2,4` = 12 khung.
+  Tròn cả hai đầu để `frames` không phải số do làm tròn sinh ra.
+* Khúc 5 có thêm **hai cửa sổ nằm trong đoạn có tiếng** (`tieng` = 0→0,6 s
+  và `vung_cat` = 0,6→1,2 s) trên một fixture có ramp âm lượng
+  (`sine 440 Hz`, gain 1,0 đến 0,6 s rồi 0,02). Lý do: `vung` ở trên nằm trọn
+  trong đoạn câm nên nó **không đo được đường audio** — vết `worker_bo_audio_seek`
+  đã xanh một cách giả ở đó (đo 22/10/2026). Đây là phép thu duy nhất chứng
+  minh `-ss` của `export_range` đi vào lệnh xuất video: `co_names` nhìn thấy
+  `audio_input_args` qua đường mp3 sidecar nên cấu trúc không phân biệt được.
+* Khúc 4 **ghim `combo_fps` xuống 30**: ở 24 fps (mặc định của combo) thì
+  1,25 s tròn ven 30 khung hình, nên `span` tính bằng hiệu hai số nhập tay
+  trùng khớp `frames / fps` và vết `hop_thoai_tu_tinh_span` xanh như không.
+  37,5 frame thì không phép nguyên hoá nào sinh ra được.
+* Bốn preset lấy từ số đo, không lấy từ cảm tính:
+  `scratch/export_quality_cost_probe.py` → `scratch/export_quality_cost.json`
+  (1280×720@30, 2,0 s, 2 vòng, 8 cấu hình). Trên máy này: CRF18 `medium`
+  1,938 s / 1.151.616 B; CRF21 `medium` 1,865 s / 0,777× byte; CRF24 `medium`
+  2,134 s / 0,563×; CRF23 `veryfast` 1,049 s (0,541× thời gian) / 0,558× byte.
+  `ultrafast` bị loại dù nhanh nhất (0,712 s) vì nó **phình** tệp lên 1,542×.
+
+Số đo thật của lần kiểm (tree nguồn, 2026-10-22):
+
+* `--selftest --only="vung xuat"`: 1 dòng, `failed = []`, rc=0, **11,4 s**.
+  Chi tiết: `24 frame/2.40s toan bo ... vung 1.20s = 12 frame cat cua no
+  (lech mau [2.5, 1.5, 6.6, ...] do <=15), tieng 6 f RMS 0.0880 vs tam 6 f
+  RMS 0.0067 (13.2x), CRF24 18191 B < CRF18 30525 B cung frame`.
+* `scratch/export_range_counterfactual.py`: **18/18 PHAN BIET**, `ALL PASS`,
+  rc=0, **178,0 s**. SPOT: `rc=1 rows=39 failed=['vung xuat in/out + preset
+  chat luong']`; khôi phục: `rc=0 rows=39 failed=[]`. Hai vết đỏ bằng lời của
+  chính người dùng: `do_dai_vung_in_mm_ss` in ra
+  `'Thời lượng: 00:00 / 00:02'`, `worker_bo_do_dai` in ra
+  `tieng: 6 frame/1.2 s thay vi 6/0.6 s`.
+* `scratch/export_range_evidence.py`: **16 cửa, ALL PASS**, rc=0, **14,7 s**.
+  Ảnh `scratch/export_range_evidence.png` (1560×1380): panel A là
+  `ExportDialog` THẬT ở 1120×520 đã cuộn tới hạn cho cả hai chế độ
+  (`Thời lượng: 00:02 / 00:02` và `Thời lượng: 1.21 s, 29 frame / 00:02`,
+  `Định dạng: MP4 · x264 medium · CRF 21`), B là 24 + 12 khung giải mã thật
+  kèm hiệu số hue, C là bảng `ffprobe -count_frames` của năm tệp, D là RMS hai
+  cửa sổ. Đã mở ảnh ra xem: bản đầu **dòng chú thích của A chồng lên tiêu đề B** vì panel A
+  cao 372 px trong khi ảnh 700 px + hai dòng chú thích cần 401 px — đã nong
+  panel A lên 420 px và dời B/C/D xuống 48 px.
+* `scratch/needle_canary.py`: `export_range_counterfactual 18 vet OK`,
+  `ALL CLEAN: 12/14`.
+* Snapshot dữ liệu người dùng quanh lần chạy: **1926 → 1926 file,
+  `THEM: 7 / MAT: 7 / DOI: 0`**, rc lệnh diff = 0. Cả 14 đường đều nằm trong
+  `.clinqing\recovery` và đúng hai stem fixture của `--selftest`
+  (`Kiem karaoke` 5, `Kiem recap` 2) — vòng quay keep-5, không phải dữ liệu
+  người dùng.
+* `ClingingQt.spec`: `hiddenimports` thêm `core.export_range` +
+  `ui.export_dialog` **nhưng chưa dựng lại bundle** — người dùng chốt
+  "code tiếp, chưa dựng lại", nên mọi số đo ở trên là tree nguồn.
+
+Những gì KHÔNG đổi: đường xuất mặc định vẫn là `window=None` (toàn bộ, CRF 18
+`medium`, không `-shortest`), nên hành vi của bản 1.0.4 giữ nguyên khi người
+dùng không chọn vùng. `export_audio` vẫn chỉ gates tệp mp3 sidecar.
 
 ## Thất bại đã ghi (để không lặp)
 
