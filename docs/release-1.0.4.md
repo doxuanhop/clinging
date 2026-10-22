@@ -143,6 +143,12 @@ Số đo trên máy phát triển (fixture 6 s 1280×720, 1.951.137 B, 8 CPU log
   gồm selftest của exe đã cài khớp bundle (38 dòng), cửa sổ thật capture,
   `.clinq` double-click, dự án THẬT của người dùng (`Dự án 2`) mở đúng thang cua
   dung phim và **còn nguyên byte** sau cả lần đo.
+  `--startup-report` của chính exe đã cài: cửa sổ hiện lúc **0,9166 s**, working set
+  **68.876 KiB** lúc đó (82.556 KiB sau nhịp nghỉ) và cả chín cửa `True`
+  (`boot_khong_cv2`, `boot_khong_keo_trang_dung`, `boot_khong_psutil`,
+  `boot_khong_keo_nen`, `bia_duoc_ve`…). Bản đã cài liền trước (1.0.2) là 0,84–0,95 s
+  nhưng **74.992 KiB** — tức phần lười nạp của 20/10 giờ đã nằm trong app người dùng
+  thật, không chỉ trong `dist`.
 - **Một cổng trong bundle 1.0.4 báo đỏ trên một app lành**: `--split-report` của
   chính exe đã cài vẫn giữ `len(menu_actions) == 2`, mà menu card video từ bản này
   có ba hành động (thêm "Nén / tối ưu tệp…"). Số đo thật trong payload của nó đều
