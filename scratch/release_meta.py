@@ -73,6 +73,64 @@ def check_msi(path, expect):
     return 1 if problems else 0
 
 
+def source_versions():
+    """Doc ba nguon phai TRUNG NHAU truoc khi dung bat cu thu gi.
+
+    Vi sao lai can: tu 1.0.1 den 1.0.3 `core/settings.py:APP_VERSION` van ghi
+    "1.0.0" trong khi hai file dong goi da chay 1.0.3 — hop "Về" cua ban ship
+    noi sai ban dang chay. Gate cu (`settings.APP_VERSION in about`) XANH SUOT
+    vi no so chuoi cua chinh no, nen lech khong the ty lo. Doi thanh so ba
+    nguon doc lap trong nguon.
+    """
+    import re
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def read(*parts):
+        with open(os.path.join(repo, *parts), encoding="utf-8") as handle:
+            return handle.read()
+
+    iss = read("packaging", "clinging.iss")
+    vi = read("packaging", "version_info.txt")
+    st = read("core", "settings.py")
+
+    def grab(text, pattern, label):
+        match = re.search(pattern, text)
+        if not match:
+            raise SystemExit("khong doc duoc %s" % label)
+        return match.group(1)
+
+    out = {}
+    out["clinging.iss MyAppVersion"] = grab(
+        iss, r'#define\s+MyAppVersion\s+"([^"]+)"', "MyAppVersion trong .iss")
+    out["version_info.txt FileVersion"] = grab(
+        vi, r"StringStruct\('FileVersion', '([^']+)'\)", "FileVersion")
+    out["version_info.txt ProductVersion"] = grab(
+        vi, r"StringStruct\('ProductVersion', '([^']+)'\)", "ProductVersion")
+    ff = re.search(r"filevers=\((\d+), (\d+), (\d+), (\d+)\)", vi)
+    pv = re.search(r"prodvers=\((\d+), (\d+), (\d+), (\d+)\)", vi)
+    if not ff or not pv:
+        raise SystemExit("khong doc duoc filevers/prodvers")
+    out["version_info.txt filevers"] = ".".join(ff.groups()[:3])
+    out["version_info.txt prodvers"] = ".".join(pv.groups()[:3])
+    out["core/settings.py APP_VERSION"] = grab(
+        st, r'(?m)^APP_VERSION\s*=\s*"([^"]+)"', "APP_VERSION")
+    return out
+
+
+def check_sources():
+    values = source_versions()
+    print("Nguon so phai khop (doc truc tiep trong tree):")
+    for name, value in sorted(values.items()):
+        print("   %-32s %s" % (name, value))
+    distinct = set(values.values())
+    if len(distinct) != 1:
+        print("   LECH: %d so khac nhau %r" % (len(distinct), sorted(distinct)))
+        return 1, ""
+    version = next(iter(values.values()))
+    print("   KHOP: tat ca = %s" % version)
+    return 0, version
+
+
 def main(argv):
     expect = None
     if argv[:1] == ["--expect"]:
@@ -82,6 +140,13 @@ def main(argv):
     if not argv:
         raise SystemExit(__doc__)
     rc = 0
+    src_rc, src_version = check_sources()
+    rc = max(rc, src_rc)
+    if expect is None:
+        # Mac dinh lay so tu .iss: ten asset, ProductVersion MSI va FileVersion
+        # exe PHAI theo no. truoc day `--expect` la chu thuat do nguoi dung go
+        # tay, nen quen not la khong bat duoc lech.
+        expect = src_version
     for path in argv:
         if path.lower().endswith(".msi"):
             rc = max(rc, check_msi(path, expect))

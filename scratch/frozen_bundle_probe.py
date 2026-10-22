@@ -12,6 +12,10 @@ Phan biet voi " chay duoc la du":
   * Counterfactual thu hai (ve MA NGUON, khong chi resource): an `core/` cua
     tree nguon trong luc exe chay. xanh = PYZ la noi duy nhat no lay
     `core.clip_effects`; do = bundle tung nhan ngan hang cua nguon.
+  * Counterfactual thu ba (an `ui/` cua tree nguon): row nen tep import thang
+    `ui.compress_dialog`, va do la module chi duoc nap bang lenh import ben
+    trong ham cua MainWindow. An `ui/` ma row van xanh tung byte = hop thoai
+    nen that su nam trong PYZ, nguoi dung bam menu khong crash.
 
 Chay:  python scratch/frozen_bundle_probe.py
 """
@@ -123,6 +127,15 @@ def main():
         check("selftest dong goi: matte thu nho khong doi quyet dinh",
               "matte 256 px" in chroma_rows[0]["detail"], True)
 
+    # Dong nen tep la bang chung duy nhat cho `ui.compress_dialog`: o tree nguon
+    # thi module luon do doc duoc, chi co selftest chay TRONG PYZ moi tra loi
+    # duoc cau "bam menu Nen co crash khong". Row do import thang module
+    # (diagnostics._media_compress_ok) nen xanh = module co trong bundle.
+    nen_rows = [r for r in report["checks"] if "nen toi uu tep" in r["name"]]
+    check("bundle co dong selftest nen tep", len(nen_rows), 1)
+    if nen_rows:
+        check("selftest dong goi: nen tep OK", nen_rows[0]["ok"], True)
+
     # Counterfactual: lat resource cua bundle -> selftest PHAI fail.
     styles = os.path.join(INTERNAL, "styles")
     hidden = os.path.join(INTERNAL, "styles__probe_hidden")
@@ -172,6 +185,33 @@ def main():
               os.path.isdir(src_core), True)
     else:
         check("khong con sot _core_probe_hidden tu lan chay truoc", False, True)
+
+    # Lan an thu hai, cho `ui/`: dung nhu tren nhung cho phep thu tinh nhat la
+    # hop thoai nen. Neu bundle khong tu cap `ui.compress_dialog` thi row 38 che
+    # `ModuleNotFoundError` ngay tai day, khong phai luc nguoi dung bam menu.
+    src_ui = os.path.join(REPO, "ui")
+    ui_hidden = os.path.join(REPO, "_ui_probe_hidden")
+    if not os.path.isdir(ui_hidden):
+        shutil.move(src_ui, ui_hidden)
+        try:
+            hide_report, hide_rc = run_selftest(
+                os.path.join(REPO, "scratch", "frozen_bundle_hide_ui.json"))
+            check("counterfactual: an source/ui -> exe van exit 0 (doc PYZ)",
+                  hide_rc, 0)
+            check("counterfactual: khong muc nao fail khi source/ui bi an",
+                  hide_report["failed"], [])
+            # So voi baseline tung byte: so lieu doi = exe tung tim thay cua
+            # `ui/` ben ngoai roi thay bang cai khac.
+            hide_nen = [r["detail"] for r in hide_report["checks"]
+                        if "nen toi uu tep" in r["name"]]
+            check("counterfactual: chi tiet nen tep giong het baseline tung byte",
+                  hide_nen, [nen_rows[0]["detail"]] if nen_rows else [])
+        finally:
+            shutil.move(ui_hidden, src_ui)
+        check("counterfactual: source/ui da duoc tra lai",
+              os.path.isdir(src_ui), True)
+    else:
+        check("khong con sot _ui_probe_hidden tu lan chay truoc", False, True)
 
     with open(os.path.join(REPO, "scratch", "frozen_bundle_probe.json"),
               "w", encoding="utf-8") as handle:

@@ -35,11 +35,14 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
 ```bash
 python main.py                                  # chay app binh thuong
 python main.py --selftest                       # 38 dong cong, bao JSON co "failed"
+python main.py --selftest out.json --only="chinh mau"   # mot dong thoi (~5 s vs ~31 s); khong bao gio duoc bao cao la "38 dong xanh", doc payload["only"] truoc khi tin
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
 python scratch/icon_name_audit.py               # ten glyph + tham so tren toan bo nguon
 python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi dung ly do
+python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 12 probe, probe khong chay duoc = probe im lang
+python scratch/selftest_filter_counterfactual.py # phan chung: bo loc --only, 10 cua (~3,7 phut)
 python scratch/boot_laziness_counterfactual.py  # phan chung: boot khong duoc keo trang dung phim/psutil/hop thoai nen
 python scratch/save_atomic_counterfactual.py    # phan chung: 4 phep doi byte o duong luu du an
 python scratch/media_locator_counterfactual.py  # phan chung: 6 phep doi byte o chieu dinh vi media
@@ -71,8 +74,8 @@ python scratch/compress_cost_probe.py           # do chi phi 10 cau hinh preset/
 python scratch/boot_low_spec_probe.py           # 5 vong xuyen tat: boot/WS/private + seam icon (may phai yen)
 python scratch/wall_to_window_probe.py          # do lan chuong TU BEN NGOAI (Popen -> cua so hien)
 python scratch/boot_phase_profile.py            # tam chia pha MainController() bang cProfile
-python scratch/frozen_bundle_probe.py           # gate TRONG exe dong goi: 35 dong + 2 phan chung
-                                                # (lat _internal/styles, an core/ cua tree nguon)
+python scratch/frozen_bundle_probe.py           # gate TRONG exe dong goi: 38 dong + 3 phan chung
+                                                # (lat _internal/styles, an core/ roi an ui/ cua tree nguon)
 dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json  # boot cua ban dong goi
 python scratch/user_data_snapshot.py capture scratch/_snap_before.json  # truoc khi do
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json   # sau khi do
@@ -139,6 +142,14 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   thêm 1 MiB. Tính năng mới có module riêng phải thêm cửa đo `sys.modules` trên
   đúng tên module đó (`boot_khong_keo_nen`) rồi bắt nó đỏ bằng
   `boot_laziness_counterfactual.py`.
+- **Cửa laziness không cứu được bundle.** Module UI chỉ được `import` bên trong
+  thân hàm (`ui.compress_dialog` nằm trong `MainWindow._open_media_compress`) thì
+  tree nguồn luôn xanh mà bản đóng gói vẫn có thể thiếu nó — người dùng chỉ thấy
+  crash lúc bấm menu. Hai chỗ phải sửa cùng nhau: `hiddenimports` trong
+  `ClingingQt.spec` VÀ một lệnh `import` thẳng trong row selftest của tính năng đó
+  (đúng kiểu `ui.split_dialog`); phản chứng bằng cách **đổi tên vật lý**
+  `ui/compress_dialog.py` (đỏ đúng một dòng, `ModuleNotFoundError`) và bằng cửa
+  "an `ui/` cua tree nguon" trong `frozen_bundle_probe.py`.
 - **Mọi thẻ pixel đều trả phí round-trip, không chỉ phí bộ lọc.** Chuỗi chung
   `apply_color_effects` (QImage→numpy→proxy 640 px→QImage) tự nó ngốn 65–85
   ms/frame ở 720p/1080p — đo 21/10/2026 qua `FrameComposer`: không thẻ 30 ms,
@@ -162,6 +173,28 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   minh sự tồn tại bằng `cmd dir /b`.
 - **`write_text`/`read_text` đổi LF thành CRLF**; sửa tạm trong `scratch/` thì snapshot
   bằng byte và khôi phục bằng byte.
+- **`git checkout -- <file>` cũng đổi LF thành CRLF** (repo này `core.autocrlf=true`
+  + `.gitattributes text=auto`, nên `git status` KHÔNG báo gì sau khi checkout).
+  Hệ quả đo 22/10/2026: sau một lệnh checkout để sửa hậu quả chạy trùng probe,
+  `core/clip_effects.py` thành 714 dòng CRLF, `needle_canary.py` lập tức báo
+  `popart_project_counterfactual ... LECH, mau tim thay 0 lan` — probe nối mẫu
+  bằng LF (`L(*lines)`) không còn áp được byte nào, nghĩa là cả sáu phép phản
+  chứng pop art chết. Chữa: `data.replace(b'\r\n', b'\n')` rồi đòi
+  `open(f,'rb').read() == git show HEAD:f` (bốn file nguồn bị dính: clip_effects,
+  frame_composer, export_dialog, src/asr/*). Probe dùng mẫu một dòng thì không
+  chết, nên triệu chứng chỉ hiện ở những probe có mẫu nhiều dòng.
+- **Hai bản sao cùng chạy một probe là hỏng cả hai.** Probe phan chung doi byte
+  file nguon va ghi `%TEMP%\clinging_selftest.json`; chay song song (mot lan
+  background cu + mot lan moi) thi mot ban doc `original` sau khi ban kia da
+  vet, va `finally` cua no phuc lai... doan vet. Lan chay 22/10/2026 bo lai
+  `if False and "hue_shift" in params` trong `core/clip_effects.py`; phat hien
+  bang `git status`, phuc bang `git checkout -- <file>` (file do khong nam trong
+  dam thay doi co y). KHONG bai dung hai vong probe song song.
+- **`--only` cat nua bang do luu do.** Lan chay loc co `failed=[]` khong nghia la
+  38 dong xanh; doc `payload["only"]` (phai la `null`) truoc khi bao cao. Probe
+  phan chung da theo khuon: baseline du bang -> vet chay `--only` -> MOT lan SPOT
+  du bang -> khoi phuc du bang. Gia do: tron bang 31,1 s, mot dong 5,0 s; nen tep
+  17 vet 377,2 s -> 183,7 s, chroma 19 vet = 147,9 s, chinh mau 13 vet = 133,6 s.
 
 ## Cấm
 

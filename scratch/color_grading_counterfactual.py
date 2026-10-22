@@ -7,6 +7,10 @@ ma: phep xoay hue, tung banh xe lift/gamma/gain, thu tu kenh cua bo 3D, nhanh 1D
 khoa cache .cube, hai seam cua panel, hai luat gom cua lenh undo, phep boc the
 trung tinh, duong tat 0 do, va tap khoa GRADING_KEYS/PIXEL_KEYS.
 
+13 vet chay `main.py --selftest --only=chinh mau` (1 dong, ~6 s) thay vi tron 38
+dong (~31 s), kem MOT vet chay lai tren TRON bang de chot "khong keo theo dong
+khac"; do 22/10/2026, chay tron 13 lan la ~7 phut ngan HDD va treo ca may.
+
 Chay:
     python scratch/color_grading_counterfactual.py
 
@@ -39,16 +43,6 @@ def L(*lines):
     return b"\n".join(lines)
 
 
-MERGE_BLOCK = L(
-    b'        keys = set(self._requested)',
-    b'        if keys != set(other._requested) or not keys:',
-    b'            return False',
-    b'        return other._at - self._at <= self.MERGE_WINDOW_S')
-MERGE_BLOCK_FALSE = L(
-    b'        keys = set(self._requested)',
-    b'        if not keys:',
-    b'            return False',
-    b'        return other._at - self._at <= self.MERGE_WINDOW_S')
 MERGE_DEAD = L(
     b'    def merges_with(self, other: "Command") -> bool:',
     b'        if not isinstance(other, SetGradingCommand):',
@@ -92,8 +86,11 @@ MUTATIONS = [
        b"        key = (os.path.abspath(path),)", 1)],
      "LUT bi thay noi dung van dung ban cu trong cache"),
     ("panel khong doc lai bo so khi doi clip / khi UndoStack doi (seam)",
-     [(PP, L(b"        self._sync_audio_card()", b"        self._sync_grading_card()"),
-       b"        self._sync_audio_card()", 1)],
+     # `the Cat` (9ed6125) chen `_sync_trim_card()` vao giua hai dong nay, nen
+     # mau 2 dong o day tung im lang xuat hien 0 lan — vet phai theo chuoi 3 dong.
+     [(PP, L(b"        self._sync_audio_card()", b"        self._sync_trim_card()",
+             b"        self._sync_grading_card()"),
+       L(b"        self._sync_audio_card()", b"        self._sync_trim_card()"), 1)],
      "update_values thieu _sync_grading_card"),
     ("panel ghi vao clip bang loi khac, khong qua SetGradingCommand (seam)",
      [(PP, b"        from core.commands import SetGradingCommand",
@@ -105,7 +102,12 @@ MUTATIONS = [
          b"        return False"), 1)],
      "keo 4 nac gamma thanh"),
     ("lenh chinh mau gom moi thu: quay hue bi hap vao buoc gamma",
-     [(CM, MERGE_BLOCK, MERGE_BLOCK_FALSE, 1)],
+     # Khong dung mau 4 dong thuan: doan `keys = set(...)` ay xuat hien 2 lan
+     # trong commands.py sau khi SetChromaCommand ra doi — vet phai gan voi `isinstance(other, SetGradingCommand)` moi doc
+     # dung lenh cua chinh mau.
+     [(CM, MERGE_DEAD, MERGE_DEAD.replace(
+         b"        if keys != set(other._requested) or not keys:",
+         b"        if not keys:"), 1)],
      "num khac khoa bi gom chung"),
     ("the trung tinh khong bi boc: clip giu bo so khong lam doi gi dung numpy",
      [(CM, b"        if grading_is_identity(merged):",
@@ -138,8 +140,13 @@ def drop_pycache(paths):
                 pass
 
 
-def run_gate_row(paths):
-    """Chay --selftest tren dung duong production va tra ve dong chinh mau.
+def run_gate_row(paths, only=True):
+    """Chay --selftest tren dung duong production va tra ve (ok, detail, payload).
+
+    `only=True` them `--only=chinh mau`: 13 vet keu nhau, moi vet chay tron 38
+    dong la ~31 s (karaoke/pop art/nen tep cung ma hoa that) = ~7 phut ngan HDD
+    va treo ca may. Van di qua dung lenh production, van co QApplication + rc
+    that. Bo loc co gate rieng: `scratch/selftest_filter_counterfactual.py`.
 
     Bao cao bi XOA truoc khi chay: mot process chet crash (0xC0000409) khong ghi
     bao cao, va neu doc file cu thi cua do bi hien thi thanh XAN gia. Thieu bao
@@ -149,28 +156,38 @@ def run_gate_row(paths):
         os.remove(REPORT)
     except OSError:
         pass
-    r = subprocess.run([sys.executable, "main.py", "--selftest"],
-                       cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    cmd = [sys.executable, "main.py", "--selftest", REPORT]
+    if only:
+        cmd.append("--only=" + GATE)
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                       encoding="utf-8")
     if not os.path.exists(REPORT):
-        return False, "khong co bao cao: process chet truoc khi ghi (rc=%s)" % r.returncode
+        return False, "khong co bao cao: process chet truoc khi ghi (rc=%s)" % r.returncode, None
     with open(REPORT, encoding="utf-8") as f:
         d = json.load(f)
+    if only and (d.get("only") != [GATE] or len(d["checks"]) != 1):
+        # Lan chay loc PHAI la lan loc, neu khong `failed=[]` mang nghia khac.
+        raise AssertionError("--only=%s khong loc dung mot dong (only=%r, "
+                             "checks=%d)" % (GATE, d.get("only"), len(d["checks"])))
     rows = [c for c in d["checks"] if GATE in c["name"]]
     if len(rows) != 1:
         return False, "bao cao co %d dong chua 'chinh mau' (rc=%s, checks=%d)" % (
-            len(rows), r.returncode, len(d.get("checks", [])))
-    return rows[0]["ok"], rows[0].get("detail", "")
+            len(rows), r.returncode, len(d.get("checks", []))), d
+    return rows[0]["ok"], rows[0].get("detail", ""), d
 
 
 def main():
     paths = sorted({m for _, edits, _ in MUTATIONS for (m, _, _, _) in edits})
     original = snapshot(paths)
     failures = []
+    nfull = 0
     try:
-        ok, detail = run_gate_row(paths)
+        ok, detail, d = run_gate_row(paths, only=False)
         if not ok:
             raise AssertionError("baseline phai XANH truoc khi do, ma: %s" % detail)
-        print("baseline: dong chinh mau XANH")
+        nfull = len(d["checks"])
+        print("baseline: XANH du %d dong, dong chinh mau: %s"
+              % (nfull, detail[:80]))
 
         for desc, edits, expect in MUTATIONS:
             try:
@@ -181,7 +198,7 @@ def main():
                             "mau byte xuat hien %d lan o %s (can dung %d): %r"
                             % (data.count(old), path, count, old[:60]))
                     open(path, "wb").write(data.replace(old, new, count))
-                ok, detail = run_gate_row(paths)
+                ok, detail, _ = run_gate_row(paths)
                 if ok:
                     failures.append("%s -> gate VAN XANH (phan chung that bai)" % desc)
                 elif expect not in detail:
@@ -192,10 +209,33 @@ def main():
             finally:
                 restore(original)
 
-        ok, detail = run_gate_row(paths)
-        if not ok:
+        # 13/13 lan chay loc noi "do vi DUNG ly do cua no" nhung khong the noi
+        # "khong keo theo dong khac", vi 37 dong kia khong chay. Vet dau tien do
+        # lai tren TRON bang — mot lan, thay vi 13.
+        desc, edits, expect = MUTATIONS[0]
+        for (path, old, new, count) in edits:
+            data = open(path, "rb").read()
+            if data.count(old) != count:
+                raise AssertionError("spot: mau byte lech o %s" % path)
+            open(path, "wb").write(data.replace(old, new, count))
+        try:
+            ok, detail, d = run_gate_row(paths, only=False)
+        finally:
+            restore(original)
+        failed = d["failed"] if d else ["khong co bao cao"]
+        if (ok or expect not in detail or len(failed) != 1
+                or GATE not in failed[0] or len(d["checks"]) != nfull
+                or d.get("only") is not None):
+            failures.append("spot_tron_bang -> ok=%s failed=%s (%s)"
+                            % (ok, failed, detail[:90]))
+        else:
+            print("  SPOT tron %d dong: do DUNG MOT cua [%s] failed=%s"
+                  % (nfull, desc, failed))
+
+        ok, detail, d = run_gate_row(paths, only=False)
+        if not ok or (d and d["failed"]) or len(d["checks"]) != nfull:
             raise AssertionError("sau phuc hoi gate van do: %s" % detail)
-        print("phuc hoi: dong chinh mau XANH lai")
+        print("phuc hoi: XANH lai du %d dong" % nfull)
     finally:
         restore(original)
         for path in paths:

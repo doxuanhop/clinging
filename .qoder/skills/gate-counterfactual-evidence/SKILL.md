@@ -24,7 +24,8 @@ Bốn bước bắt buộc cho mọi thay đổi ở Clinging. Thiếu một bư
 Gọi **chính lệnh người dùng gọi**. Không tự dựng đầu vào, không viết bộ mô phỏng.
 
 ```bash
-python main.py --selftest                 # 28 dong, JSON co "failed": [...]
+python main.py --selftest                 # 38 dong, JSON co "failed": [...]
+python main.py --selftest out.json --only="chinh mau"   # mot dong (~5 s vs ~31 s); payload["only"] != null => KHONG duoc bao cao la du bang
 python main.py --startup-report           # boot tung pha + control cung land
 python scratch/icon_name_audit.py         # ten glyph + tham so tren toan bo nguon
 dist/Clinging/Clinging.exe --selftest     # bundle that

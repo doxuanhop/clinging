@@ -5,9 +5,10 @@ NGUON tren clip co toc do khac 1, giu meg ben kia khi cat, khong cho clip ve 0
 giay, khong lo nguon truoc giay 0, ripple tren Main Storyline, mot lan doi so la
 mot buoc undo, va an khi clip khong co cua so nguon. Muoi hai vet CU chen vao
 hai file nguon THAT (ui/properties_panel.py, core/commands.py), moi vet chay
-`python main.py --selftest <json>` THAT va doi dong do vi DUNG ly do cua no,
-khong keo theo dong khac. Byte duoc khoi phuc trong finally, roi selftest lan
-cuoi phai XANH 37 dong.
+`python main.py --selftest <json> --only=<dong do>` THAT va doi dong do vi DUNG
+ly do cua no; vet dau tien chay lai TREN TRON bang de chot rang no khong keo
+theo dong khac. Byte duoc khoi phuc trong finally, roi selftest lan cuoi phai
+XANH du so dong cua bang (so do tu lan chay tron, khong phai hang so nho).
 
 Vet CU + ly do mong doi:
   1. `in_min` bo phep nhan speed: tren clip 2x co in_point = 3,0s dat tai
@@ -125,12 +126,32 @@ MUTATIONS = [
 ]
 
 
-def run_selftest(report):
-    proc = subprocess.run([sys.executable, "main.py", "--selftest", report],
-                          cwd=ROOT, capture_output=True, text=True,
+def run_selftest(report, only=None):
+    """Chạy `main.py --selftest` THAT, có hoặc không lọc lại đúng một dòng.
+
+    `only=ROW` cắt 38 dòng xuống 1: do 22/10/2026, 12 phép đổi byte mà mỗi phép
+    chạy trọn bảng (31 s, các dòng karaoke/pop art/chroma/nén đều mã hoá thiệt)
+    là ~7 phút ngán HDD. Vẫn đi qua đúng seam production — QApplication, boundary
+    của bundle, rc của chính `main.py` — chứ không gọi thẳng hàm `_ok`.
+    """
+    if os.path.exists(report):
+        os.remove(report)
+    cmd = [sys.executable, "main.py", "--selftest", report]
+    if only:
+        cmd.append("--only=" + only)
+    proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                           encoding="utf-8", errors="replace")
     with open(report, encoding="utf-8") as handle:
         payload = json.load(handle)
+    if only:
+        # Lan chay loc PHAI la lan loc: dung mot dong va dung dong dang do. Neu
+        # `--only` bi lang qua thi bao cao `failed=[]` co nghia khac hon nghia
+        # ma probe nay dung den. Bo loc co gate rieng:
+        # scratch/selftest_filter_counterfactual.py.
+        names = [r["name"] for r in payload["checks"]]
+        if payload.get("only") != [only] or names != [ROW]:
+            raise SystemExit("BUG: --only=%s khong loc dung mot dong (only=%r, "
+                             "checks=%r)" % (only, payload.get("only"), names))
     row = next((r for r in payload["checks"] if r["name"] == ROW), None)
     return proc.returncode, payload, row
 
@@ -175,7 +196,7 @@ def main():
             with open(path, "wb") as handle:
                 handle.write(originals[path].replace(needle, repl, 1))
             try:
-                rc, payload, row = run_selftest(report)
+                rc, payload, row = run_selftest(report, only=ROW)
             finally:
                 with open(path, "wb") as handle:
                     handle.write(originals[path])
@@ -197,15 +218,45 @@ def main():
         if os.path.exists(report):
             os.remove(report)
 
+    # Lan loc 12/12 noi duoc "do vi DUNG ly do cua no" nhung KHONG the noi
+    # "khong keo theo dong khac", vi 37 dong kia khong chay. Mot vet do lai tren
+    # TRON bang de chot dieu do — mot lan chay tron, thay vi 12 lan.
+    spot_ok, nfull = False, 0
+    if subset:
+        s_name, s_path, s_needle, s_repl, s_expect = subset[0]
+        shutil.copyfile(s_path, s_path + ".cfbak")
+        try:
+            with open(s_path, "wb") as handle:
+                handle.write(originals[s_path].replace(s_needle, s_repl, 1))
+            s_rc, s_payload, s_row = run_selftest(report)
+        finally:
+            with open(s_path, "wb") as handle:
+                handle.write(originals[s_path])
+            if os.path.exists(s_path + ".cfbak"):
+                os.remove(s_path + ".cfbak")
+        nfull = len(s_payload["checks"]) if s_payload else 0
+        s_failed = s_payload["failed"] if s_payload else []
+        spot_ok = (s_rc == 1 and s_row is not None and not s_row["ok"]
+                   and s_expect in s_row["detail"] and s_failed == [ROW]
+                   and s_payload.get("only") is None)
+        print("%-32s %s  rc=%d  rows=%d failed=%s  (vet %s, tron bang)" %
+              ("spot_tron_bang", "PASS" if spot_ok else "FAIL", s_rc, nfull,
+               s_failed, s_name))
+
     rc, payload, row = run_selftest(report)
-    green = rc == 0 and row is not None and row["ok"]
+    green = (rc == 0 and row is not None and row["ok"] and payload
+             and not payload["failed"] and payload.get("only") is None
+             and nfull and len(payload["checks"]) == nfull)
     if os.path.exists(report):
         os.remove(report)
     print("%-32s %s  rc=%d  rows=%d failed=%s" %
           ("khoi_phuc_xanh", "PASS" if green else "FAIL", rc,
            len(payload["checks"]), payload["failed"]))
-    bad = sum(0 if r[1] else 1 for r in results)
-    print("ALL PASS" if green and not bad else "CO %d KET QUA FAIL" % bad)
+    bad = [r[0] for r in results if not r[1]]
+    if not spot_ok:
+        bad.append("spot_tron_bang")
+    print("ALL PASS" if green and not bad
+          else "CO %d KET QUA FAIL: %s" % (len(bad), ", ".join(bad)))
     return 0 if green and not bad else 1
 
 

@@ -1392,13 +1392,19 @@ def _media_compress_ok():
     fixture phai CHUA faststart tu truoc khi chay neu khong dong nay xanh boi
     an; (2) moi loi phai tra ve mot cau doc duoc truoc khi kip lay lenh ffmpeg
     chua chay; (3) thang tien trinh doc duoc ca ba cach ffmpeg in moc thoi
-    gian; (4) that bai thi khong de lai file ru mang duoi .mp4.
+    gian; (4) that bai thi khong de lai file ru mang duoi .mp4; (5)
+    `ui.compress_dialog` phai doc duoc tu PYZ cua bundle — no chi duoc nap
+    bang lenh import ben trong `MainWindow._open_media_compress`, nen neu ban
+    dong goi thieu module thi menu "Nen / toi uu tep" crash luc nguoi dung
+    bam trong khi moi cong chay tu source tree van xanh. Cung ly do do
+    `ui.split_dialog` bi import thang vao dong cua no.
     """
     import subprocess
     import tempfile
 
     from core import external_tools
     from core import media_compress as compress
+    from ui.compress_dialog import CompressDialog  # noqa: F401 (co trong bundle)
 
     ffmpeg = external_tools.find("ffmpeg")
     if not ffmpeg:
@@ -2125,6 +2131,20 @@ def _ffmpeg_note():
     return "; ".join(rows)
 
 
+def _selftest_only(argv):
+    """Lay cac `--only=<dieu tru ten dong>` tu argv (rong = chay du 38 dong).
+
+    Ly do co bo nay (do 22/10/2026): `compress_counterfactual.py` doi 17 phep
+    byte tren `core/media_compress.py`, moi phep chay tron `--selftest` 38 dong
+    — tuc 17 lan ma hoa karaoke/pop art/chroma/nen tep THAT, ~20 phut, va no
+    lam treo ca may dang lam viec. Bo loc chi cat giu dung dong dang do, van
+    di qua dung lenh production `main.py --selftest` (khong phai goi ham `_ok`
+    truc tiep, nen van co QApplication, co boundary cua bundle, co rc that).
+    """
+    flag = "--only="
+    return [a[len(flag):] for a in argv[1:] if a.startswith(flag)]
+
+
 def run_selftest(argv=None):
     argv = list(argv if argv is not None else sys.argv)
     report = _report_path(argv)
@@ -2143,50 +2163,73 @@ def run_selftest(argv=None):
             raise RuntimeError("khong co _MEIPASS")
         return "%s, %d entry" % (base, len(os.listdir(base)))
 
-    col.check("bundle dong goi", frozen)
-    col.check("styles/*.qss + theme", _styles_ok)
-    col.check("icon ung dung", _icon_ok)
-    col.check("font icon", _font_icon_ok)
-    col.check("src.asr (Auto Captions)", _asr_ok)
-    col.check("cv2/numpy/psutil/pydub", _media_libs_ok)
-    col.check("PySide6 modules", _qt_modules_ok)
-    col.check("cross-fade audio plan", _transition_audio_ok)
-    col.check("audio cua tung clip", _clip_audio_ok)
-    col.check("cai dat that (14 khoa + hook)", _settings_ok)
-    col.check("toan bo do thi UI", _ui_graph_ok)
-    col.check("chrome nhin thay duoc co slot that", _chrome_ok)
-    col.check("duong cong easing cua keyframe", _keyframe_easing_ok)
-    col.check("do thi duong cong keyframe", _keyframe_graph_ok)
-    col.check("phong cach pop art", _popart_ok)
-    col.check("13 the mau/loc do duoc pixel that", _effect_liveness_ok)
-    col.check("8 aura to sang va chay theo dong ho clip", _aura_ok)
-    col.check("lop phu recap: vien/REC/kinh mo + luu vao file", _recap_overlay_ok)
-    col.check("8 kieu karaoke: quet theo tu + luu vao file", _karaoke_ok)
-    col.check("mo du an tu file .clinq", _project_launch_ok)
-    col.check("luu du an: ghi hong khong pha ban cu", _save_atomic_ok)
-    col.check("media lac cho: preview va export cung duong dan", _media_locator_ok)
-    col.check("undo cho chu + hinh hoc clip", _undo_text_transform_ok)
-    col.check("clipboard clip Ctrl+C/V", _clipboard_copy_paste_ok)
-    col.check("style chu: vien/bong/hop nen/can le", _text_styling_ok)
-    col.check("chinh mau: hue/lift-gamma-gain/LUT .cube", _color_grading_ok)
-    col.check("duc nen chroma key: goc hue + alpha qua chuoi loc", _chroma_key_ok)
-    col.check("doc MRU khong ghi du lieu nguoi dung", _recent_readonly_ok)
-    col.check("giai ma tuan tu + cache dia", _decode_cache_ok)
-    col.check("xem truoc = xuat: moc thoi gian cuc bo dung mot ham", _local_time_ok)
-    col.check("trich xuat anh thumbnail", _thumbnail_export_ok)
-    col.check("cat file thanh N doan ra dia", _media_split_ok)
-    col.check("tach tieng video thanh clip audio rieng", _detach_audio_ok)
-    col.check("the Cat in/out trong bang thuoc tinh", _trim_card_ok)
-    col.check("nen toi uu tep video: moov + codec-hop-container",
-              _media_compress_ok)
-    col.check("thanh tien do Auto Captions 8px", _captions_strip_ok)
-    col.check("thu muc du lieu nguoi dung", _writable_ok)
-    col.check("ffmpeg + ffprobe tim thay", _ffmpeg_note)
+    rows = [
+        ("bundle dong goi", frozen),
+        ("styles/*.qss + theme", _styles_ok),
+        ("icon ung dung", _icon_ok),
+        ("font icon", _font_icon_ok),
+        ("src.asr (Auto Captions)", _asr_ok),
+        ("cv2/numpy/psutil/pydub", _media_libs_ok),
+        ("PySide6 modules", _qt_modules_ok),
+        ("cross-fade audio plan", _transition_audio_ok),
+        ("audio cua tung clip", _clip_audio_ok),
+        ("cai dat that (14 khoa + hook)", _settings_ok),
+        ("toan bo do thi UI", _ui_graph_ok),
+        ("chrome nhin thay duoc co slot that", _chrome_ok),
+        ("duong cong easing cua keyframe", _keyframe_easing_ok),
+        ("do thi duong cong keyframe", _keyframe_graph_ok),
+        ("phong cach pop art", _popart_ok),
+        ("13 the mau/loc do duoc pixel that", _effect_liveness_ok),
+        ("8 aura to sang va chay theo dong ho clip", _aura_ok),
+        ("lop phu recap: vien/REC/kinh mo + luu vao file", _recap_overlay_ok),
+        ("8 kieu karaoke: quet theo tu + luu vao file", _karaoke_ok),
+        ("mo du an tu file .clinq", _project_launch_ok),
+        ("luu du an: ghi hong khong pha ban cu", _save_atomic_ok),
+        ("media lac cho: preview va export cung duong dan", _media_locator_ok),
+        ("undo cho chu + hinh hoc clip", _undo_text_transform_ok),
+        ("clipboard clip Ctrl+C/V", _clipboard_copy_paste_ok),
+        ("style chu: vien/bong/hop nen/can le", _text_styling_ok),
+        ("chinh mau: hue/lift-gamma-gain/LUT .cube", _color_grading_ok),
+        ("duc nen chroma key: goc hue + alpha qua chuoi loc", _chroma_key_ok),
+        ("doc MRU khong ghi du lieu nguoi dung", _recent_readonly_ok),
+        ("giai ma tuan tu + cache dia", _decode_cache_ok),
+        ("xem truoc = xuat: moc thoi gian cuc bo dung mot ham", _local_time_ok),
+        ("trich xuat anh thumbnail", _thumbnail_export_ok),
+        ("cat file thanh N doan ra dia", _media_split_ok),
+        ("tach tieng video thanh clip audio rieng", _detach_audio_ok),
+        ("the Cat in/out trong bang thuoc tinh", _trim_card_ok),
+        ("nen toi uu tep video: moov + codec-hop-container",
+         _media_compress_ok),
+        ("thanh tien do Auto Captions 8px", _captions_strip_ok),
+        ("thu muc du lieu nguoi dung", _writable_ok),
+        ("ffmpeg + ffprobe tim thay", _ffmpeg_note),
+    ]
+
+    only = _selftest_only(argv)
+    if only:
+        selected = [(name, fn) for name, fn in rows
+                    if any(token in name for token in only)]
+
+        def _nothing_selected():
+            raise RuntimeError(
+                "--only=%s khong trach duong nao trong %d dong tu"
+                % (",".join(only), len(rows)))
+
+        if not selected:
+            # Mot bo loc khong trach gi PHAI do, khong duoc PASS vi dau rong
+            # — cung hop dong cua `gate_discrimination_probe.py`.
+            col.check("bo loc --only khong trach duong nao", _nothing_selected)
+        rows = selected
+    for name, fn in rows:
+        col.check(name, fn)
 
     payload = {
         "exe": os.path.abspath(sys.argv[0]),
         "frozen": bool(getattr(sys, "frozen", False)),
         "python": sys.version.split()[0],
+        # `only` khac None = day LA lan chay loc, khong phai 38 dong. Cong ty
+        # doc JSON phai kiem tra khoa nay truoc khi bao "38 dong xanh".
+        "only": only or None,
         "checks": col.rows,
         "failed": [row["name"] for row in col.failed],
     }

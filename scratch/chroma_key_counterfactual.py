@@ -6,6 +6,10 @@ phai do mot cua khac trong same selftest, va khong phai do cua "chinh mau" (hai
 num nay di tren cung mot chuoi loc nen phep doi byte hom nay co the va cham ca
 hai; bao cao doi HOI dung MOT dong chua tu "chroma").
 
+19 vet chay `main.py --selftest --only=chroma` (1 dong, ~6 s) thay vi tron 38
+dong (~31 s), kem MOT vet chay lai tren TRON bang de chot "khong keo theo dong
+khac"; do 22/10/2026, chay tron 19 lan la ~10 phut ngan HDD va treo ca may.
+
 19 phep tach rieng 19 xich ma: nguong bao hoa, do rong cua num dung sai, do
 mong cua num vien mem (hai chieu: span=0 va span am), ba luat cua despill,
 matte dao nguoc, pre-pass bi tat, duong tat cho may cau hinh thap, mau sac rac
@@ -176,8 +180,14 @@ def drop_pycache(paths):
                 pass
 
 
-def run_gate_row(paths):
-    """Chay --selftest tren dung duong production va tra ve dong chroma.
+def run_gate_row(paths, only=True):
+    """Chay --selftest tren dung duong production va tra ve (ok, detail, payload).
+
+    `only=True` them `--only=chroma`: 19 vet keu nhau, moi vet chay tron 38 dong
+    la ~31 s (karaoke/pop art/nen tep cung ma hoa that) = ~10 phut ngan HDD va
+    treo ca may dang lam viec. Van di qua dung lenh production `main.py
+    --selftest`, van co QApplication va rc that — khong goi ham `_ok` truc tiep.
+    Bo loc do co gate + phan chung rieng: `scratch/selftest_filter_counterfactual.py`.
 
     Bao cao bi XOA truoc khi chay: mot process chet crash (0xC0000409) khong ghi
     bao cao, va neu doc file cu thi cua do bi hien thi thanh XANH gia. Thieu bao
@@ -188,28 +198,39 @@ def run_gate_row(paths):
         os.remove(REPORT)
     except OSError:
         pass
-    r = subprocess.run([sys.executable, "main.py", "--selftest"],
-                       cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    cmd = [sys.executable, "main.py", "--selftest", REPORT]
+    if only:
+        cmd.append("--only=" + GATE)
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                       encoding="utf-8")
     if not os.path.exists(REPORT):
-        return False, "khong co bao cao: process chet truoc khi ghi (rc=%s)" % r.returncode
+        return False, "khong co bao cao: process chet truoc khi ghi (rc=%s)" % r.returncode, None
     with open(REPORT, encoding="utf-8") as f:
         d = json.load(f)
+    if only and (d.get("only") != [GATE] or len(d["checks"]) != 1):
+        # Lan chay loc PHAI la lan loc, neu khong thi `failed=[]` mang nghia
+        # khac hon nghia cua no trong probe nay.
+        raise AssertionError("--only=%s khong loc dung mot dong (only=%r, "
+                             "checks=%d)" % (GATE, d.get("only"), len(d["checks"])))
     rows = [c for c in d["checks"] if GATE in c["name"]]
     if len(rows) != 1:
         return False, "bao cao co %d dong chua 'chroma' (rc=%s, checks=%d)" % (
-            len(rows), r.returncode, len(d.get("checks", [])))
-    return rows[0]["ok"], rows[0].get("detail", "")
+            len(rows), r.returncode, len(d.get("checks", []))), d
+    return rows[0]["ok"], rows[0].get("detail", ""), d
 
 
 def main():
     paths = sorted({m for _, edits, _ in MUTATIONS for (m, _, _, _) in edits})
     original = snapshot(paths)
     failures = []
+    nfull = 0
     try:
-        ok, detail = run_gate_row(paths)
+        ok, detail, d = run_gate_row(paths, only=False)
         if not ok:
             raise AssertionError("baseline phai XANH truoc khi do, ma: %s" % detail)
-        print("baseline: dong chroma XANH (%s)" % detail[:90])
+        nfull = len(d["checks"])
+        print("baseline: XANH du %d dong, dong chroma: %s"
+              % (nfull, detail[:80]))
 
         for desc, edits, expect in MUTATIONS:
             try:
@@ -220,7 +241,7 @@ def main():
                             "mau byte xuat hien %d lan o %s (can dung %d): %r"
                             % (data.count(old), path, count, old[:60]))
                     open(path, "wb").write(data.replace(old, new, count))
-                ok, detail = run_gate_row(paths)
+                ok, detail, _ = run_gate_row(paths)
                 if ok:
                     failures.append("%s -> gate VAN XANH (phan chung that bai)" % desc)
                 elif expect not in detail:
@@ -231,10 +252,33 @@ def main():
             finally:
                 restore(original)
 
-        ok, detail = run_gate_row(paths)
-        if not ok:
+        # 19/19 lan chay loc noi "do vi DUNG ly do cua no" nhung khong the noi
+        # "khong keo theo dong khac", vi 37 dong kia khong chay. Vet dau tien do
+        # lai tren TRON bang — mot lan, thay vi 19.
+        desc, edits, expect = MUTATIONS[0]
+        for (path, old, new, count) in edits:
+            data = open(path, "rb").read()
+            if data.count(old) != count:
+                raise AssertionError("spot: mau byte lech o %s" % path)
+            open(path, "wb").write(data.replace(old, new, count))
+        try:
+            ok, detail, d = run_gate_row(paths, only=False)
+        finally:
+            restore(original)
+        failed = d["failed"] if d else ["khong co bao cao"]
+        if (ok or expect not in detail or len(failed) != 1
+                or GATE not in failed[0] or len(d["checks"]) != nfull
+                or d.get("only") is not None):
+            failures.append("spot_tron_bang -> ok=%s failed=%s (%s)"
+                            % (ok, failed, detail[:90]))
+        else:
+            print("  SPOT tron %d dong: do DUNG MOT cua [%s] failed=%s"
+                  % (nfull, desc, failed))
+
+        ok, detail, d = run_gate_row(paths, only=False)
+        if not ok or (d and d["failed"]) or len(d["checks"]) != nfull:
             raise AssertionError("sau phuc hoi gate van do: %s" % detail)
-        print("phuc hoi: dong chroma XANH lai")
+        print("phuc hoi: XANH lai du %d dong" % nfull)
     finally:
         restore(original)
         for path in paths:

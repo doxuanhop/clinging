@@ -28,12 +28,32 @@ phỏng. Một test tự dựng đầu vào theo cách riêng của nó thì ch�
 - Bundle đã dựng thì đo bằng `dist\Clinging\Clinging.exe --selftest`; máy đã cài
   thì đo bằng `installed_app_probe.py` trỏ vào `%LOCALAPPDATA%\Programs\Clinging`.
 
+**Bộ lọc dòng `--only=` (chỉ cho người phát triển).** `python main.py --selftest
+<json> --only=<chuoi>` chạy đúng `run_selftest()` đó nhưng chỉ gọi những hàm có
+tên chứa chuỗi lọc (lặp qua `sys.modules`, không đổi code path). Số đã đo trên
+máy này 22/10/2026:
+
+| Lệnh | Thời gian |
+| --- | --- |
+| `main.py --selftest` (đủ 38 dòng) | ~31,1 s |
+| `main.py --selftest --only="chinh mau"` (1 dòng) | ~5,0 s (~6,2× nhanh hơn) |
+
+Quy tắc: **một lần chạy lọc không bao giờ được báo cáo là "38 dòng xanh"**. Báo
+cáo JSON có sẵn bằng chứng — khóa `"only"` là `null` khi chạy đủ bảng, là danh
+sách token khi chạy lọc — nên mọi consumer phải kiểm `payload["only"] is None`
+trước khi tuyên bố cả bảng. Bản thân bộ lọc có gate riêng
+(`scratch/selftest_filter_counterfactual.py`, 10 cửa, trong đó cửa
+`loc_khong_trach_gi_do` đòi dòng đỏ `bo loc --only khong trach duong nao` chứ
+không im lặng trả bảng rỗng — đúng cái bẫy "xanh vì đầu vào rỗng"). Cờ này là
+dụng cụ phát triển: không có `--only` thì `run_selftest()` chạy đúng như trước,
+nên hành vi app và kết quả `--selftest` trên bản đóng gói không đổi.
+
 ### 2. Phản chứng (counterfactual): gate phải ĐỎ vì ĐÚNG lý do
 
 Mỗi gate phải có một phép thử cho thấy nó còn khả năng chết. Xanh vì đầu vào
 rỗng là xanh giả.
 
-Bốn dạng phản chứng đang dùng trong `scratch/`:
+Nam dang phan chung dang dung trong `scratch/`:
 
 | Dạng | Cách làm | Ví dụ đã chạy |
 | --- | --- | --- |
@@ -46,6 +66,30 @@ Số ngưỡng không được tự tay nhập: `check("cay MSI giai DUNG SO fil
 trong dist", n == dist_n, ...)` so cây đã cài với `dist\Clinging` đang có, chứ
 không so với một con số nhớ từ lần build trước. Ngưỡng dưới (`dist_n >= 300`)
 chặn trường hợp "xanh rỗng" `0 == 0`.
+
+**Dạng thứ năm — đổi byte một chỗ trong file nguồn THẬT** (mười probe trong
+`scratch/*_counterfactual.py`). Khuôn đã chốt sau khi có `--only`:
+
+1. Baseline chạy **đủ bảng** và phải xanh; `nfull = len(checks)` lấy từ chính lần
+   đó, không nhập tay 38.
+2. Từng phép đổi byte chạy **lọc** (`--only=<dong do>`), đòi hai điều: payload
+   phải thực sự là lần chạy lọc (`only == [dong]`, `len(checks) == 1`) và `detail`
+   của dòng đó chứa **đúng lý do của phép đó**. Probe nào bỏ qua điều đầu tiên sẽ
+   tố cáo một bộ lọc nói dối thay vì một cổng đỏ.
+3. Phép ĐẦU TIÊN chạy lại trên **đủ bảng** (SPOT, một lần thay vì N lần): đòi
+   `failed == [dong do]` — giữ lại tính chất "đỏ một mình, không kéo theo dòng
+   khác" mà N lần chạy lọc không thể nói.
+4. Khôi phục byte, chạy đủ bảng lần cuối, phải xanh với `len(checks) == nfull`
+   và `only is None`; byte nguồn phải bằng nguyên ban (so `sha256[:16]` trước/sau).
+
+**Canary đầu mối que (`scratch/needle_canary.py`).** Probe phản chứng không chạy
+được là probe **im lặng**: nó import `MUTATIONS`, đếm số lần mỗi mẫu byte xuất
+hiện trong file nguồn thật, và báo `LECH` khi con số khác chính con số probe đòi.
+Chạy nó TRƯỚC khi phán một cổng "xanh" — nó không đổi byte nào, 0,6 s cho 12 probe.
+Hai nguyên nhân lệch đã gặp: tính năng mới chèn dòng vào giữa mẫu cũ, và **file
+nguồn bị đổi sang CRLF** (mẫu nối bằng LF thành 0 lần khớp) — `git checkout -- <file>`
+với `core.autocrlf=true` gây ra nguyên nhân thứ hai này mà `git status` không báo gì; chữa bằng
+`data.replace(b'\r\n', b'\n')` rồi đòi byte bằng `git show HEAD:<file>`.
 
 ### 3. Render thì cần ẢNH, và ảnh phải được mở ra xem
 
@@ -77,6 +121,11 @@ font nào, chữ luôn là tofu — chỉ được phán bố cục, không phá
 - `ISCC` và wrapper build nền trả rc=0 cả khi không ghi ra file nào; phải đọc lại
   đích (`exe_version.py`, set-diff đường dẫn tương đối so với `dist`, sha256[:16]
   của `<App>.exe`).
+- **Không tự gõ lại tên dòng.** `python main.py --selftest | grep "chinh mau"`
+  chỉ chạy được `grep` — pipe nuốt rc của app. Muốn đọc từng dòng thì import
+  `diagnostics`, lấy đúng tuple `(tên, hàm)` từ `run_selftest`, rồi spawn
+  `--selftest <json> --only=<tên lấy từ bảng>` (script một lần đã dùng cách này
+  để đo 31,1 s và 5,0 s ở mục 1; đừng biến nó thành gate thường trực).
 
 ---
 
@@ -91,6 +140,10 @@ python scratch/icon_name_audit.py
 
 # 2) Selftest 38 dòng trên tree nguồn
 python main.py --selftest
+
+# 2b) Cùng gate nhưng chỉ một dòng (dev tool, ~5 s thay vi ~31 s). KHONG bao gio
+#     duoc báo cáo là "38 dòng xanh"; payload trả về có khóa "only" để kiểm chứng.
+python main.py --selftest t.json --only="chinh mau"
 
 # 3) Đo khởi động (bao gồm control cùng lần, xem mục dưới đây)
 python main.py --startup-report
@@ -114,7 +167,7 @@ python scratch/save_atomic_counterfactual.py
 python scratch/media_locator_counterfactual.py
 python scratch/undo_text_transform_counterfactual.py
 python scratch/clipboard_counterfactual.py
-python scratch/text_styling_counterfactual.py
+python scratch/text_styling_counterfactual.py   # -> 6/6 do dung ly do, 120,3 s (khuon loc + SPOT)
 python scratch/save_atomic_evidence.py       # -> scratch/save_atomic_evidence.png
 python scratch/media_locator_evidence.py     # -> scratch/media_locator_evidence.png
 python scratch/undo_text_transform_evidence.py  # -> %TEMP%\clinging_undo_evidence.png
@@ -125,6 +178,7 @@ python scratch/text_styling_evidence.py         # -> %TEMP%\clinging_text_stylin
 #     13 phep phan chung, va anh render tu FrameComposer
 python scratch/color_grading_ui_probe.py        # -> ALL PASS 8 cua, khong de lai media
 python scratch/color_grading_counterfactual.py  # -> 13/13 do dung ly do, byte ve nguyen ban
+                                                # -> 133,6 s (khuon loc + 1 SPOT du bang)
 python scratch/color_grading_evidence.py        # -> scratch/color_grading_evidence.png
                                                 # -> scratch/color_grading_card_evidence.png
 
@@ -145,6 +199,7 @@ python scratch/popart_window_shot.py --pixels       # khung den DO, anh that XAN
 # 4h) Chroma key (duc nen theo goc hue + despill + matte ha do phan giai):
 #     19 phep doi byte tren 4 file nguon, moi phep do DUNG mot dong cua no
 python scratch/chroma_key_counterfactual.py       # -> 19/19 do, byte ve nguyen ban
+                                                  # -> 147,9 s (khuon loc + 1 SPOT du bang)
 python scratch/chroma_key_evidence.py             # -> 54 OK / 0 FAIL
                                                   # -> scratch/chroma_key_evidence.png
                                                   # -> scratch/chroma_key_card_evidence.png
@@ -154,6 +209,7 @@ python scratch/chroma_cost_probe.py               # -> 16 OK / 0 FAIL: chi phi/f
 # 4i) Tach am thanh (clip video -> clip audio cung nguon, cung noi dung, tat tieng
 #     video): 10 phep doi byte tren 4 file nguon + anh TimelineScene that + wav do RMS
 python scratch/detach_audio_counterfactual.py     # -> 10/10 do dung ly do, byte ve nguyen ban
+                                                  # -> 87,5 s (khuon loc + 1 SPOT du bang)
 python scratch/detach_audio_evidence.py           # -> 14/14 phep do PASS
                                                   # -> scratch/detach_audio_evidence.png
                                                   # -> scratch/detach_audio_evidence.json
@@ -161,6 +217,7 @@ python scratch/detach_audio_evidence.py           # -> 14/14 phep do PASS
 # 4j) The Cat in/out (bang thuoc tinh ben phai): hinh hoc giao hoan toan cho
 #     resize_clip, mot spin = mot buoc undo, do ca preview lan export
 python scratch/trim_counterfactual.py             # -> 12/12 do dung ly do, byte ve nguyen ban
+                                                  # -> 136,6 s (khuon loc + 1 SPOT du bang)
 python scratch/trim_evidence.py                   # -> 23/23 phep do PASS
                                                   # -> scratch/trim_evidence.png
                                                   # -> scratch/trim_evidence.json
@@ -168,6 +225,7 @@ python scratch/trim_evidence.py                   # -> 23/23 phep do PASS
 # 4k) Nen / toi uu tep video (cong thuc port tu compressO, chi dung ffmpeg cua
 #     bundle): remux that su day moov len dau, codec khop container o CA HAI chieu
 python scratch/compress_counterfactual.py         # -> 17/17 do dung ly do, byte ve nguyen ban
+                                                  # -> 183,7 s (truoc khi co --only: 377,2 s)
 python scratch/compress_evidence.py               # -> menu video/audio phan biet, 3 grab day pixel
                                                   # -> scratch/_compress_ev_evidence.png
 python scratch/compress_cost_probe.py             # -> bang chi phi preset/codec do xen ke 1 vong
@@ -176,6 +234,12 @@ python scratch/compress_cost_probe.py             # -> bang chi phi preset/codec
 #     chung (lat _internal/styles, an core/ cua tree nguon) + do boot
 python scratch/frozen_bundle_probe.py             # -> ALL PASS (0 fail), rc=0
 dist/Clinging/Clinging.exe --startup-report scratch/dist_startup.json
+
+# 4m) Chinh bo cai loc --only va dau que cua cac probe phan chung
+python scratch/selftest_filter_counterfactual.py  # -> 10/10 cua, 218,8 s; loi "xanh vi
+                                                  #     dau vao rong" phai do bang dong tu
+python scratch/needle_canary.py                   # -> "ALL CLEAN: n/m probe con nguyen
+                                                  #     ven mau", 0,6 s, KHONG doi byte nao
 
 # 5) Chụp lại rồi diff: phải ra 0 THEM / 0 MAT / 0 DOI
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json
@@ -856,9 +920,28 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
   `n/a (webm khong co moov)`; một câu trộn hai dấu phân cách `1,9 MB · 6.0s` →
   `_fmt_seconds` đổi sang dấu phẩy; chân vp9 dùng con số đã đo tệ hơn → chuyển về
   mặc định `5`). Ảnh hiện tại là lần chạy SAU ba sửa đổi đó.
-* **Chưa** dựng lại bundle cho nhóm này: `dist\Clinging` vẫn dựng từ tree chroma
-  nên chạy 35 dòng — nén tệp (cũng như thẻ Cắt, tách tiếng, chroma key) mới tồn
-  tại ở tree nguồn, chờ duyệt phát hành.
+* **Lỗ hổng chỉ thấy khi bước sang đường đóng gói** (2026-10-22, trước khi dựng
+  bundle 1.0.4): `ui.compress_dialog` chỉ được nạp bằng một lệnh `import` bên
+  trong `MainWindow._open_media_compress`, và không cổng nào đọc tên module đó từ
+  PYZ của exe. Nếu bản dựng thiếu nó thì menu "Nen / toi uu tep" crash ngay lúc
+  người dùng bấm, trong khi `--selftest` chạy từ source tree vẫn 38 dòng xanh —
+  đúng bài học `--selftest` cũ của `ui.split_dialog`, module mà row của nó
+  `import` thẳng để bundle phải tự chứng minh. Đã sửa hai chỗ: `ClingingQt.spec`
+  thêm cặp `core.media_compress` + `ui.compress_dialog` vào `hiddenimports` (cùng
+  kiểu ba cặp thumbnail/split/keyframe đã có), và `diagnostics._media_compress_ok`
+  thêm `from ui.compress_dialog import CompressDialog`.
+* **Phản chứng cho điều vừa thêm** — đổi tên vật lý một file, không đổi hằng số:
+  `mv ui/compress_dialog.py ui/_compress_dialog_hidden.py` rồi chạy
+  `python main.py --selftest scratch/selftest_cf_dialog.json` →
+  `TRUE_RC 1`, `failed = ['nen toi uu tep video: moov + codec-hop-container']`,
+  chi tiết dòng đỏ là nguyên văn `ModuleNotFoundError: No module named
+  'ui.compress_dialog'`; **đúng một dòng** trong 38 đổi màu. Đổi tên lại →
+  sha256[:16] `43d279f85ac417df` khớp từng byte, `--selftest` chạy lại
+  `TRUE_RC 0`, 38 dòng, `failed = []`.
+* Vòng gate nguồn của bản 1.0.4 (`scratch/selftest_104.json`): 38 dòng,
+  `failed = []`, rc = 0. Snapshot dữ liệu người dùng quanh hai lần chạy đó:
+  **1835 → 1835 file**, `THEM: 7 / MAT: 7 / DOI: 0`, và 7+7 nằm trọn trong
+  `~\.clinqing\recovery\` với hai stem fixture (`Kiem karaoke` 5, `Kiem recap` 2).
 
 ## Thất bại đã ghi (để không lặp)
 
@@ -880,11 +963,16 @@ Số đo thật của lần kiểm (tree nguồn, 2026-10-21):
 | `--selftest` xanh nhưng stdout in `Loi luu du an: Object of type QColor is not JSON serializable` | Đó là fixture cố ý của dòng `luu du an atomic` (`diagnostics.py:523` đưa payload không serialize được để chứng minh file thật không bị chạm; `:535` ghi JSON cắt đôi cho đường đọc) | Trước khi gọi một dòng stdout "trông như lỗi" là regression, quy nó về ĐÚNG dòng: chạy từng hàm `_ok` trong subprocess riêng rồi xem dòng nào in ra |
 | Phản chứng `in_min_khong_nhan_speed` của thẻ Cắt KHÔNG đỏ dù đã bỏ `* speed` | Fixture duy nhất có `in_point < start_time*speed`, nên `max(0.0, ...)` clamp kết quả về 0,0 trước khi số hạng bị đổi kịp lộ ra — đầu vào bị cắt cụt, không phải code đúng | Một mutation chỉ được coi là đã gate khi có fixture mà số hạng đó **quyết định đầu ra**; thêm fixture `start 0,5 / in 3,0 / speed 2,0` rồi chạy lại đủ 12/12 |
 | `compress_counterfactual.py` báo `SyntaxError: bytes can only contain ASCII literal characters` và **không chạy nổi một phép nào** | Needle của mutation `webm_van_aac` chép nguyên dòng có dấu tiếng Việt vào `b'...'` | Needle byte trong probe phản chứng phải ASCII-only (dòng nguồn thật có dấu thì chép phần không dấu quanh nó); một probe không chạy được là probe im lặng, không phải probe đỏ |
+| `--selftest` 38 dòng xanh từ source tree, nhưng menu "Nen / toi uu tep" của bản đóng gói chỉ chờ ngày crash | `ui.compress_dialog` chỉ được `import` bên trong thân hàm `MainWindow._open_media_compress`, và không cổng nào đọc PYZ của exe theo tên module đó — `hiddenimports` của spec cũng chưa có nó | Tính năng có module UI riêng phải (a) có cặp trong `hiddenimports` của `ClingingQt.spec` và (b) được `import` thẳng trong row selftest của chính nó, rồi phản chứng bằng **đổi tên vật lý file** (đã làm với thumbnail/split/keyframe; compress bổ sung 22/10/2026: đỏ đúng một dòng với `ModuleNotFoundError`, đổi tên lại thì sha256[:16] khớp từng byte) |
 | Mutation `khoi_xoa_file_do` không đỏ trên chân "nguồn rác" | Với đầu vào là một đoạn văn bản mang đuôi `.mp4`, ffmpeg fail TRƯỚC khi kịp tạo file ra, nên bỏ `_drop()` cũng chẳng còn file mà kiểm — do 21/10/2026 | Mỗi mutation phải có một đầu vào mà file dở THỰC SỰ tồn tại; ở đây là chân bấm Huy giữa chừng, và lý do gate đỏ được viết lại thành `dung giua chung van con file do` |
 | Ảnh bằng chứng in ra `atom \x1a\x43\x42...` cho dòng `.webm` | `top_level_atoms` đi theo header 8 byte kiểu MP4; áp nó lên EBML thì đọc thẻ ra toàn tên rác — mà ảnh vẫn "có chữ" nên nhìn qua không thấy sai | Hàm giải mã theo container phải tự khai nó chỉ đúng với container nào (`FASTSTART_CONTAINERS`), và ảnh phải MỞ RA XEM chứ không đếm pixel không |
 | Probe dựng fixture chết ở dòng `fixture video loi rc=0` dù ffmpeg đã báo lỗi từ trước | Guard viết `fmt_bytes(size).endswith("B")` — luôn đúng, vì "1.9 MB" cũng kết thúc bằng "B" | Kiểm đầu vào bằng ngưỡng số (`getsize >= 100_000`), không kiểm bằng hình thức chuỗi; một guard luôn đúng còn tệ hơn không có guard |
 | Hai cửa `boot_khong_keo_trang_dung` và `boot_khong_psutil` **xanh** trong khi hộp thoại nén bị kéo lên đường boot, boot chậm thêm 0,428 s | Hai cửa đó chỉ nhìn `ui.main_window` và `psutil`; `ui.compress_dialog` đi vào bằng một module đường boot khác thì không ai thấy | Cửa laziness chỉ chứng điều đúng tên nó nhìn: module mới phải có cửa đo `sys.modules` trên chính tên nó (`boot_khong_keo_nen`) |
 | Bảng chi phí đo `cpu-used 8` rồi chân vp9 của ảnh bằng chứng cũng dùng `8` | Probe lấy con số đang thử thay vì mặc định bản ra; trên máy này `8` ra ĐÚNG số byte của `5` nhưng lâu hơn 3,2 s | Ảnh/dòng kiểm phải chạy đúng cấu hình ship ra (`preset=None` để `build_command` tự lấy `DEFAULT_PRESET`), không phải cấu hình đang dò |
+| `color_grading_counterfactual.py` chết ngay dòng đầu: `AssertionError: mau byte xuat hien 0 lan o ui\properties_panel.py`, 13 phép phản chứng KHÔNG chạy một phép nào | Tính năng sau (thẻ Cắt, 9ed6125) chèn `self._sync_trim_card()` vào GIỮA hai dòng mà mẫu 2 dòng đã chép; cùng kiểu hỏng ở `commands.py` khi `SetChromaCommand` sao lại đoạn `keys = set(self._requested)` nên mẫu 4 dong khớp 2 lan trong khi probe đòi 1 | Mẫu byte phải neo vào một đoạn ĐỘC QUYỀN (thêm dòng `isinstance(other, SetGradingCommand)`), guard là `count != so_lan` (không phải `<`), và trước khi phán một cổng "xanh" thì chạy `scratch/needle_canary.py` (~0,6 s, không đổi byte) để tìm probe đã chết im lặng |
+| Một loạt phản chứng chạy nhanh hơn 6 lần nhưng báo "38 dòng xanh" dù chỉ 1 dòng được gọi | `--only=` cắt bớt bảng, `failed=[]` của lần chạy lọc mang nghĩa KHÁC `failed=[]` của lần chạy đủ | Consumer phải đọc `payload["only"]` (phải là `null`) và `len(checks)` so với `nfull` đo từ baseline; bản thân bộ lọc có gate đỏ riêng khi nó không trạch dòng nào (`selftest_filter_counterfactual.py`), và giữ tính chất "đỏ một mình" bằng một lần SPOT đủ bảng |
+
+| Sau khi chữa chạy trùng probe bằng `git checkout -- core/clip_effects.py`, canary báo `popart_project_counterfactual ... mau tim thay 0 lan` | Repo có `core.autocrlf=true` + `.gitattributes text=auto`, nên checkout ghi lại file bằng CRLF mà `git status` vẫn báo sạch; mọi mẫu nối bằng `L(*lines)` (LF) trên file đó thành 0 lần khớp — bốn file nguồn bị dính (clip_effects, frame_composer, export_dialog, `src/asr/*`) | Khôi phục bằng `data.replace(b"\r\n", b"\n")` rồi đòi `open(f,"rb").read() == git show HEAD:<file>`; mẫu nhiều dòng chỉ an toàn khi file nguồn còn LF, nên canary phải chạy sau MỌI lệnh checkout |
 
 ## Liên quan
 

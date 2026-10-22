@@ -134,16 +134,34 @@ MUTATIONS = [
 ]
 
 
-def run_selftest(report):
+def run_selftest(report, only=None):
+    """Chạy `main.py --selftest` THAT, co hoac khong loc mot dong.
+
+    `only=ROW` cat 38 dong con 1 dong: do 22/10/2026, chay tron 38 dong mat
+    31,1 s/lan (cac dong karaoke/pop art/chroma cung ma hoa that), nen 17 phep
+    byte keu nhau thanh ~20 phut ngan HDD va lam treo ca may; loc cung lenh do
+    chi mat 5,0 s/lan. Van di qua dung seam production (QApplication, boundary
+    cua bundle, rc cua chinh `main.py`), khong phai goi truc tiep `_ok`.
+    """
     if os.path.exists(report):
         os.remove(report)
-    proc = subprocess.run([sys.executable, "main.py", "--selftest", report],
-                          cwd=ROOT, capture_output=True, text=True,
+    cmd = [sys.executable, "main.py", "--selftest", report]
+    if only:
+        cmd.append("--only=" + only)
+    proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                           encoding="utf-8", errors="replace")
     if not os.path.exists(report):
         return proc.returncode, None, None
     with open(report, encoding="utf-8") as handle:
         payload = json.load(handle)
+    if only:
+        # Lan chay loc PHAI la lan loc: dung mot dong va dung dong dang do.
+        # Neu `--only` bi lang qua thi 17 phep se chay tron 38 dong ma khong ai
+        # nhin thay, va bao cao `failed=[]` se co nghia khac.
+        names = [r["name"] for r in payload["checks"]]
+        if payload.get("only") != [only] or names != [ROW]:
+            raise SystemExit("BUG: --only=%s khong loc dung mot dong (only=%r, "
+                             "checks=%r)" % (only, payload.get("only"), names))
     row = next((r for r in payload["checks"] if r["name"] == ROW), None)
     return proc.returncode, payload, row
 
@@ -184,7 +202,7 @@ def main():
             with open(path, "wb") as handle:
                 handle.write(originals[path].replace(needle, repl, 1))
             try:
-                rc, payload, row = run_selftest(report)
+                rc, payload, row = run_selftest(report, only=ROW)
             finally:
                 with open(path, "wb") as handle:
                     handle.write(originals[path])
@@ -209,9 +227,36 @@ def main():
             with open(path, "wb") as handle:
                 handle.write(data)
 
+    # Lan loc 17/17 noi duoc "do vi DUNG ly do cua no" nhung KHONG the noi
+    # "khong keo theo dong khac", vi 37 dong kia khong chay. Mot vet (vet dau
+    # tien cua subset) do lai TREN TRON 38 dong de chot dieu do — mot lan chay
+    # tron 31,1 s, thay vi 17 lan (do 22/10/2026).
+    spot_ok = True
+    if subset:
+        s_name, s_path, s_needle, s_repl, s_expect = subset[0]
+        shutil.copyfile(s_path, s_path + ".cfbak")
+        try:
+            with open(s_path, "wb") as handle:
+                handle.write(originals[s_path].replace(s_needle, s_repl, 1))
+            s_rc, s_payload, s_row = run_selftest(report)
+        finally:
+            with open(s_path, "wb") as handle:
+                handle.write(originals[s_path])
+            if os.path.exists(s_path + ".cfbak"):
+                os.remove(s_path + ".cfbak")
+        s_failed = s_payload["failed"] if s_payload else ["khong co bao cao"]
+        spot_ok = (s_payload is not None and s_rc == 1
+                   and s_row is not None and not s_row["ok"]
+                   and s_expect in s_row["detail"] and s_failed == [ROW]
+                   and s_payload.get("only") is None)
+        print("%-32s %s  rc=%d  rows=%d failed=%s  (vet %s, tron 38 dong)" %
+              ("spot_tron_38_dong", "PASS" if spot_ok else "FAIL", s_rc,
+               len(s_payload["checks"]) if s_payload else "?", s_failed, s_name))
+
     rc, payload, row = run_selftest(report)
     green = (rc == 0 and row is not None and row["ok"] and payload is not None
-             and not payload["failed"])
+             and not payload["failed"] and payload.get("only") is None
+             and len(payload["checks"]) == 38)
     if os.path.exists(report):
         os.remove(report)
     print("%-32s %s  rc=%d  rows=%s failed=%s" %
@@ -219,9 +264,11 @@ def main():
            len(payload["checks"]) if payload else "?",
            payload["failed"] if payload else "?"))
     bad = [r[0] for r in results if not r[1]]
-    print("ALL PASS" if green and not bad
+    if not spot_ok:
+        bad.append("spot_tron_38_dong")
+    print("ALL PASS" if green and spot_ok and not bad
           else "CO %d KET QUA FAIL: %s" % (len(bad), ", ".join(bad)))
-    return 0 if green and not bad else 1
+    return 0 if green and spot_ok and not bad else 1
 
 
 if __name__ == "__main__":
