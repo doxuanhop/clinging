@@ -62,6 +62,20 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   `--canvas-layout-report` 36 cửa), và `shutdown_clip_workers()`
   (`ui/graphics/timeline_scene.py:299` + `MainController.closeEvent`). **Cây MSI
   vẫn là payload 1.0.4** — đừng lấy số dòng của một cây làm số của cây khác.
+- **Tree nguồn đi trước bundle 1.0.6 HAI thay đổi** (đo 23/10/2026):
+  (1) tay nắm xoay trên frame view giờ vẽ glyph `fa6s.arrow-rotate-right` trong đĩa
+  `ROTATE_HANDLE_R = 9,5` (`ui/graphics_canvas_item.py`), kèm cửa (7)
+  "dem pixel toi trong dia" của cổng `bien doi`
+  (`diagnostics.rotate_glyph_pixel_count`, ngưỡng ≥ 40, đo **3119 px**). **Chỉ
+  thay hình**: không đổi model, không đổi persistence, không thêm hàng nút.
+  (2) `ClipItem.shutdown_extraction()` bỏ `thread.wait()` trần (`wait(5000)` rồi
+  `wait()` vô hạn), thay bằng trần **từng clip** `EXTRACTION_SHUTDOWN_MS = 8000`
+  + `detach_running_thread()` (`ui/graphics/clip_item.py:58`) — đây là đổi HÀNH
+  VI, đã được chủ repo duyệt ("Sửa thread.wait() trong clip_item.py").
+  Bảng vẫn 44 dòng nên `dist\Clinging` và bản cài Inno **không có** hai chuỗi
+  mới: `glyph tay nam xoay` trong chi tiết dòng `bien doi`, và `thread khong hop
+  tac bi cat o ... ms` trong chi tiết dòng `dong cua so` — đó là dấu hiệu nhận
+  biết nguồn mới hơn bundle, không phải lỗi.
 
 ## Lệnh hay dùng
 
@@ -89,8 +103,12 @@ python scratch/media_split_probe.py             # 79 s: cat THAT tren dia + anh 
 python scratch/export_range_counterfactual.py   # phan chung: 18 vet tren vung xuat in/out + preset (178 s, 1 lan SPOT du 39 dong)
 python scratch/export_range_evidence.py         # anh: 2 che do ExportDialog + 24/12 khung hue + ffprobe -count_frames + RMS, 16 cua
 python scratch/export_quality_cost_probe.py     # do 8 cau hinh preset/CRF, xen ke 2 vong -> scratch/export_quality_cost.json
-python scratch/transform_counterfactual.py      # phan chung: 18 vet tren the "Bien doi" (xoay tu do / lat / canh le / khoa ty le), 2 oracle selftest+report, 133 s, 1 lan SPOT du bang 42 dong
-python scratch/teardown_workers_counterfactual.py # phan chung: 2 vet byte (closeEvent / vong lap shutdown) tren 2 oracle — selftest row 44 + rc THAT cua `main.py --project-report` voi fixture 4K tu sinh; 16/16, ~13 phut, fixture phai co DUNG 1 keyframe/360 frame
+python scratch/transform_counterfactual.py      # phan chung: 19 vet tren the "Bien doi" + glyph tay nam xoay (2 oracle selftest+report), 194 s, 1 lan SPOT du bang 44 dong
+python scratch/rotate_knob_evidence.py          # anh CHUP THAT 1920x1080 + crop 4x tay nam xoay -> assets/uiux/editor-rotate-knob{,-detail}.png
+python scratch/rotate_knob_evidence.py --pixels # phan chung tren anh da luu: 6 cua (xoa region / anh bo chon / lech tam), rc=0
+pythonw scratch/console_window_probe.py         # 22 cua dem: 0 cua ConsoleWindowClass MOI tren 7 lan sinh tien trinh that + exe da cai -> console_window_probe.json (~22 s)
+pythonw scratch/console_window_probe.py --phan-chung # 8 cua -> console_window_probe_cf.json (FILE RIENG; mot spawn thieu co mo cua console that)
+python scratch/teardown_workers_counterfactual.py # phan chung: 5 vet byte tren 3 oracle — selftest row 44 (--only), rc THAT cua `main.py --project-report` (fixture 4K tu sinh, phai co DUNG 1 keyframe/360 frame), va `--selftest` bang tron co vet; 23/23, 7,1 phut
 python scratch/icon_name_audit.py               # ten glyph + tham so tren toan bo nguon
 python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi dung ly do
 python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 19 probe (rc=0 = "ALL CLEAN: 17/19", hai probe khong co bang vet bi loai khong tinh)
@@ -313,8 +331,10 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   du bang -> khoi phuc du bang. Gia do: tron bang 48,8 s (39 dong; 38 dong la
   31,1 s), mot dong 5,0-12,4 s; nen tep 17 vet 377,2 s -> 183,7 s, chroma 19 vet
   = 147,9 s, chinh mau 13 vet = 133,6 s, vung xuat 18 vet = 178,0 s, thu vien
-  5 vet = 131,3 s, bien doi 18 vet = 133,0 s (bang 42 dong tron do 23/10: 47,9 s;
-  bang 40 dong tron: 36,2 s tren may nghi; mot row `--only="bien doi"`: 2,6 s).
+  5 vet = 131,3 s, bien doi 19 vet = **194,0 s** tren bang 44 dong (ban 18 vet
+  tren bang 42 dong la 133,0 s do cung ngay 23/10; bang 44 dong tron do
+  63,2-71,3 s; bang 40 dong tron: 36,2 s tren may nghi; mot row
+  `--only="bien doi"`: 2,4-2,6 s).
 - **Cua do thoi gian noi khi may khong nghi; cua dem thi khong.** Lan chay
   22/10/2026: CUNG mot vet cua `--library-report` mat **900 s roi bi timeout** khi
   `Clinging.exe` cua nguoi dung van mo tren HDD 5400 rpm, va **13 s** khi may
@@ -435,6 +455,40 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   (so sanh `set_field` duoc 22 khoa voi `LAYOUT_DEFAULTS`) phai chay TRUOC cac
   cua do luong, va phan chung P1 (`scratch/canvas_layout_counterfactual.py`)
   cat dung bot signal cua hai checkbox do de no do lai dung ten.
+- **Mot lan goi production trong probe phai co TRAN.** Lan SPOT cua
+  `scratch/transform_counterfactual.py` 23/10 treo **13 phut**: window con so,
+  CPU **phang 8,20 s** qua hai mau cach nhau 100 s, payload khong ton tai —
+  `subprocess.run` khong timeout nen cha cho mai. Dinh vi bang
+  `faulthandler.dump_traceback_later()` qua wrapper `runpy` (lưu ý `runpy.run_path`
+  KHONG them thu muc script vao `sys.path`, phai `sys.path.insert(0, ROOT)`);
+  chay lai thi **khong tai hien** (control 71,3 s rc=0, vet 63,2 s rc=1) nen
+  phat ban la contention, khong quy cho san pham. Chua: `CHILD_TIMEOUT = 420`
+  (≈ 6 lan do dai lon nhat da do) va `SystemExit("PROBE DUNG: ...")` — duong
+  `thread.wait()` vo han trong `ClipItem.shutdown_extraction` da sua cung ngay
+  23/10 (tran 8000 ms theo tung clip + `detach_running_thread()`), vet
+  `wait_khong_tran` cua `scratch/teardown_workers_counterfactual.py` do lai
+  bang cach bat child treo qua 90 s roi bi `subprocess.run` cat.
+- **Mot phep thu "khong duoc treo" phai do ca HAI DAU cua cai tran.** Xoa
+  duong `thread.wait(EXTRACTION_SHUTDOWN_MS)` di thi `shutdown_extraction()`
+  cung **khong treo**: no ve ngay tuc thi va phep thu xanh ru. Do vay
+  `diagnostics._clip_teardown_ok` bat `EXTRACTION_SHUTDOWN_MS/2 <= elapsed <=
+  2*EXTRACTION_SHUTDOWN_MS` (so do thuc te **7992-8004 ms** tren tran 8000 ms)
+  roi moi dem `len(_DETACHED_EXTRACTIONS)` tang — bang de don la dem duong,
+  khoang doi du "wait bi xoa" thanh "wait khong chay". Phep chung: vet
+  `khong_wait_that` (cat lenh wait) do thanh `shutdown quay ve sau 0 ms, tran la
+  8000 ms`, vet `khong_luu_thread` (cat `detach_running_thread`) do thanh
+  `detach khong luu thread (0 -> 0)`.
+- **Dung detach hang loat luc thoat.** Trần đặt theo **từng clip**, không đặt một
+  hạn chung cho cả lượt `shutdown_clip_workers()`: hạn chung sẽ cắt ngang nhiều
+  clip còn đang giải mã cùng lúc thoát, tức là mở lại đúng cái abort
+  `0xC0000409` (4/4 lan tren `--project-report`) ma 1.0.6 vua khac phuc.
+- **Hai mode cua mot probe ghi chung mot payload la mot cach tu doi so cua minh.**
+  `scratch/console_window_probe.py` do that va `--phan-chung` tung cung ghi
+  `console_window_probe.json`: lan chay sau xoa so cua lan truoc va nen cua do
+  "do that". Chua: ten file theo mode (`console_window_probe_cf.json`) va
+  che do `--frozen --empty` phai co ten RIENG (`console_frozen_empty.json`),
+  cong cha doc theo duong dan **cua con** — neu khong, vet 4 xanh vi tien trinh
+  khac bao cao.
 
 ## Cấm
 

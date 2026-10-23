@@ -1,10 +1,20 @@
-"""Phan chung cho phep dung luong giai ma clip luc dong cua so (1.0.6).
+"""Phan chung cho phep dung luong giai ma clip luc dong cua so (1.0.6 + tran 23/10).
 
 Cac phai do: `MainController.closeEvent` goi `shutdown_clip_workers()`, va vong
 lap do goi `shutdown_extraction()` cua tung ClipItem. Bo MỘT trong hai dong do
 thi app chet o 0xC0000409 (3221226505) luc interpreter thoat, khong lai mot dong
 traceback nao — do la loi ban 1.0.6 mac phai khi `installed_app_probe.py` mo du
 an 4K that cua nguoi dung (3/3 lan abort, payload van ghi xong).
+
+PHEP THU THU BA (them 23/10/2026, sau khi chu repo duyet `thread.wait()` co
+tran): chieu NGUOC lai cua loi dong. `wait()` tran bien MOT lan
+`cv2.VideoCapture.read()` ket thanh cua so khong bao gio dong duoc, nen tran
+`EXTRACTION_SHUTDOWN_MS` + `detach_running_thread()` la hai dong phai ton tai.
+Ba vet moi do bang CUA DEM tren dung dong selftest, khong dung oracle
+`--project-report`: worker 4K cua fixture van hop tac (nghi sau khung dang giai
+ma) nen luot do XANH CA KHI cat tran — no chi bat duoc loi abort, khong phai loi
+tre. Vet `wait_khong_tran` KY VONG treo: do la lan duy nhat `subprocess.run`
+phai bi cut bang `time_limit`, va do la ly do no chi chay MOT lan.
 
 Probe chay HAI thang do tren cung mot vet:
   * `main.py --selftest --only="dong cua so"` — do CAU TRUC (con thread nao sau
@@ -46,18 +56,43 @@ EVIDENCE_JSON = os.path.join(ROOT, "scratch", "teardown_workers_evidence.json")
 EVIDENCE_PNG = EVIDENCE_JSON[:-5] + ".png"
 RESULT = os.path.join(ROOT, "scratch", "teardown_workers_counterfactual.json")
 
+ROW_WAIT_NEEDLE = (
+    b"                if not thread.wait(EXTRACTION_SHUTDOWN_MS):\n"
+    b"                    detach_running_thread(thread, worker)\n")
+
 MUTATIONS = [
-    ("closeEvent_khong_goi_gi",
+    # (ten vet, oracle, file nguon, vet byte, doan thay, chu ky vong trong detail)
+    ("closeEvent_khong_goi_gi", "both",
      os.path.join(ROOT, "ui", "main_controller.py"),
      b"            self.editor_page.timeline_panel.scene.shutdown_clip_workers()\n",
      b"            pass  # CU: closeEvent khong dung luong\n", DETAIL),
-    ("vong_lap_khong_dung_ai",
+    ("vong_lap_khong_dung_ai", "both",
      os.path.join(ROOT, "ui", "graphics", "timeline_scene.py"),
      b"        for item in list(self._clip_items.values()):\n"
      b"            item.shutdown_extraction()\n",
      b"        for item in list(self._clip_items.values()):\n"
      b"            pass  # CU: shutdown_clip_workers khong dung ai ca\n", DETAIL),
+    # Ba vet duoi day do chieu NGUOC lai: `wait()` co tran va detach. Oracle
+    # "row" la dong selftest; "row_hang" la lan ky vong Tre (child bi cut bang
+    # time_limit nen khong co detail de doi).
+    ("wait_khong_tran", "row_hang",
+     os.path.join(ROOT, "ui", "graphics", "clip_item.py"), ROW_WAIT_NEEDLE,
+     b"                thread.wait()  # CU: wait tran, cua so treo vo han\n"
+     b"                if False:\n"
+     b"                    detach_running_thread(thread, worker)\n", None),
+    ("khong_luu_thread", "row",
+     os.path.join(ROOT, "ui", "graphics", "clip_item.py"), ROW_WAIT_NEEDLE,
+     b"                if not thread.wait(EXTRACTION_SHUTDOWN_MS):\n"
+     b"                    pass  # CU: khong luu thread dang chay\n",
+     "detach khong luu thread"),
+    ("khong_wait_that", "row",
+     os.path.join(ROOT, "ui", "graphics", "clip_item.py"), ROW_WAIT_NEEDLE,
+     b"                if True:  # CU: khong wait gi ca, detach lien\n"
+     b"                    detach_running_thread(thread, worker)\n",
+     "shutdown quay ve sau"),
 ]
+HANG_LIMIT_S = 90                         # vet `wait_khong_tran`: 8 s -> vo han
+ROW_LIMIT_S = 300                         # baseline va cac vet dem duoc
 
 
 def _true_rc(returncode):
@@ -178,13 +213,23 @@ def _payload_of(path):
         return None
 
 
-def _run_row(report):
-    """`main.py --selftest --only="dong cua so"` THAT; tra (rc, dong do)."""
+def _run_row(report, time_limit=ROW_LIMIT_S):
+    """`main.py --selftest --only="dong cua so"` THAT.
+
+    Tra (rc, dong, treo). treo=True nghia la child khong kip in bao cao trong
+    `time_limit` — do la dieu vet `wait_khong_tran` ky vong, khong phai loi cua
+    probe. Payload phai loc dung mot dong: neu khong thi phep thu dang do ca
+    bang va moi so do deu vo nghia.
+    """
     if os.path.exists(report):
         os.remove(report)
-    proc = subprocess.run([sys.executable, "main.py", "--selftest", report,
-                           "--only=" + ROW_ONLY], cwd=ROOT,
-                          capture_output=True, text=True)
+    try:
+        proc = subprocess.run([sys.executable, "main.py", "--selftest", report,
+                               "--only=" + ROW_ONLY], cwd=ROOT,
+                              capture_output=True, text=True,
+                              timeout=time_limit)
+    except subprocess.TimeoutExpired:
+        return None, None, True
     payload = _payload_of(report) or {}
     if payload.get("only") != [ROW_ONLY] or len(payload.get("checks", [])) != 1:
         raise SystemExit("BUG: --only=%s khong loc dung mot dong (payload=%r)"
@@ -193,7 +238,7 @@ def _run_row(report):
     row = payload["checks"][0] if payload.get("checks") else None
     if os.path.exists(report):
         os.remove(report)
-    return _true_rc(proc.returncode), row
+    return _true_rc(proc.returncode), row, False
 
 
 def _run_report(out_json):
@@ -208,6 +253,29 @@ def _run_report(out_json):
     return _true_rc(proc.returncode), _payload_of(out_json), time.time() - start
 
 
+def _run_full(path):
+    """`main.py --selftest <path>` KHONG loc — bang tron 44 dong.
+
+    `timeout=420`: bang tron do 63,2-71,3 s tren may nghi (docs/verification-
+    gates.md), nhung lan chay 23/10 hong o pha contention, nen cho du lieu vao
+    file bao cao roi bi cut con hon de probe treo ca gio.
+    """
+    if os.path.exists(path):
+        os.remove(path)
+    try:
+        proc = subprocess.run([sys.executable, "-X", "utf8", "main.py",
+                               "--selftest", path], cwd=ROOT,
+                              capture_output=True, text=True, timeout=420)
+    except subprocess.TimeoutExpired:
+        return None, {}
+    rc = _true_rc(proc.returncode)
+    payload = _payload_of(path) or {}
+    if rc == ABORT and not payload.get("checks"):
+        raise SystemExit("PROBE DUNG: bang tron abort 0xC0000409 ma khong ghi "
+                         "duoc bao cao — dong 44 chua kip chay")
+    return rc, payload
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     _guard_no_app_running()
@@ -219,19 +287,21 @@ def main():
     snap = _user_data_snapshot()
     originals = {}
     report = os.path.join(tempfile.gettempdir(), "clinging_teardown_row.json")
+    full_report = os.path.join(tempfile.gettempdir(),
+                               "clinging_teardown_full.json")
 
     def note(name, ok, detail):
         checks.append((name, ok))
         print("%-34s %s  %s" % (name, "PASS" if ok else "FAIL", detail))
 
     try:
-        for path in (MUTATIONS[0][1], MUTATIONS[1][1]):
+        for path in {mutation[2] for mutation in MUTATIONS}:
             with open(path, "rb") as handle:
                 originals[path] = handle.read()
 
         # 1) baseline: hai thang do PHAI xanh tru khi vet, neu khong thi probe
         #    do mot loi da co tu truoc, khong do phep dung nay.
-        rc, row = _run_row(report)
+        rc, row, hung = _run_row(report)
         note("baseline_selftest_row", rc == 0 and row and row["ok"],
              "rc=%d row=%s" % (rc, (row or {}).get("detail", "khong co row")))
         rc, payload, secs = _run_report(EVIDENCE_JSON)
@@ -243,64 +313,90 @@ def main():
              % (rc, secs, alive.get("mo_duoc"), alive.get("o_editor"),
                alive.get("user_cache_extra")))
 
-        # 2) tung vet: chay HAI lan de lo phien ban may tinh co luc rong.
-        for index, (name, target, needle, repl, expect) in enumerate(MUTATIONS):
+        # 2) tung vet: vet dem duoc chay HAI lan; vet treo chi MOT lan (moi lan
+        #    do la 90 s bi cut).
+        for index, (name, oracle, target, needle, repl, expect) in enumerate(MUTATIONS):
             original = originals[target]
             if original.count(needle) != 1:
                 note(name + "_vet", False,
                      "vet xuat hien %d lan, can 1" % original.count(needle))
                 continue
-            for attempt in (1, 2):
+            for attempt in ((1,) if oracle == "row_hang" else (1, 2)):
                 with open(target, "wb") as handle:
                     handle.write(original.replace(needle, repl, 1))
-                rc, row = _run_row(report)
+                limit = HANG_LIMIT_S if oracle == "row_hang" else ROW_LIMIT_S
+                rc, row, hung = _run_row(report, limit)
                 detail = (row or {}).get("detail", "khong co row")
-                red_row = (row is not None and not row["ok"]
-                           and expect in str(detail))
-                note("%s_selftest_vet%d" % (name, attempt), red_row,
-                     "rc=%d do vi: %s" % (rc, str(detail)[:120]))
-                prod = EVIDENCE_JSON[:-5] + "_vet%d.json" % attempt
-                rc, payload, secs = _run_report(prod)
-                body = payload or {}
-                # Abort o exit ma payload van day du: chung toi chet vi Qt bi
-                # cat, khong phai vi khong mo duoc du an.
-                red_exit = (rc == ABORT and body.get("mo_duoc") is True
-                            and body.get("o_editor") is True)
-                note("%s_project_rc_vet%d" % (name, attempt), red_exit,
-                     "rc=%d (muon %d) %.1fs mo_duoc=%s o_editor=%s"
-                     % (rc, ABORT, secs, body.get("mo_duoc"),
-                        body.get("o_editor")))
-                for path in (prod, prod[:-5] + ".png"):
-                    if os.path.exists(path):
-                        os.remove(path)
+                if oracle == "row_hang":
+                    # `thread.wait()` tran + worker khong hop tac = child khong
+                    # bao gio in bao cao. Khong co detail de doi, nen ky vong
+                    # la `hung` va khong co rc.
+                    note("%s_selftest_vet%d" % (name, attempt),
+                         hung and rc is None and row is None,
+                         "treo=%s qua %d s, rc=%r (muon treo)"
+                         % (hung, limit, rc))
+                else:
+                    red_row = (row is not None and not row["ok"]
+                               and expect in str(detail))
+                    note("%s_selftest_vet%d" % (name, attempt), red_row,
+                         "rc=%d do vi: %s" % (rc, str(detail)[:120]))
+                if oracle == "both":
+                    prod = EVIDENCE_JSON[:-5] + "_vet%d.json" % attempt
+                    rc, payload, secs = _run_report(prod)
+                    body = payload or {}
+                    # Abort o exit ma payload van day du: chung toi chet vi Qt bi
+                    # cat, khong phai vi khong mo duoc du an.
+                    red_exit = (rc == ABORT and body.get("mo_duoc") is True
+                                and body.get("o_editor") is True)
+                    note("%s_project_rc_vet%d" % (name, attempt), red_exit,
+                         "rc=%d (muon %d) %.1fs mo_duoc=%s o_editor=%s"
+                         % (rc, ABORT, secs, body.get("mo_duoc"),
+                            body.get("o_editor")))
+                    for path in (prod, prod[:-5] + ".png"):
+                        if os.path.exists(path):
+                            os.remove(path)
+                if name == "khong_luu_thread" and attempt == 1:
+                    # SPOT tren bang TRON, vet van nam trong nguon: phep thu
+                    # phai lam do ca lenh khong loc, khong chi dong --only.
+                    # Dung vet nay chu khong dung vet closeEvent vi vet do lam
+                    # process abort truoc khi kip ghi xong 44 dong.
+                    rc_full, payload_full = _run_full(full_report)
+                    note("spot_tron_bang_co_vet",
+                         rc_full != 0 and payload_full.get("failed") == [ROW],
+                         "rc=%d rows=%d failed=%r"
+                         % (rc_full, len(payload_full.get("checks", [])),
+                            payload_full.get("failed")))
                 with open(target, "wb") as handle:
                     handle.write(original)
                 if index == 0 and attempt == 1:
                     # Spot check xen ke: byte nguyen thi lai phai xanh.
-                    rc, row = _run_row(report)
+                    rc, row, hung = _run_row(report)
                     note("spot_sau_vet1", rc == 0 and row and row["ok"],
                          "rc=%d row=%s" % (rc, (row or {}).get("detail", "")))
 
         # 3) khoi phuc: bang tron 44 dong phai xanh, neu khong probe de lai nguon hong.
-        proc = subprocess.run([sys.executable, "-X", "utf8", "main.py",
-                               "--selftest", report], cwd=ROOT,
-                              capture_output=True, text=True, timeout=420)
-        payload = _payload_of(report) or {}
-        green_all = (_true_rc(proc.returncode) == 0
-                     and payload.get("only") in (None, [])
+        rc_full, payload = _run_full(report)
+        green_all = (rc_full == 0 and payload.get("only") in (None, [])
                      and payload.get("failed") == []
                      and len(payload.get("checks", [])) >= 44)
         note("bang_tron_xanh_sau_khoi_phuc", green_all,
              "rc=%d rows=%s failed=%s only=%r"
-             % (_true_rc(proc.returncode), len(payload.get("checks", [])),
+             % (rc_full, len(payload.get("checks", [])),
                 payload.get("failed"), payload.get("only")))
-        for path in (MUTATIONS[0][1], MUTATIONS[1][1]):
+        for path in {mutation[2] for mutation in MUTATIONS}:
             with open(path, "rb") as handle:
                 note("byte_nguyen_%s" % os.path.basename(path),
                      handle.read() == originals[path], "so byte voi ban goc")
     finally:
-        if os.path.exists(report):
-            os.remove(report)
+        # Neu probe chet giua chung (SystemExit tu `_run_row`/`_run_full`),
+        # doan vet KHONG duoc phep con lai trong nguon — day la bai hoc
+        # "bo lai `if False and hue_shift`" tu 22/10/2026.
+        for path, data in originals.items():
+            with open(path, "wb") as handle:
+                handle.write(data)
+        for path in (report, full_report):
+            if os.path.exists(path):
+                os.remove(path)
         touched = _user_data_restore(snap)
         note("du_lieu_nguoi_dung_khong_doi", not touched,
              "%d file lech byte" % len(touched))

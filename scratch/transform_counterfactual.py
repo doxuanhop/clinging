@@ -43,6 +43,10 @@ sot la co that.
 18. align_end_tra_0             (report) "canh phai cham mep phai" — cung mot
     phep doi byte o `align_center` nhu vet 5, nhung do bang ANH: do la duong
     ma dong selftest khong nhin thay (no so voi con so -480/+480).
+19. glyph_tay_nam_an_het        (selftest) "tay nam xoay khong co glyph" —
+    tay nam trong (khong mũi tên) thi dong van xanh vi cac phep do xich ma deu
+    dat: `rotate_glyph_pixel_count` dem pixel toi trong đĩa duong kinh 11 don vi
+    va do SAN PHAM VE, khong do code.
 
 Vet CU duoc ghi ra file that, nen mot lan bi cat giua chung de lai file nguon
 dam loa: moi vet copy ban goc sang `<file>.cfbak` TRUOC khi chen, va lan chay
@@ -51,7 +55,7 @@ sau khoi dong bang phuc lai moi `.cfbak` con sot roi xoa chung.
 ```bash
 python scratch/transform_counterfactual.py [so_phep_thu_dau] [so_thu_nhat]
 ```
-Toan bo 18 vet ~2 phut (mot vet selftest ~2 s, mot vet report ~4 s, hai lan
+Toan bo 19 vet ~2 phut (mot vet selftest ~2 s, mot vet report ~4 s, hai lan
 chay tron bang ~40 s). KHONG chay hai ban sao cua probe nay song song: chung
 ghi de byte len cung file nguon.
 """
@@ -72,6 +76,12 @@ PP = os.path.join(ROOT, "ui", "properties_panel.py")
 CU = os.path.join(ROOT, "core", "canvas_utils.py")
 PS = os.path.join(ROOT, "core", "project_storage.py")
 DIAG = os.path.join(ROOT, "diagnostics.py")
+# Tran cho MOI lan goi production. Tron bang `--selftest` do 63,2-71,3 s (may
+# nghi, 23/10/2026), mot vet ~2 s, `--transform-report` ~4 s. 420 s bang ~6 lan
+# do dai lon nhat da do: bai hoc cua `frozen_bundle_probe.py` la mot lan chay
+# keo 404 s chi vi may khong nghi, nen tran vua phai dung cho HDD tranh chan,
+# vua phai NGAT duoc (xem `_child`).
+CHILD_TIMEOUT = 420
 
 # (ten, oracle, file, needle, repl, mong_doi_nao_do)
 MUTATIONS = [
@@ -163,6 +173,15 @@ MUTATIONS = [
      b"        return half - box_size / 2.0\n",
      b"        return 0.0  # CU\n",
      "canh phai cham mep phai"),
+    # 19. Tay nam xoay phai DOC RA la nut xoay: goi pixmap ve trong `paint` la
+    # callback C++ cua Qt nen vet nay khong duoc phep lam no NOD (Exception
+    # trong paint = ca process chet, do 23/10/2026). Do bang CAY SO:
+    # `rotate_glyph_pixel_count` dem pixel toi trong duong kinh 11 don vi —
+    # disc tran ~0, co glyph ~2000. Vet nay tra glyph ve pixmap rong.
+    ("glyph_tay_nam_an_het", "selftest", GCI,
+     b"            glyph = rotate_glyph_pixmap()\n",
+     b"            glyph = QPixmap()  # CU: tay nam trang tron, khong con glyph\n",
+     "tay nam xoay khong co glyph"),
 ]
 
 
@@ -171,15 +190,39 @@ def _read(report):
         return json.load(handle)
 
 
+def _child(command, label):
+    """Chay mot lenh production THAT, co tran.
+
+    Tran o day KHONG phai de phong nghia ly. Lan chay 23/10/2026 (muc 4s duoi
+    `docs/verification-gates.md`): lan SPOT chay tron bang `--selftest` voi vet
+    `canh_khong_theo_hop_xoay` nam tren nguon khong tu ket thuc — tien trinh
+    song hon 13 phut, CPU phang 8,20 s qua hai lan mau cach nhau 100 s, cua so
+    'Clinging - Video Editor' van hien, payload khong ton tai. Khong co tran thi
+    cha dung yen o do mai mai va lan chay khong bao gio in ra loi bao. Do lai
+    lan 240 s sau do: control tron bang rc=0 71,3 s, vet nhu vay rc=1 63,2 s
+    (KHONG tai hien) -> loi la `subprocess.run` thieu tran, khong phai doan ma
+    vet thay.
+    """
+    try:
+        return subprocess.run(command, cwd=ROOT, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=CHILD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise SystemExit("PROBE DUNG: %s khong tu ket thuc trong %d s. Do la "
+                         "dead-lock (CPU phang), khong phai do San pham; nguon "
+                         "da duoc phuc lai byte trong finally."
+                         % (label, CHILD_TIMEOUT))
+
+
 def run_selftest(report, only=None):
     """Chạy `main.py --selftest` THAT, có hoặc không lọc lại đúng một dòng."""
     if os.path.exists(report):
         os.remove(report)
     cmd = [sys.executable, "main.py", "--selftest", report]
+    label = "main.py --selftest " + (("--only=" + only) if only else "TRON BANG")
     if only:
         cmd.append("--only=" + only)
-    proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace")
+    proc = _child(cmd, label)
     payload = _read(report)
     if only:
         names = [r["name"] for r in payload["checks"]]
@@ -194,9 +237,8 @@ def run_report(report):
     """Chạy `main.py --transform-report` THAT va tra ve ten tung cua do."""
     if os.path.exists(report):
         os.remove(report)
-    proc = subprocess.run([sys.executable, "main.py", "--transform-report", report],
-                          cwd=ROOT, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace")
+    proc = _child([sys.executable, "main.py", "--transform-report", report],
+                  "main.py --transform-report")
     payload = _read(report)
     return proc.returncode, payload
 

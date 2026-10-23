@@ -48,6 +48,47 @@ HANDLE_WIDTH = 8.0
 THUMB_CELL_WIDTH = 72.0
 WAVEFORM_COLUMN_WIDTH = 2.0
 
+# "Dong cua so" khong duoc phep treo vo han. Do 23/10/2026 o
+# `shutdown_extraction`: dang cu la `if not thread.wait(5000): thread.wait()` —
+# lan wait THU HAI khong co tran, nen MOT lan `cv2.VideoCapture.read()` ket tren
+# HDD bien app thanh cua so khong bao gio dong duoc (vet `wait_khong_tran` cua
+# `scratch/teardown_workers_counterfactual.py`: child treo qua 90 s, bi cut,
+# khong kip in bao cao). Tran dat theo TUNG clip vi gia dong that cua mot clip
+# 4K chi vai giay — luot `--project-report` byte nguyen 19,6 s, hai vet cat
+# duong dong abort luc 11,5-16,2 s; mot han CHUNG cho ca luot se detach hang
+# loat clip van dang chay dung luc thoat, tuc la mo lai chinh cai abort
+# 0xC0000409 vua sua o 1.0.6.
+EXTRACTION_SHUTDOWN_MS = 8000
+
+# Dem duoc de cong selftest chung minh thread ket THUC SU con song chu khong bi
+# huy; moi phan tu la {"thread":..., "worker":...} va tu rut khi finished.
+_DETACHED_EXTRACTIONS = []
+
+
+def detach_running_thread(thread, worker):
+    """Giu mot QThread dang chay SONG, khong huy no giua chung.
+
+    Khong dung `terminate()`: cat mot thread dang chay bytecode Python de lai
+    GIL va `cv2.VideoCapture` o trang thai khong xac dinh. Nguoc lai, de Qt huy
+    mot thread dang chay la dung cai abort `0xC0000409` da do 4/4 lan o
+    `--project-report`. Nen o day giu owner-by-reference roi de worker tu ket
+    thuc sau khung hinh dang giai ma.
+    """
+    holder = {"thread": thread, "worker": worker}
+
+    def _forget():
+        try:
+            _DETACHED_EXTRACTIONS.remove(holder)
+        except ValueError:
+            pass
+
+    try:
+        thread.finished.connect(_forget)
+    except (RuntimeError, TypeError):
+        pass
+    _DETACHED_EXTRACTIONS.append(holder)
+    return holder
+
 
 class ClipItem(QGraphicsRectItem):
     """
@@ -860,7 +901,14 @@ class ClipItem(QGraphicsRectItem):
         self._start_media_extraction()
 
     def shutdown_extraction(self):
-        """Dừng worker an toàn trước khi item bị hủy hoặc đổi dự án."""
+        """Dừng worker an toàn trước khi item bị hủy hoặc đổi dự án.
+
+        `thread.wait()` tran o day da bi bo (do 23/10/2026): MOT lan
+        `cv2.VideoCapture.read()` ket tren HDD lam cua so khong bao gio dong
+        duoc. Neu vuot tran `EXTRACTION_SHUTDOWN_MS` thi thread duoc detach:
+        van song de tu ket thuc sau khung dang giai ma, khong bi Qt huy giua
+        chung - do la cach duy nhat tranh abort 0xC0000409 da do 4/4 lan.
+        """
         thread = getattr(self, "_extractor_thread", None)
         worker = getattr(self, "_extractor_worker", None)
         if thread is None:
@@ -875,8 +923,8 @@ class ClipItem(QGraphicsRectItem):
             if thread.isRunning():
                 thread.requestInterruption()
                 thread.quit()
-                if not thread.wait(5000):
-                    thread.wait()
+                if not thread.wait(EXTRACTION_SHUTDOWN_MS):
+                    detach_running_thread(thread, worker)
         except RuntimeError:
             pass
         self._extractor_thread = None

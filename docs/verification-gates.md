@@ -279,7 +279,7 @@ python scratch/library_counterfactual.py                   # -> 45/45 ALL PASS, 
 # 4q) The "Bien doi" (nhom N, 2026-10-23): xoay tu do tren canvas, lat ngang/doc,
 #     sau nut canh le, mot o "Tỷ lệ %" co khoa "Đồng nhất"
 python main.py --transform-report scratch/_tf_report.json  # -> 17 cua do tu pixel xuat, 4,0-4,4 s, rc=0
-python scratch/transform_counterfactual.py                 # -> 18/18 do dung ly do, 133 s, rc=0
+python scratch/transform_counterfactual.py                 # -> 19/19 do dung ly do, 194 s, rc=0
                                                            #    (hai oracle: dong selftest + --transform-report)
 
 # 4r) "Bố cục & Phong cách" cap du an (nhom O, 2026-10-23): 12 kieu bo cuc,
@@ -289,6 +289,20 @@ python scratch/canvas_layout_counterfactual.py  # -> 50/50 ALL PASS, rc=0 (~3 ph
                                                 #     4 vet SONG doi byte + 1 lan phuc)
 python scratch/canvas_layout_evidence.py        # -> sheet 3 bang + anh CHUP THAT cua so, rc=0
 python scratch/boot_laziness_counterfactual.py  # -> 5 cua RED vi dung ly do (them bocuc)
+
+# 4s) Icon xoay tren tay nam frame view + cua so console an (2026-10-23)
+python main.py --selftest scratch/_st_transform.json --only="bien doi"
+                                                # -> rc=0, 2,4 s, dong nay bao "glyph tay nam xoay 3119 px toi"
+python scratch/rotate_knob_evidence.py          # -> anh CHUP THAT toan man hinh 1920x1080 + crop 4x
+                                                #    ra assets/uiux/editor-rotate-knob{,-detail}.png, rc=0
+python scratch/rotate_knob_evidence.py --pixels # -> 6 vet tren anh da luu (xoa region / anh bo chon / lech tam), rc=0
+pythonw scratch/console_window_probe.py         # -> 22 cua dem: 0 cua so console moi tren duong sinh
+                                                #    tien trinh that + lan mo exe da cai, rc=0, 21,7 s, 7 lan spawn
+                                                #    -> scratch/console_window_probe.json
+pythonw scratch/console_window_probe.py --phan-chung
+                                                # -> 8 cua, 19,3 s, 3 lan spawn, rc=0: mot spawn thieu
+                                                #    CREATE_NO_WINDOW mo cua ConsoleWindowClass that
+                                                #    -> scratch/console_window_probe_cf.json (file RIENG)
 
 # 5) Chụp lại rồi diff: phải ra 0 THEM / 0 MAT / 0 DOI
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json
@@ -1377,7 +1391,7 @@ Bốn chỗ chia nhau một sự thật, và cổng phải do cả bốn:
 
 | Dòng / cổng | Hợp đồng | Phản chứng |
 | --- | --- | --- |
-| `bien doi: xoay tu do + lat + canh le + khoa ty le` (dòng 42) | Nam xich ma một bundle đóng gói có thể âm thầm cắt: ba CO hình học có trong model và tròn ven qua `.clinq` (kể cả file cũ không có khoá); ba CO **không** nằm trong `PROPERTY_ORDER` của đồ thị keyframe và `SetClipTransformCommand` đảo ngược được chúng; góc xoay luôn trong `(-180, 180]` (QTransform và `atan2` của `sync_to_model` chỉ cùng một tiếng trong dải đó); thẻ "Biến đổi" có ĐỦ 12 nut; và xoay/lat/canh phải **đo được trên widget thật** (nhấp từng nut, đọc lại model) chứ không phải chuỗi trong nguồn | `scratch/transform_counterfactual.py`: 18 phép đổi byte trên SAU file nguồn thật, mỗi phép chạy lại đúng oracle của nó |
+| `bien doi: xoay tu do + lat + canh le + khoa ty le` (dòng 42) | Nam xich ma một bundle đóng gói có thể âm thầm cắt: ba CO hình học có trong model và tròn ven qua `.clinq` (kể cả file cũ không có khoá); ba CO **không** nằm trong `PROPERTY_ORDER` của đồ thị keyframe và `SetClipTransformCommand` đảo ngược được chúng; góc xoay luôn trong `(-180, 180]` (QTransform và `atan2` của `sync_to_model` chỉ cùng một tiếng trong dải đó); thẻ "Biến đổi" có ĐỦ 12 nut; xoay/lat/canh phải **đo được trên widget thật** (nhấp từng nut, đọc lại model) chứ không phải chuỗi trong nguồn; và tay nắm xoay trên canvas phải **đọc ra là nút xoay** — `rotate_glyph_pixel_count` render đúng `QGraphicsScene` của preview vào QImage RGB32 và đếm pixel tối trong đĩa đường kính 11 đơn vị, `glyph_px < 40` là đỏ (23/10: bản có glyph báo **3119 px toi** trong chi tiết dòng) | `scratch/transform_counterfactual.py`: 19 phép đổi byte trên SAU file nguồn thật, mỗi phép chạy lại đúng oracle của nó |
 | `--transform-report` (17 cửa) | Toàn bộ số đo lấy từ **pixel FrameComposer vẽ ra** (960×540 cho đường xuất, `QGraphicsScene.render` 1920×1080 cho preview), không lấy từ model: fixture bốn góc bốn màu; lat ngang dọc phải đảo thật và không đổi tâm nội dung; xoay 90 đổi chiều, xoay 45 mở rộng mà vẫn trong khung, xoay 180 ≡ hai lần lat; năm phép canh lề chạm đúng mép canvas **ở góc đã xoay**; o 150% mở rộng đúng 1,5 lần **cả hai trục**; preview và xuất phải cùng một mặt sau khi lat; thẻ "Biến đổi" vẽ ra tranh (không phải khối rỗng) và vẽ **đủ chiều cao** trên sheet; không ghi vào cache người dùng | Cùng probe, 5 vet cua report (`export_bo_lat`, `preview_bo_lat`, `export_bo_xoay`, `fixture_trang_don`, `align_end_tra_0`) |
 
 Vì sao fixture phải là **bốn góc bốn màu**: một tấm nền trắng (hoặc hai nửa giống
@@ -1391,24 +1405,32 @@ Số đo thật của lần kiểm (tree nguồn, máy nghỉ, 2026-10-23):
 
 * `python main.py --selftest` **42 dòng, `failed = []`, rc=0, 47,9 s**; lần đo
   thứ hai sau khi dọn rác (23/10, payload giữ ở `scratch/_selftest_42.json`):
-  **rc=0, 40,7 s, `len(checks)=42`, `failed=[]`, `only=null`**.
-  `--only="bien doi"` một dòng rc=0, **2,6 s**, chi tiết
-  `3 co trong model + .clinq + undo, goc trong (-180,180], 12 nut Bien doi, xoay/lat/canh dat do tren widget that`.
+  **rc=0, 40,7 s, `len(checks)=42`, `failed=[]`, `only=null`**. Bảng **44 dòng**
+  hiện tại (thêm dòng glyph tay nắm xoay + dòng dừng luồng giải mã) payload
+  `scratch/_selftest_44.json` và `scratch/_source_selftest_106d.json`:
+  **rc=0, `failed=[]`, `only=null`, trọn bảng 63,2–71,3 s trên máy nghỉ**.
+  `--only="bien doi"` một dòng rc=0, **2,4–2,6 s**, chi tiết
+  `3 co trong model + .clinq + undo, goc trong (-180,180], 12 nut Bien doi, xoay/lat/canh dat do tren widget that, glyph tay nam xoay 3119 px toi`
+  (payload `scratch/_only_biendoi.json`, `only=['bien doi']`, `len(checks)=1`).
 * `python main.py --transform-report` **rc=0, 17 cửa, 0 đỏ, 4,0–4,4 s**, ảnh
   `scratch/_tf_report.png`. Các con số trong payload: `flip_center_dx = 0.0`,
   `rot45_inside = True`, `align_left_x0 = 0.0`, `align_right_edge = 0.0`,
   `align_center_dy = 0.5`, `pct_width_ratio = 1.501`, `card_colors = 85`,
   `sheet_colors = 87`, `card_bottom_painted = True`, `user_cache_changed = False`.
-* `python scratch/transform_counterfactual.py`: **18/18 PHAN BIET**, `ALL PASS`,
-  rc=0, **133 s**. SPOT trên trọn bảng: `rc=1 rows=42 failed=['bien doi: ...']`;
-  khôi phục: `selftest rc=0 rows=42 failed=[]` **và** `report rc=0 failed=[]`.
+* `python scratch/transform_counterfactual.py`: **19/19 PHAN BIET**, `ALL PASS`,
+  rc=0, **194 s** (bảng 44 dòng). SPOT trên trọn bảng: `rc=1 rows=44
+  failed=['bien doi: xoay tu do + lat + canh le + khoa ty le']` (vet
+  `canh_khong_theo_hop_xoay`); khôi phục: `selftest rc=0 rows=44 failed=[]`
+  **và** `report rc=0 failed=[]`. Vết thứ 19 (`glyph_tay_nam_an_het`) thay
+  `rotate_glyph_pixmap()` bằng `QPixmap()` trống và làm đỏ đúng một dòng với
+  `tay nam xoay khong co glyph: 0 pixel toi trong duong kinh 11 don vi`.
   Ba vết đỏ bằng chính lời người dùng nhìn thấy, không bằng cấu trúc:
   `hit_test_rotate_gia` (keo tay nam +45 do ra goc 0.00 — `item.contains()` đi
   qua `shape()` nên một `_hit_test_rotate` giả vẫn xanh), `pct_chi_ghi_mot_truc`
   (`nhap 150% ra [1.5, 1.0]`), `thang_do_dem_sau_nut` (`the co 12 nut moi,
   thang do ghi 11`).
-* `python scratch/needle_canary.py`: `transform_counterfactual 18 vet OK`,
-  `ALL CLEAN: 15/17 probe con nguyen ven mau`.
+* `python scratch/needle_canary.py`: `transform_counterfactual 19 vet OK`,
+  `ALL CLEAN: 17/19 probe con nguyen ven mau`.
 * Ảnh bằng chứng đã **mở ra xem**, và hai lỗi chỉ nhìn thấy bằng cách đó:
   (1) `grab()` của thẻ "Biến đổi" (card bo tròn bằng stylesheet) trả về ảnh
   **DPR 1.25 với 87% pixel trong suốt** (169.444/195.453 pixel có `alpha < 255`,
@@ -1537,6 +1559,113 @@ Ba cửa do chính mình viết ra đã phải bỏ hoặc phải sửa, và đ�
   thiết kế, không phải hồi quy. Đường sản xuất thật đã do lại:
   `dist/Clinging/Clinging.exe --split-report` → **rc=0**, `frozen=True`,
   `failed=[]`, `menu_actions` ba hành động.
+
+## Tay nắm xoay "đọc ra là nút xoay" (nhóm P, 2026-10-23)
+
+Người dùng yêu cầu "có icon xoay ở frame view như video", và khi được hỏi lại thì
+chọn phạm vi hẹp nhất: **chỉ thay hình tay nắm**, không đổi logic, không thêm hàng
+nút. Việc do đó nằm trọn trong `CanvasClipItem.paint()`.
+
+**Số đo quyết định hình vẽ.** Preview co mọi thứ bằng `fitInView`: cửa sổ
+1920×1080 ở chế độ maximize, viewport 959×707 cho canvas 1920×1080 nên
+`view_scale = 0,497`.
+Đĩa cũ có bán kính `HANDLE_SIZE / 2.0 = 4,0` đơn vị dự án, tức **3,98 px trên màn
+hình** — đó là lý do nó "như một chấm trắng bất kỳ" trong video mẫu. Bán kính vẽ
+mới `ROTATE_HANDLE_R = 9,5` đơn vị → **9,44 px**, và vẫn nằm trọn trong ô chạm
+`ROTATE_HIT = 10,0` (đường kính 20 đơn vị = 9,9 px), nên **không một pixel nào
+nhìn thấy mà bấm không tới** — bất biến này là lý do con số là 9,5 chứ không phải
+to hơn. Muốn to bằng video (~45 px) thì phải vẽ theo kích thước *màn hình* (chia
+ngược `view_scale`) và ô chạm phải phình theo — đó là đổi hành vi chạm, ngoài
+phạm vi đã duyệt.
+
+**Glyph.** `fa6s.arrow-rotate-right` 13 đơn vị (6,5 px màn hình), màu `#06222A`
+đặt trên đĩa trắng, dựng MỘT lần rồi cache trong `_ROTATE_GLYPH_CACHE` theo khóa
+`(px, màu)`. `rotate_glyph_pixmap()` bắt **mọi** `Exception` và trả `QPixmap()`
+trống: `paint()` là callback C++ của Qt, một raise ở đó không unwind qua biên mà
+giết cả process (đã trả giá với `QIconEngine`). Lỗi vì thế chỉ được phép là "thiếu
+ảnh", không bao giờ "app chết".
+
+**Cổng trên đường production.** Cửa (7) của `_transform_ui_ok()` đếm **bằng con
+số, không mở ảnh**: `diagnostics.rotate_glyph_pixel_count()` render một ô 13×13
+đơn vị chung quanh tâm tay nắm qua `scene.render()` vào `QImage RGB32` 130×130 và
+đếm pixel có `max(R,G,B) < 90` trong đĩa bán kính 5,5 đơn vị — vùng đếm nằm
+HOÀN TOÀN trong đĩa trắng (5,5 < 9,5) nên nét viền không bị tính. Ngưỡng **≥ 40**;
+một đĩa trắng trần cho ~0, glyph thật cho **3119 px**.
+
+* `python main.py --selftest scratch/_only_biendoi.json --only="bien doi"`
+  **rc=0, 2,4 s, `only=['bien doi']`, `len(checks)=1`**, chi tiết `… xoay/lat/canh
+  dat do tren widget that, glyph tay nam xoay 3119 px toi`.
+* Trọn bảng **44 dòng** `failed=[]`, `only=null`, rc=0
+  (`scratch/_selftest_44.json`, `scratch/_source_selftest_106d.json`); thời gian
+  trọn bảng trên máy nghỉ **63,2–71,3 s**.
+* `python main.py --transform-report scratch/_tf_report.json` **rc=0, 17 cửa,
+  0 đỏ** — báo cáo pixel của `FrameComposer` không đổi vì tay nắm thuộc preview.
+* Phản chứng `python scratch/transform_counterfactual.py`: **19/19 PHAN BIET**,
+  `ALL PASS`, rc=0, **194 s**. Vết mới `glyph_tay_nam_an_het` thay
+  `rotate_glyph_pixmap()` bằng `QPixmap()` trống, đỏ đúng một dòng với
+  `tay nam xoay khong co glyph: 0 pixel toi trong duong kinh 11 don vi`.
+  SPOT trọn bảng `rc=1 rows=44 failed=['bien doi: ...']`; khôi phục `selftest
+  rc=0 rows=44 failed=[]` **và** `report rc=0 failed=[]`. Canary:
+  `transform_counterfactual 19 vet OK`, `ALL CLEAN: 17/19`.
+* Chi phí máy thấp: không module mới trên đường boot (`widgets.common` chỉ import
+  trong thân hàm), nên không có cửa laziness mới. `python main.py
+  --startup-report scratch/_startup_knob.json` **rc=0, ok=True, 11 cửa**:
+  `MainController() 0,238 s` → `show() 0,151 s` → cửa sổ hiện `0,0005 s` sau đó,
+  `boot_to_window_s 0,917`, RAM **69.272 KiB** lúc cửa sổ ra, `cv2` vẫn vắng cả
+  lúc boot lẫn lúc ngam (`control.nang_s 0,247`).
+
+**Ảnh (đã mở ra xem):** `assets/uiux/editor-rotate-knob.png` là **chụp THẬT toàn
+màn hình 1920×1080** qua PrintWindow, handle cửa sổ thuộc `os.getpid()`, dự án fixture
+do probe tự sinh ở `%TEMP%` (không video nào của người dùng);
+`assets/uiux/editor-rotate-knob-detail.png` là crop 4× đúng quanh tâm tay nắm.
+Đo trên ảnh (`scratch/rotate_knob_evidence.json`): tâm `[1098, 138]`, ô 11×11 px
+quanh tâm lúc **đang chọn** = 39 px trắng + 23 px tối = **81/81** (không pixel nền
+lọt vào), lúc **bỏ chọn** = 0 trắng / 81 tối — đĩa chỉ hiện khi chọn, đúng hành vi
+trước khi sửa. Phản chứng trên ảnh `--pixels` **rc=0, 6 cửa**: baseline khớp
+`[39, 23]`; xóa vùng → 0 trắng VÀ 0 tối; lấy đúng vùng đó trên ảnh bỏ chọn → 0
+trắng; lệch tâm 40 px → 0 trắng.
+
+## Cửa sổ console chớp tắt: đo lại, không có gì để sửa (2026-10-23)
+
+Người dùng chọn "ẩn terminal" = **cửa sổ console đen chớp tắt**. Vá đã có từ lâu
+và nằm ở đầu `_boot()`: `main.py:89` gọi `_suppress_child_console_windows()`, vá
+`subprocess.Popen.__init__` để MỌI tiến trình con mang `CREATE_NO_WINDOW` +
+`STARTF_USESHOWWINDOW`; `core/media_frame.py:204` và `ui/export_dialog.py:1008`
+còn đặt cờ tường minh. Câu hỏi còn lại là **còn đường nào lọt** — nên đo, không
+sửa.
+
+`pythonw scratch/console_window_probe.py` **rc=0, 22 cửa, 21,7 s, 7 lan sinh tiến
+trình con** (`scratch/console_window_probe.json`). Cách đo: `EnumWindows` +
+`GetWindowThreadProcessId` (phải khai báo `restype`/`argtypes` cho ctypes, và khớp
+`GetClassNameW == "ConsoleWindowClass"` chứ không khớp theo tiêu đề), ghi lại tập
+cửa sổ console TRƯỚC và SAU, nên cửa "khong cua so console MOI nao" đếm cái do
+app sinh ra, không đếm console của riêng người dựng. Kết quả: **0 cửa mới**, mọi
+lan sinh đều mang cờ, và `ffprobe.exe` có mặt thật trong danh sách (gate chống
+"vòng lặp rỗng").
+* Chế độ `--frozen` chạy **exe đã cài 1.0.6**
+  (`%LOCALAPPDATA%\Programs\Clinging\Clinging.exe`) mở một dự án fixture tự sinh
+  rồi đóng, với `APPDATA`/`LOCALAPPDATA` của tiến trình con trỏ về thư mục tạm
+  (đây là chỗ DUY NHẤT được sandbox APPDATA — tree nguồn thì cấm, vì `site-packages`
+  nằm trong đó): `seconds 16,6`, `window=True`, `closed_cleanly=True`,
+  `media_children=['ffmpeg.exe']`, **`consoles=[]`** (`scratch/console_frozen.json`)
+  — tức bản phát hành, không chỉ tree nguồn.
+* Chế độ `--boot-window`: 4 module đầu của `_boot()` sinh **0** tiến trình và **0**
+  cửa sổ console, rc=0 (`scratch/console_boot_window.json`) — patch nằm trước mọi
+  đường sinh.
+* Phản chứng `pythonw scratch/console_window_probe.py --phan-chung` **rc=0, 8 cửa,
+  19,3 s, 3 lan sinh** (`scratch/console_window_probe_cf.json`, **file riêng** vì
+  hai mode từng đè lên nhau và làm mất số của mode kia): cắt hoàn toàn patch của
+  `main` rồi spawn `ffmpeg -version` thì **mở ra một cửa `ConsoleWindowClass`
+  mới** (lần đo 23/10: pid 1196) — nếu không có vết này thì mọi số "0 cửa sổ" ở
+  chế độ đo thật đều vô nghĩa; bỏ patch thì cửa `CREATE_NO_WINDOW` đỏ LECH (đỏ vì
+  đúng tên, không đỏ vì không tìm thấy spawn nào); canary `--boot-window
+  --canary` mở được cửa + ghi được spawn thiếu cờ; và dự án **không clip**
+  (`--frozen --empty`) đếm được `media_children=[]` mà vẫn `window=True` — gate
+  không xanh vì đầu vào rỗng.
+
+Kết luận nói với người dùng: app (kể cả bản cài) không tự mở console; cửa sổ đen
+còn thấy là **console của interpreter** khi chạy `python main.py` — bản phát hành
+`Clinging.exe` dựng với `console=False` nên không có.
 
 ## Thất bại đã ghi (để không lặp)
 
@@ -1702,12 +1831,25 @@ không đổi một byte nào trong delta 1.0.5 → 1.0.6. Lý do nó chỉ lộ
 trước đó mọi lần chạy đều ăn cache nóng của `%APPDATA%\Clinging\cache\image`
 (1.625 mục) nên worker xong trước lúc đóng.
 
-**Bề mặt sản phẩm đã sửa.** `TimelineScene.shutdown_clip_workers()`
+**Bề mặt sản phẩm đã sửa (lượt 1).** `TimelineScene.shutdown_clip_workers()`
 (`ui/graphics/timeline_scene.py:299`) gọi `shutdown_extraction()` của từng
 ClipItem, và `MainController.closeEvent()` (`ui/main_controller.py:461`) gọi nó
 trước `super().closeEvent(event)`. `shutdown_extraction()` đã có sẵn (disconnect
-→ `requestInterruption()` → `quit()` → `wait(5000)`), chỉ chưa ai gọi nó lúc
-thoát.
+→ `requestInterruption()` → `quit()` → `wait(5000)` rồi `wait()`), chỉ chưa ai
+gọi nó lúc thoát.
+
+**Bề mặt sản phẩm đã sửa (lượt 2, 23/10/2026 — "Sửa thread.wait() trong
+clip_item.py").** Chính cái `wait()` thứ hai không trần đó là lỗi còn lại: MỘT
+lần `cv2.VideoCapture.read()` kẹt trên HDD biến `close()` thành cửa sổ không bao
+giờ đóng. `ui/graphics/clip_item.py` giờ chỉ wait MỘT lần có hạn
+`EXTRACTION_SHUTDOWN_MS = 8000` **theo từng clip**, và nếu vẫn chưa về thì
+`detach_running_thread()` giữ QThread đó **sống** trong
+`_DETACHED_EXTRACTIONS` (holder tự rút khi `finished`) thay vì để Qt hủy nó giữa
+chừng. Hai đường hiển nhiên nhưng bị loại: `terminate()` — cắt một thread đang
+chạy bytecode Python để lại GIL và `cv2.VideoCapture` ở trạng thái không xác
+định; và một hạn **chung** cho cả lượt `shutdown_clip_workers()` — sẽ detach hàng
+loạt clip còn đang giải mã đúng lúc thoát, tức mở lại cái abort `0xC0000409` mà
+lượt 1 vừa khép.
 
 **Cấu phần đo (44 dòng, thêm một dòng so với bảng 1.0.6 ở trên).**
 `("dong cua so: dung luong giai ma clip tru khi thoat", _clip_teardown_ok)` —
@@ -1717,25 +1859,67 @@ giữ thread; và `isRunning()` của đúng những thread đã bắt lúc mở
 (RuntimeError vì C++ đã `deleteLater` được tính là đã chết). Dòng này tự dựng
 `MainController()` và mở fixture `.clinq` cùng cây với `--project-report`.
 
-**Phản chứng.** `scratch/teardown_workers_counterfactual.py` — **ALL PASS 16/16,
-rc=0**, 2 vet × 2 lượt, mỗi vet chạy cả hai thang đo:
+**Điều thứ tư của cùng dòng (đo 23/10/2026).** Cổng này phải chứng minh cả
+chiều ngược lại của cái bug vừa sửa: **đóng không được treo**. Dòng dựng một
+`QThread` **không hợp tác** — `run()` của nó không bao giờ đọc
+`isInterruptionRequested()`, đúng hình thái một worker đang block trong
+`read()` — gắn vào một ClipItem THẬT của fixture, nối thật hai signal
+`thumbnailReady`/`waveformReady` để phép `disconnect()` bên trong
+`shutdown_extraction()` là phép disconnect có connection chứ không phải lệnh
+không đích, rồi gọi `shutdown_extraction()` và đòi bốn thứ:
+
+* thời gian về nằm TRONG `[tran/2, 2*tran]` — một chiều thôi là bẫy: xóa hẳn
+  lệnh wait cũng làm hàm "về ngay, không treo";
+* `item._extractor_thread is None` (item đã buông);
+* `stuck.isRunning()` vẫn `True` và `len(_DETACHED_EXTRACTIONS)` **tăng một**
+  (thread kẹt được giữ sống, không bị Qt hủy);
+* sau khi worker tự kết thúc, holder **tự rút** về số đo ban đầu.
+
+Số của lượt chạy: cắt ở **7992 ms / 8002 ms / 8004 ms** với trần 8000 ms, và
+`--only="dong cua so"` hết **18,8 s / 19,2 s** ở hai lần đo liên tiếp
+(`scratch/_st_teardown.json`). Dòng `--selftest` đầy đủ vẫn **44 dòng
+`failed=[]` rc=0** (`bang_tron_xanh_sau_khoi_phuc`, `only=None`). lượt chốt
+trên đúng cây sẽ commit (`scratch/_st_full_final.json`, rc=0) cho cùng dòng
+chi tiết **8006 ms** — bốn số đo đều nằm trong khoảng `cap/2 … 2*cap` mà
+cửa yêu cầu.
+
+**Phản chứng.** `scratch/teardown_workers_counterfactual.py` — **ALL PASS 23/23,
+rc=0**, 5 vet: hai vet "chết khi thoát" chạy cả hai thang đo × 2 lượt, ba vet
+"treo khi đóng" chạy thang `--selftest` (và đúng MỘT vet trong số đó được SPOT
+trên bảng trọn 44 dòng):
 
 | Vet | `--selftest --only="dong cua so"` | `main.py --project-report` (dự án 4K) |
 | --- | --- | --- |
-| `closeEvent` không gọi gì | đỏ: `dong cua so: 3/3 clip van con luong (c-one,c-tone,c-two)` | `rc=3221226505` ở **cả 2 lượt** (16,3 s / 17,2 s), payload vẫn `mo_duoc=True o_editor=True` |
-| vòng lặp trong `shutdown_clip_workers` không dừng ai | đỏ: cùng một chi tiết | `rc=3221226505` ở **cả 2 lượt** (16,5 s / 16,5 s) |
-| byte nguyên (baseline + spot) | xanh, `rc=0` | `rc=0`, **19,1 s** |
+| `closeEvent` không gọi gì | đỏ: `dong cua so: 3/3 clip van con luong (c-one,c-tone,c-two)` | `rc=3221226505` ở **cả 2 lượt** (12,5 s / 11,5 s), payload vẫn `mo_duoc=True o_editor=True` |
+| vòng lặp trong `shutdown_clip_workers` không dừng ai | đỏ: cùng một chi tiết | `rc=3221226505` ở **cả 2 lượt** (11,8 s / 16,2 s) |
+| `thread.wait()` bỏ trần (đổi `wait(8000)` thành `wait()`) | **treo**: child không kip in báo cáo trong 90 s, `subprocess.run` cắt, `rc=None` | (không chạy — xem giải thích dưới) |
+| xóa `detach_running_thread(thread, worker)` | đỏ: `co tran: detach khong luu thread (0 -> 0)` — và đây là vet được SPOT tren **bang tron**: `rc=1 rows=44 failed=['dong cua so: dung luong giai ma clip tru khi thoat']` | (không chạy) |
+| xóa luôn lệnh `wait` (`if True:`) | đỏ: `co tran: shutdown quay ve sau 0 ms, tran la 8000 ms` | (không chạy) |
+| byte nguyên (baseline + spot) | xanh, `rc=0` | `rc=0`, **19,6 s** |
 
-Cái giá của phép dựng là **19,1 − 16,3…17,2 ≈ 2–3 s** lúc đóng cửa sổ trên một
-dải hình 4K 12 s (worker nghỉ ngay sau khung hình đang giải mã, không phải sau
-cả dải). Fixture do probe tự sinh bằng `tools\ffmpeg\ffmpeg.exe`
+Lượt này là lượt duy nhất được trích số: `scratch/teardown_workers_counterfactual.json`
+(23 cửa, `failed=[]`, `keyframes: 1`, `frames: 360`) và log
+`scratch/_teardown_cf_run.log` (**ALL PASS 23/23**, **7,1 phút**).
+
+Ba vet mới chỉ chạy oracle `--selftest`, KHÔNG chạy `--project-report`, và đó là
+quyết định có lý do: worker của fixture 4K **vẫn hợp tác** (nghi ngay sau khung
+đang giải mã), nên lượt đó xanh kể cả khi cắt trần — nó chỉ bắt được lớp lỗi
+"chết khi thoát", không bắt được lớp lỗi "treo khi đóng". Ngược lại vet
+`closeEvent`/`vong_lap` bắt buộc phải có oracle thứ hai vì triệu chứng của chúng
+là mã thoát.
+
+Cái giá của phép dựng là **19,6 s − 11,5…16,2 s ≈ 3–8 s** lúc đóng cửa sổ trên
+một dải hình 4K 12 s (worker nghỉ ngay sau khung hình đang giải mã, không phải
+sau cả dải). Fixture do probe tự sinh bằng `tools\ffmpeg\ffmpeg.exe`
 (`testsrc2` 3840×2160 · 12 s · `-g 360 -keyint_min 360 -sc_threshold 0`) và
 được `ffprobe` kiểm là **1 keyframe / 360 khung hình** — cửa phản chứng chống
 lại fixture nhẹ: nhiều keyframe thì mỗi lần seek rẻ, worker xong trước lúc đóng,
 và phép thử sẽ xanh mà không đo gì. Không một video nào của người dùng được dùng
 làm vật thử; probe chốt bằng byte-hash các `.clinq` trong
 `%USERPROFILE%\Clinging_Projects` và `recent_projects.json`
-(`du_lieu_nguoi_dung_khong_doi PASS 0 file lech byte`).
+(`du_lieu_nguoi_dung_khong_doi PASS 0 file lech byte`), và `finally` của probe
+giờ khôi phục **cả ba file nguồn** nó mutated (không chỉ hai) để một
+`SystemExit` giữa chừng không để lại đoạn vet trong tree.
 
 **Ảnh chứng minh:** `scratch/teardown_workers_evidence.png` — `--project-report`
 chụp từ code path sản xuất trên lượt byte-nguyên: editor mở đúng dự án 4K, dải

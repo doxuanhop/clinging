@@ -35,6 +35,40 @@ ROTATE_HIT = 10.0
 # Nhãn độ vẽ phía trên tay nắm nên vùng dành cho hàng xoay rộng hơn tay nắm một
 # chút. Vẫn là hằng số: 52 px cho mọi trạng thái.
 ROTATE_ROOM = ROTATE_OFFSET + ROTATE_HIT + 18.0
+# Tay nắm xoay phải ĐỌC RA là "xoay", không phải một chấm trắng bất kỳ (video
+# mẫu 22/10: CapCut vẽ mũi tên tròn ngay mép khung). Bán kính vẽ tối đa là
+# đúng ô chạm: R = 9,5 vừa khít trong ROTATE_HIT = 10,0 (trừ 0,5 cho net vien
+# 1,0 don vi), nen MOI pixel nhin thay deu bam duoc — khong co vong chet.
+# Do 23/10 tren cua so 1920x1080 max: viewport preview 959x707, view_scale
+# 0,497, clip full-frame scale 1,0 -> duong kinh dia 4,0 px (R = HANDLE_SIZE/2
+# = 4,0 don vi) thanh 9,4 px (R = 9,5). Muon lon nhu video (~45 px) thi phai ve
+# theo kich co MAN HINH, tuc la tinh nguoc view_scale — va khi do ô chạm cung
+# phai theo, khong con la "chi thay hinh" nua.
+ROTATE_HANDLE_R = 9.5
+ROTATE_GLYPH = "fa6s.arrow-rotate-right"
+ROTATE_GLYPH_PX = 13.0
+_ROTATE_GLYPH_CACHE = {}
+
+
+def rotate_glyph_pixmap(px=int(ROTATE_GLYPH_PX) * 2, color="#06222A"):
+    """Pixmap glyph vẽ trong tay nắm xoay, dựng một lần rồi cache.
+
+    `paint` là callback C++ của Qt: một KeyError ở đây không unwind qua biên
+    được, nó giết cả process và an luôn stdout (đã trả giá vụ QIconEngine).
+    Nên lỗi chỉ được phép là "thiếu ảnh", không bao giờ là "nổ".
+    """
+    key = (int(px), color)
+    pm = _ROTATE_GLYPH_CACHE.get(key)
+    if pm is None:
+        try:
+            from widgets.common import icon_pixmap
+            pm = icon_pixmap(ROTATE_GLYPH, int(px), color=color)
+        except Exception:
+            pm = QPixmap()
+        _ROTATE_GLYPH_CACHE[key] = pm
+    return pm
+
+
 SMART_GUIDE_THRESHOLD = 10.0
 SMART_GUIDE_RELEASE_THRESHOLD = 18.0
 SMART_GUIDE_COLOR = QColor("#35D6C5")
@@ -421,7 +455,18 @@ class CanvasClipItem(QGraphicsRectItem):
 
             stem = self._rotate_handle_pos()
             painter.drawLine(QPointF(rect.center().x(), rect.top()), stem)
-            painter.drawEllipse(stem, HANDLE_SIZE / 2.0, HANDLE_SIZE / 2.0)
+            painter.setPen(QPen(QColor("#0E1017"), 1.0))
+            painter.drawEllipse(stem, ROTATE_HANDLE_R, ROTATE_HANDLE_R)
+            glyph = rotate_glyph_pixmap()
+            if not glyph.isNull():
+                # Overload (QRectF, QPixmap) KHONG ton tai trong PySide6 nay: goi
+                # no ném TypeError ngay trong paint — callback C++ cua Qt — va
+                # ca process chet khong lai dong nao (rc=139, do 23/10/2026).
+                # Ban 5 so nguyen la overload duy nhat tu scale toan bo pixmap.
+                side = int(ROTATE_GLYPH_PX)
+                painter.drawPixmap(int(stem.x()) - side // 2,
+                                   int(stem.y()) - side // 2,
+                                   side, side, glyph)
             if self._rotating:
                 # Nhan do goc lien tuc suot cu keo (270 van la 270), khong doc tu
                 # model: model da bi atan2 goi ve (-180,180] nen nho nhay -90

@@ -466,7 +466,7 @@ def _clip_teardown_ok():
     `--project-report` mo du an 4K cua nguoi dung ghi xong JSON
     `mo_duoc=True/o_editor=True` roi chet o ma do 3/3 lan tren ban cai 1.0.6.
 
-    Do ba dieu, deu la dem duong, khong do thoi gian:
+    Do bon dieu, ba dieu dau la dem duong, khong do thoi gian:
       * luc mo: MOI ClipItem co `_extractor_thread` khong None (khong thi phep
         thu xanh vi fixture rong);
       * luc dong: khong clip nao con `_extractor_thread` — tuc duong dong THAT
@@ -474,6 +474,11 @@ def _clip_teardown_ok():
       * sau dong: 0 `QThread.isRunning()` trong so thread da bat luc mo.
     `isRunning()` ma bi C++ xoa thi RuntimeError tinh la da chet: do la con
     duong `finished -> deleteLater` cua chinh `shutdown_extraction`.
+      * thu bon: gan mot `QThread` KHONG hop tac vao ClipItem that roi goi
+        `shutdown_extraction()` — phai quay ve trong tran (khong phai treo vo
+        han), phai giu thread kia CON SONG trong `_DETACHED_EXTRACTIONS` (neu
+        Qt huy no giua chung la dung cai abort 0xC0000409 o tren), va holder
+        phai tu rut sau `finished`.
     """
     import shutil
     import tempfile
@@ -487,6 +492,7 @@ def _clip_teardown_ok():
     media_cache.cache_root = lambda: os.path.join(work, "cache")
     original_project = ProjectManager().project_path
     fails = []
+    stuck = None
     try:
         if not hasattr(media_cache, "image_key"):
             raise RuntimeError("media_cache khong co image_key — dong nay gia")
@@ -532,13 +538,79 @@ def _clip_teardown_ok():
                 pass
         if alive:
             fails.append("dong cua so: %d QThread van isRunning" % alive)
+
+        # DIEU THU TU BON: phep dong THAT co tran, khong treo vo han. Day la
+        # cong cua `EXTRACTION_SHUTDOWN_MS` o `ui/graphics/clip_item.py`.
+        # `_StuckThread` CO TY le khong hop tac - `run()` khong bao gio doc
+        # `isInterruptionRequested()`, nen no la hinh thai mot worker dang
+        # block trong `cv2.VideoCapture.read()`. `thread.wait()` tran o day
+        # khien `close()` khong bao gio quay ve.
+        from PySide6.QtCore import QThread
+        from ui.graphics.clip_item import (
+            EXTRACTION_SHUTDOWN_MS, MediaExtractionWorker,
+            _DETACHED_EXTRACTIONS)
+
+        class _StuckThread(QThread):
+            def run(self):
+                while not self._halt:
+                    self.msleep(20)
+
+        stuck = _StuckThread()
+        stuck._halt = False
+        stuck.start()
+        detached_before = len(_DETACHED_EXTRACTIONS)
+        probe_item = items[0]
+        probe_worker = MediaExtractionWorker(
+            "fixture_khong_ton_tai.mp4", "video", "probe", 40)
+        # Noi that: `shutdown_extraction()` phai cat duoc hai signal cua worker,
+        # va mot phep disconnect khong co connection chi in ra RuntimeWarning ma
+        # khong chung minh duoc dieu gi.
+        probe_worker.thumbnailReady.connect(probe_item._on_thumbnail_ready)
+        probe_worker.waveformReady.connect(probe_item._on_waveform_ready)
+        probe_item._extractor_thread = stuck
+        probe_item._extractor_worker = probe_worker
+        started_at = time.perf_counter()
+        probe_item.shutdown_extraction()
+        stuck_ms = (time.perf_counter() - started_at) * 1000.0
+        if probe_item._extractor_thread is not None:
+            fails.append("co tran: item van giu thread sau shutdown")
+        if not stuck.isRunning():
+            fails.append("co tran: thread bi huy giua chung thay vi detach")
+        if len(_DETACHED_EXTRACTIONS) != detached_before + 1:
+            fails.append("co tran: detach khong luu thread (%d -> %d)"
+                         % (detached_before, len(_DETACHED_EXTRACTIONS)))
+        # Phep thu khong duoc xanh vi dau vo rong: `wait()` phai THUC SU block
+        # den tran roi moi cat, nen so do phai nam giua tran va 2 lan tran.
+        if not (EXTRACTION_SHUTDOWN_MS * 0.5 <= stuck_ms
+                <= EXTRACTION_SHUTDOWN_MS * 2.0):
+            fails.append("co tran: shutdown quay ve sau %d ms, tran la %d ms"
+                         % (int(stuck_ms), EXTRACTION_SHUTDOWN_MS))
+        stuck._halt = True
+        if not stuck.wait(3000):
+            fails.append("don rac: thread gia dung van song sau 3 s")
+        else:
+            for _ in range(40):
+                app.processEvents()
+                if len(_DETACHED_EXTRACTIONS) == detached_before:
+                    break
+                time.sleep(0.05)
+            app.processEvents()
+            if len(_DETACHED_EXTRACTIONS) != detached_before:
+                fails.append(
+                    "detach khong tu rut sau finished (%d muc con lai)"
+                    % (len(_DETACHED_EXTRACTIONS) - detached_before))
     finally:
+        if stuck is not None:
+            stuck._halt = True
+            stuck.wait(3000)
         ProjectManager().project_path = original_project
         media_cache.cache_root = original_root
         shutil.rmtree(work, ignore_errors=True)
     if fails:
         raise RuntimeError("; ".join(fails))
-    return "moi clip mo ra luong, close() dung het luong tru khi thoat"
+    return ("moi clip mo ra luong, close() dung het luong tru khi thoat; "
+            "thread khong hop tac bi cat o %d ms (tran %d ms) va van con song"
+            % (int(stuck_ms), EXTRACTION_SHUTDOWN_MS))
 
 
 def _save_atomic_ok():
@@ -2161,6 +2233,41 @@ def _sfx_pack_ok():
             % (len(rows), total, len(groups)))
 
 
+def rotate_glyph_pixel_count(scene, center, scale=10.0, radius=5.5):
+    """Đếm pixel tối trong đĩa tay nắm xoay — bằng chứng glyph THỰC SỰ được vẽ.
+
+    Vùng đếm cố ý nằm HOÀN TOÀN trong đĩa trắng (5,5 < ROTATE_HANDLE_R 9,5),
+    nên nét viền tối của đĩa không bị tính vào — một đĩa trắng trần cho ~0
+    và glyph cho hàng nghìn. Đếm bằng con số, không so
+    ảnh: `grab()` của item bo tròn trả ảnh trong suốt ở DPR>1 (đã trả giá).
+    """
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QColor, QImage, QPainter
+
+    half = radius + 1.0
+    src = QRectF(center.x() - half, center.y() - half, half * 2.0, half * 2.0)
+    n = int(src.width() * scale)
+    img = QImage(n, n, QImage.Format.Format_RGB32)
+    img.fill(QColor("#FFFFFF"))
+    painter = QPainter(img)
+    try:
+        scene.render(painter, QRectF(0, 0, n, n), src)
+    finally:
+        painter.end()
+    limit = (radius * scale) ** 2
+    count = 0
+    for y in range(n):
+        dy = y + 0.5 - n / 2.0
+        for x in range(n):
+            dx = x + 0.5 - n / 2.0
+            if dx * dx + dy * dy > limit:
+                continue
+            c = img.pixel(x, y)
+            if max((c >> 16) & 255, (c >> 8) & 255, c & 255) < 90:
+                count += 1
+    return count
+
+
 TRANSFORM_BUTTON_LABELS = ("Đặt lại", "Đồng nhất", "−90°", "+90°", "Ngang",
                            "Dọc", "Trái", "Giữa", "Phải", "Trên", "Dưới")
 # "Giữa" xuat hien o CA hai hang (ngang/doc) nen so nut nhieu hon so nhan.
@@ -2192,7 +2299,10 @@ def _transform_ui_ok():
         dung ca so lan co, va "Đặt lại" tren clip sach khong them buoc rong;
     (6) vung cham cua tay nam nam trong boundingRect TINH CO DONG (bat duoc
         bang `item.contains()` cua chinh Qt) — boundingRect theo goc xoay la
-        loi da tra gia truoc day.
+        loi da tra gia truoc day;
+    (7) tay nam xoay phai DOC RA la nut xoay: dem pixel toi ben trong dia,
+        khong mo anh — mot dia trang tran cung "thay duoc" ma khong noi cho
+        ai biet no xoay.
 
     Pixel cua lat/xoay trong FrameComposer do `--transform-report` va
     scratch/transform_evidence.py; o day chi do xich ma.
@@ -2455,6 +2565,15 @@ def _transform_ui_ok():
             raise RuntimeError("Qt khong hit-test duoc tay nam (shape thieu vung xoay)")
         if item.contains(QPointF(handle.x(), handle.y() - ROTATE_HIT - 40.0)):
             raise RuntimeError("shape mo rong vo han, click loai bo cung duoc chon")
+
+        # (7) tay nam phai DOC RA la nut xoay. Khong co glyph thi dem duoc ~0
+        #     pixel toi trong dia — do la con so, khong phai mo anh.
+        item.setSelected(True)
+        glyph_px = rotate_glyph_pixel_count(scene, handle)
+        item.setSelected(False)
+        if glyph_px < 40:
+            raise RuntimeError("tay nam xoay khong co glyph: %d pixel toi "
+                               "trong duong kinh 11 don vi" % glyph_px)
 
         before_geo = (clip.transform.x, clip.transform.y, clip.transform.scale_x,
                       clip.transform.scale_y)
@@ -2740,7 +2859,8 @@ def _transform_ui_ok():
             host.deleteLater()
         shutil.rmtree(folder, ignore_errors=True)
     return ("3 co trong model + .clinq + undo, goc trong (-180,180], "
-            "12 nut Bien doi, xoay/lat/canh dat do tren widget that")
+            "12 nut Bien doi, xoay/lat/canh dat do tren widget that, "
+            "glyph tay nam xoay %d px toi" % glyph_px)
 
 
 def _trim_card_ok():

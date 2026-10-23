@@ -47,7 +47,8 @@ def entries(mod):
         if len(item) == 6 and isinstance(item[2], str):
             # (name, oracle, path, needle, repl, expect) — transform (hai oracle:
             # dong selftest va --transform-report, nen vet nao cung phai tu khai
-            # bao no do cua nao).
+            # bao no do cua nao) va teardown_workers (oracle "row"/"both"/
+            # "row_hang" — vet "row_hang" ky vong TRE, khong co chu ky doi).
             out.append((label, item[2], item[3], item[4], 1))
         elif len(item) == 5 and isinstance(item[1], str):
             out.append((label, item[1], item[2], item[3], 1))
