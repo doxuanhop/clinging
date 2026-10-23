@@ -23,10 +23,13 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   `MSYS_NO_PATHCONV=1 msiexec /i <msi> INSTALLFOLDER="%LOCALAPPDATA%\Programs\ClingingMSI" /qn`
   rồi đọc lại cả hai cây + khóa HKCU Uninstall, đừng tin mỗi mã thoát (trả giá
   21/10/2026 khi ship 1.0.3).
-- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.5` (hai asset
-  `.exe` + `.msi`, tag `v1.0.5` = commit `9df00c3` — commit tài liệu 1.0.5; `main`
-  đi tiếp sau đó nên đừng đợi tag nhích theo), notes `docs/release-1.0.5.md`.
-  `v1.0.4` là cặp liền trước
+- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.6` (release id
+  `421505768`, hai asset `.exe` 143.940.720 B + `.msi` 163.537.096 B, tag
+  `v1.0.6` = commit `3acdfc2` — commit mang `docs/release-1.0.6.md` và bản sửa
+  crash-on-close; tag được tạo SAU khi push nên nó nằm đúng trên commit đó),
+  notes `docs/release-1.0.6.md`.
+  `v1.0.5` là cặp liền trước (tag `9df00c3` — commit tài liệu 1.0.5; `main` đi tiếp
+  sau đó nên đừng đợi tag nhích theo). `v1.0.4` là cặp liền trước nữa
   (tag gắn trên `155cef5`; `msi_payload_check.py` đọc bảng File của
   MSI và so từng tên với `dist\Clinging` — 363 file, 514.130.264 B). `v1.0.3` là
   bundle liền trước (đã có chroma key + chỉnh màu nhưng CHƯA có tách tiếng, thẻ

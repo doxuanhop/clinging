@@ -1348,11 +1348,12 @@ Số đo thật của lần kiểm (tree nguồn, máy nghỉ, 2026-10-23):
   màn hình 1920×1080** của cửa sổ editor đang mở `SfxDialog` qua đúng cú nhấp
   nut trên thanh thời (xem mục "Ảnh chứng minh đã commit").
 
-Cổng này **chưa có trong bundle nào đã phát hành**: `dist\Clinging` và bản cài
-Inno 1.0.5 vẫn là bảng 39 dòng, không có `--sfx-report` lẫn kho `assets/sfx`.
-Lần dựng 1.0.6 là lần đầu `dist\Clinging\Clinging.exe --sfx-report` và
-`frozen_bundle_probe.py` phải tự trả lời — chạy từ nguồn không chứng minh được
-`hiddenimports`.
+Cổng này **không có trong bundle nào phát hành tới hết 1.0.5**: `dist\Clinging`
+và bản cài Inno 1.0.5 vẫn là bảng 39 dòng, không có `--sfx-report` lẫn kho
+`assets/sfx`. Lần dựng 1.0.6 (23/10/2026) là lần đầu `dist\Clinging\Clinging.exe
+--sfx-report` và `frozen_bundle_probe.py` phải tự trả lời — chạy từ nguồn không
+chứng minh được `hiddenimports`; 1.0.6 đã public nên hai câu trên chỉ còn đúng
+với cây 1.0.5 và cây MSI 1.0.4.
 
 ## Cổng "Biến đổi: xoay tự do + lật + canh lề + khóa tỷ lệ" (nhóm N, 2026-10-23)
 
@@ -1663,6 +1664,20 @@ rc=0 trong 33,9 s, rồi `python scratch/installed_app_probe.py` đo **chính b�
 | `--audio-report` của exe đã cài | rc=0 — cùng surface từng abort `0xC0000409` trước bản sửa teardown |
 | Mở `.clinq` | double-click qua Explorer vào đúng cửa sổ dựng phim; dự án THẬT `Clinging_Projects\Dự án 2\Dự án 2.clinq` mở ra **đúng clip + thư viện của nó** và **file vẫn nguyên byte** sau cả lượt đo |
 | Data người dùng quanh lượt đo | 2.084 → 2.122 mục, **`THEM: 53 / MAT: 15 / DOI: 0`** (đọc `DOI`, không đọc rc). Toàn bộ `MAT` và 15/53 `THEM` là vòng quay keep-5 của `.clinqing\recovery` cho fixture selftest (`Kiem recap` / `Kiem bo cuc` / `Kiem karaoke`); 38 `THEM` còn lại là `Roaming\Clinging\cache\image` dựng lại được. **Không đường nào thuộc `Clinging_Projects\`** |
+
+### Release v1.0.6 public + test tải ngược (23/10/2026)
+
+`scratch/github_release.py doxuanhop/clinging v1.0.6 --body-file docs/release-1.0.6.md
+<exe> <msi>` trả **rc=0, 548,2 s**, tạo Release **id `421505768`** cho tag `v1.0.6`
+(tag nhẹ, tạo SAU khi push nên nằm đúng trên commit `3acdfc2` mang notes + bản sửa
+crash-on-close). Hai asset đẩy lên `uploaded`: `.exe` 143.940.720 B trong 262 s,
+`.msi` 163.537.096 B trong 278 s.
+
+Test tải ngược (không dùng token, đọc `browser_download_url` như người dùng thật,
+log `scratch/_download_test_106.log`): `.exe` về trong 89 s, `.msi` 76 s, **SHA-256
+của file tải về khớp cả file local lẫn `digest` GitHub tự tính** cho cả hai asset;
+thư mục tạm xóa sạch sau khi băm. Đây là cổng đóng vòng "file người dùng tải về
+là file đã đo trên máy này" — size/mtime không được dùng làm bằng chứng.
 
 ## Dòng "đóng cửa số": dừng luồng giải mã trước khi thoát (2026-10-23)
 
