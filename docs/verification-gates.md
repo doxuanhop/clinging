@@ -1808,7 +1808,69 @@ của file tải về khớp cả file local lẫn `digest` GitHub tự tính** 
 thư mục tạm xóa sạch sau khi băm. Đây là cổng đóng vòng "file người dùng tải về
 là file đã đo trên máy này" — size/mtime không được dùng làm bằng chứng.
 
+## Cổng đóng gói 1.0.7 (2026-10-23)
+
+Delta 1.0.6 → 1.0.7 chỉ có hai surface sản phẩm (glyph tay nắm xoay ở frame view và
+trần `EXTRACTION_SHUTDOWN_MS` + detach trong `ClipItem.shutdown_extraction`), nhưng
+cả hai đều nằm trên đường mà bundle tự chấm, nên dựng lại là bắt buộc: tree nguồn
+xanh không chứng minh được gì cho `dist` (bẫy "cổng tự chấm cũng bị đóng gói").
+
+Bundle dựng bằng `python -m PyInstaller ClingingQt.spec --noconfirm --clean`
+(**--clean là bắt buộc**, vì `filevers/prodvers` nằm trong PE resource: một lần
+rebuild không clean reuse `build\ClingingQt\Clinging.exe` và sẽ ship nguyên version
+của bản trước). `dist\Clinging\Clinging.exe` **7.164.518 B** (PE `1.0.7.0`,
+sha256[:16] `dde9fcbe5eb9b39b`), log `scratch/pyinstaller_107.log` rc=0.
+
+Mười cổng chạy **tuần tự** bằng `subprocess.run` (timeout 900 s/lệnh, máy nghỉ,
+không `Clinging.exe` nào khác đang mở), log `scratch/_d107_gates.log`, payload từng
+cổng ở `scratch/_d107_<cong>.json`:
+
+| Cổng trên bundle 1.0.7 | rc | thời gian | Số đo trong payload |
+| --- | --- | --- | --- |
+| `--selftest` | 0 | 69,2 s | **44 dòng**, `failed=[]`, `only=null`, `frozen=True` |
+| `--project-report` | 0 | 10,3 s | `mo_duoc=True`, `o_editor=True`, `khoi_dong_tu_home=True`, `clip = 3/3 khop`, `duong_gia=False`, fixture trong `%TEMP%\clinging_project_report` |
+| `--split-report` | 0 | 9,0 s | `frozen=True`, `menu_actions` ba hành động, 3 đoạn `on_disk`, `cancelled=False`, `failed=[]` |
+| `--transform-report` | 0 | 3,1 s | 17 cửa `failed=[]` — gồm cửa pixel của glyph tay nắm |
+| `--sfx-report` | 0 | 10,5 s | 23 cửa `failed=[]` |
+| `--canvas-layout-report` | 0 | 15,2 s | 36 cửa `failed=[]` |
+| `--library-report` | 0 | 10,1 s | 13 cửa `failed=[]` |
+| `--style-report` | 0 | 19,3 s | `ok=True`, 14 cửa |
+| `--startup-report` | 0 | 3,1 s | `ok=True`, **11/11 cửa**, cửa sổ hiện lúc **0,4913 s**, **69.152 KiB** lúc cửa sổ |
+| `--audio-report` | 0 | 4,7 s | `frozen=True`, `card_visible=True`, 4 slider `[45, 100, 50, 0]`, token `volume=0.450000,` + `afade=t=in:` |
+
+**Hai chuỗi mới phải thấy được TRONG binary**, không chỉ trong tree nguồn — đó là
+cách nhận biết 1.0.7 thật sự mang hai thay đổi (bảng vẫn 44 dòng nên số dòng không
+phân biệt được):
+
+* dòng `bien doi` → `… 12 nut Bien doi, xoay/lat/canh dat do tren widget that,
+  glyph tay nam xoay 3119 px toi`
+* dòng `dong cua so` → `… thread khong hop tac bi cat o 8003 ms (tran 8000 ms) va
+  van con song`
+
+`python scratch/frozen_bundle_probe.py` → **ALL PASS (0 fail), 32 cửa**, log
+`scratch/_d107_frozen.log`: tự chạy `--selftest` trong exe (**44 checks, rc=0**),
+cửa `bundle co dong selftest dung luong giai ma` xanh, và ba phản chứng (lật
+`_internal/styles` → đỏ; ẩn `core/` rồi ẩn `ui/` của tree nguồn → exe vẫn `exit 0`
+và chi tiết các dòng **giống hệt baseline từng byte**). Probe này đổi tên vật lý
+`core/` và `ui/`, nên không `git add` song song; sau lượt đo `ls -d core ui` còn
+nguyên và `git status` chỉ còn đúng bốn mục đang chờ commit.
+
+Installer và metadata:
+
+| Hạng mục | Giá trị |
+| --- | --- |
+| `ClingingSetup-1.0.7.exe` | 144.656.273 B, sha256 `4dcbb815c8e1799215f00ccf23e3603e5d99fbfb3f05580f3c0d26f3db0b9a1c`; ISCC rc=0 trong 239,2 s |
+| `ClingingSetup-1.0.7.msi` | 164.241.901 B, sha256 `1d8d3158ddd4f81abd40fae017dddc6009d37433bf917758beacfd52f72f82de`; `make_msi.py` rc=0 trong 259,8 s (chỉ hai warning LGHT1076 ICE60/ICE90 như mọi bản trước) |
+| `release_meta.py` (đọc từ chính hai file) | rc=0 — sáu nguồn trong tree đều `1.0.7` → `KHOP: tat ca = 1.0.7`; MSI `ProductVersion 1.0.7`, `ProductCode {6CED171F-5CD4-4547-A585-0D53BDF3801B}` (mới), `UpgradeCode {322A4294-D740-42B3-9414-555BA07FDB88}` giữ nguyên; setup.exe `FixedFileInfo 1.0.7.0` |
+| `msi_payload_check.py` | **ALL PASS (0 fail)** — bảng `File` của MSI đúng bằng **385 file / 517.405.660 B** của `dist`; 1.0.6 là 383 file / 516.682.602 B, hai lá mới là `assets/uiux/editor-rotate-knob.png` + `-detail.png` (690.657 + 27.365 B, khớp mức +715.553 B của setup.exe sau nén) |
+
+**Chưa cài và chưa đăng.** Hai cây cài trên máy vẫn là Inno **1.0.6** và MSI
+**1.0.4**; Release public mới nhất vẫn là `v1.0.6`. Cài đè và đăng Release là
+thao tác shared-state nên không nằm trong lượt dựng này.
+
 ## Dòng "đóng cửa số": dừng luồng giải mã trước khi thoát (2026-10-23)
+
+
 
 **Hiện trạng trước khi sửa.** Không một class UI nào trong repo có `closeEvent`.
 `ClipItem` mở `QThread` + `MediaExtractionWorker` ngay trong hàm construct

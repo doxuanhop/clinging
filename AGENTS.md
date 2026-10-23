@@ -38,7 +38,7 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   6.967.178 B, sha256[:16] `6785b32b92e8d0b3` giống hệt `dist\Clinging`,
   `installed_app_probe.py` ALL PASS rc=0 — nhưng bundle vẫn mang
   `--split-report` với hằng số menu cũ (xem bẫy "cổng đóng gói trong bundle").
-  **1.0.6 là bản hiện hành — đã dựng, đã verify, đã cài cây Inno**:
+  **1.0.6 là bản đang cài trên cây Inno — đã dựng, đã verify**:
   `dist\Clinging\Clinging.exe` 7.159.482 B (PE `1.0.6.0`), selftest bundle
   **44 dòng `failed=[]` rc=0** trong 82,0 s, `--split-report` **rc=0**,
   `frozen_bundle_probe.py` **ALL PASS 0 fail** (404,4 s, 32 cua), hai file cài
@@ -53,6 +53,21 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   hai product probe. Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
+  **1.0.7 đã dựng + đã gate trên máy này (23/10/2026), CHƯA cài, CHƯA đăng
+  Release**: `dist\Clinging\Clinging.exe` 7.164.518 B (PE `1.0.7.0`, sha256[:16]
+  `dde9fcbe5eb9b39b`), 10 cổng bundle đều `rc=0` (`--selftest` **44 dòng
+  `failed=[]` only=null** trong 69,2 s; `--project-report` 10,3 s
+  `mo_duoc/o_editor/khoi_dong_tu_home=True`, `clip = 3/3 khop`; split/transform/
+  sfx/canvas/library/style/startup/audio xanh), `frozen_bundle_probe.py` **ALL
+  PASS 0 fail, 32 cửa** và hai chuỗi mới của 1.0.7 nằm TRONG PYZ
+  (`glyph tay nam xoay 3119 px toi`, `thread khong hop tac bi cat o 8003 ms
+  (tran 8000 ms)`). Hai file cài `ClingingSetup-1.0.7.exe` 144.656.273 B /
+  `.msi` 164.241.901 B, payload MSI **385 file / 517.405.660 B**
+  (`msi_payload_check.py` ALL PASS; hai file mới là hai ảnh `assets/uiux/
+  editor-rotate-knob*`), `release_meta.py` `KHOP: tat ca = 1.0.7`, MSI
+  `ProductCode {6CED171F-5CD4-4547-A585-0D53BDF3801B}` với `UpgradeCode` giữ
+  nguyên. Bản public mới nhất vẫn là **v1.0.6** và bản cài trên máy vẫn là cây
+  Inno **1.0.6**.
 - **Ba tính năng SFX / Bố cục & Phong cách / dừng luồng giải mã đã vào bundle
   1.0.6** — tree nguồn và `dist\Clinging` dùng chung bảng **44 dòng** (do
   23/10/2026: `--selftest` nguồn 44 dòng `failed=[]` rc=0, và dòng 44
@@ -62,8 +77,8 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   `--canvas-layout-report` 36 cửa), và `shutdown_clip_workers()`
   (`ui/graphics/timeline_scene.py:299` + `MainController.closeEvent`). **Cây MSI
   vẫn là payload 1.0.4** — đừng lấy số dòng của một cây làm số của cây khác.
-- **Tree nguồn đi trước bundle 1.0.6 HAI thay đổi** (đo 23/10/2026):
-  (1) tay nắm xoay trên frame view giờ vẽ glyph `fa6s.arrow-rotate-right` trong đĩa
+- **Hai thay đổi "nguồn đi trước bundle" đã vào bundle 1.0.7** (dựng 23/10/2026):
+  (1) tay nắm xoay trên frame view vẽ glyph `fa6s.arrow-rotate-right` trong đĩa
   `ROTATE_HANDLE_R = 9,5` (`ui/graphics_canvas_item.py`), kèm cửa (7)
   "dem pixel toi trong dia" của cổng `bien doi`
   (`diagnostics.rotate_glyph_pixel_count`, ngưỡng ≥ 40, đo **3119 px**). **Chỉ
@@ -72,16 +87,18 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   `wait()` vô hạn), thay bằng trần **từng clip** `EXTRACTION_SHUTDOWN_MS = 8000`
   + `detach_running_thread()` (`ui/graphics/clip_item.py:58`) — đây là đổi HÀNH
   VI, đã được chủ repo duyệt ("Sửa thread.wait() trong clip_item.py").
-  Bảng vẫn 44 dòng nên `dist\Clinging` và bản cài Inno **không có** hai chuỗi
-  mới: `glyph tay nam xoay` trong chi tiết dòng `bien doi`, và `thread khong hop
-  tac bi cat o ... ms` trong chi tiết dòng `dong cua so` — đó là dấu hiệu nhận
-  biết nguồn mới hơn bundle, không phải lỗi.
+  Cả hai chuỗi đều **đã có trong PYZ** của `dist\Clinging` (chi tiết dòng `bien
+  doi` = `glyph tay nam xoay 3119 px toi`, dòng `dong cua so` = `thread khong hop
+  tac bi cat o 8003 ms (tran 8000 ms)`), nên dấu hiệu "nguồn mới hơn bundle"
+  không còn đúng với `dist`. **Hai cây cài vẫn 1.0.6 (Inno) và 1.0.4 (MSI)** —
+  muốn người dùng thật chạy bản sửa phải cài 1.0.7, và đó là thao tác phải xin
+  duyệt.
 
 ## Lệnh hay dùng
 
 ```bash
 python main.py                                  # chay app binh thuong
-python main.py --selftest                       # 44 dong cong (bundle 1.0.6 cung 44; bundle 1.0.5 van 39), bao JSON co "failed"
+python main.py --selftest                       # 44 dong cong (bundle 1.0.6 va 1.0.7 cung 44; bundle 1.0.5 van 39), bao JSON co "failed"
 python main.py --selftest out.json --only="chinh mau"   # mot dong thoi (~5-12 s vs ~36-49 s); khong bao gio duoc bao cao la "44 dong xanh", doc payload["only"] truoc khi tin
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
