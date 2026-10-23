@@ -48,6 +48,13 @@ Cac lop:
      karaoke 9 dòng phải đổi màu preview. Vùng hình học của clip trên canvas cũng
      đo ở đây: bản đã cài từng abort giữa chừng chỉ vì bấm bốn thẻ aura khác
      nhau, và lỗi đó không log build nào nhìn thấy được.
+ 15. Bon report cua 1.0.6 (`--sfx-report`, `--canvas-layout-report`,
+     `--library-report`, `--transform-report`) phai chay tren **exe da cai** va
+     duoc cham bang thang do cua **tree nguon** (`*_report_fails` trong
+     `diagnostics.py`), kem mot so do phan biet cua tinh nang (14 tieng khong
+     trung hash, 13 kieu bo cuc tren combo that, mot luot luoi cho dot nap,
+     150% mo rong ca hai truc) — de payload rong khong the xanh nhu
+     `len(menu_actions) == 2` cua bundle 1.0.4.
 
 Chay:  python scratch/installed_app_probe.py
 """
@@ -1139,6 +1146,73 @@ def main():
         terminate_new(pids_before)
         note("evidence image", captured.get("image"))
 
+    # ── 15. Bon cong cua 1.0.6: do exe DA CAI bang thang do cua NGUON ──
+    # Bon report nay sinh ra cung lan voi tinh nang cua no, nen rc cua exe tu cham
+    # chi co nghia khi thang do trong bundle khong lech thang do trong tree nguon
+    # — dung cai bay `len(menu_actions) == 2` cua bundle 1.0.4. Vi vay moi cong
+    # do bang ham cham cua diagnostics.py nguon, rc chi la note. Rieng library
+    # co hai cua "duoi 8 ms" ma dong ho noi doa khi may ban (do 22/10: cung mot
+    # vet 900 s luc mo app, 13 s luc may nghi) - phan do lai la note, khong do.
+    # Kem mot so do phan biet cua tinh nang de payload rong khong the xanh.
+    from diagnostics import (sfx_report_fails, canvas_layout_report_fails,
+                             library_report_fails, transform_report_fails)
+    reports = {
+        "sfx": ("--sfx-report", 900, "installed_sfx.json",
+                lambda p: sfx_report_fails(p), True,
+                lambda p: [
+                    ("kho sfx: 14 tieng va khong thieu file nao",
+                     [p["entry_count"], p["missing_files"]], [14, []]),
+                    ("kho sfx: hai tieng khong phai mot file doi ten",
+                     p["distinct_hashes"], 14)]),
+        "canvas": ("--canvas-layout-report", 900, "installed_canvas_layout.json",
+                   lambda p: canvas_layout_report_fails(p), True,
+                   lambda p: [
+                       ("bo cuc: du 13 kieu va 10 chat lieu tren combo that",
+                        [p["layout_combo_count"], p["texture_combo_count"]],
+                        [13, 10])]),
+        "library": ("--library-report", 900, "installed_library.json",
+                    lambda p: [n for n in library_report_fails(p)
+                               if "8 ms" not in n], False,
+                    lambda p: [
+                        ("thu vien: mot luot luoi cho ca dot nap va the an khong giai ma",
+                         [p["filter_passes_restore"], p["hidden_image_decodes"]],
+                         [1, 0])]),
+        "transform": ("--transform-report", 900, "installed_transform.json",
+                      lambda p: transform_report_fails(p), True,
+                      lambda p: [
+                          ("bien doi: 150% mo rong dung 1,5 lan ca hai truc",
+                           round(p["pct_width_ratio"], 2), 1.5),
+                          ("bien doi: the ve du chieu cao tren sheet",
+                           p["card_bottom_painted"], True)]),
+    }
+    installed_reports = {}
+    for key, (flag, tmo, fname, grade, strict, extras) in reports.items():
+        path = os.path.join(ROOT, "scratch", fname)
+        if os.path.isfile(path):
+            os.remove(path)
+        run = subprocess.run([DEST_EXE, flag, path], timeout=tmo)
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        installed_reports[key] = payload
+        check("exe da cai: %s qua het dieu kien cua nguon" % key,
+              grade(payload), [])
+        if strict:
+            check("exe da cai: %s tu cham trong bundle cung rc=0" % key,
+                  [run.returncode, payload["failed"]], [0, []])
+        else:
+            note("rc va tu cham cua exe cho %s (hai cua 8 ms khong do)" % key,
+                 [run.returncode, payload["failed"]])
+        check("exe da cai: %s do tu exe da cai chu khong tu tree nguon" % key,
+              payload["frozen"], True)
+        check("exe da cai: %s khong ghi vao cache nguoi dung" % key,
+              payload.get("user_cache_changed", payload.get("user_cache_extra"))
+              in (False, []), True)
+        for label, got, want in extras(payload):
+            check("exe da cai: " + label, got, want)
+        note("rc cua exe cho %s" % key, run.returncode)
+    check("exe da cai: bon cong 1.0.6 deu co payload",
+          sorted(installed_reports), ["canvas", "library", "sfx", "transform"])
+
     # Lan cuoi cung: moi cua so probe da dong, nen bat cu _auto_save() nao
     # chay trong 11 lop do deu co the da cham vao du an cua nguoi dung. Tra
     # lai byte goc va do lai — probe do app, khong do ho.
@@ -1158,6 +1232,7 @@ def main():
                    "user_project_touched": touched,
                    "project": project, "real_project": real_report,
                    "clinq_assoc": assoc,
+                   "reports_106": installed_reports,
                    "fails": FAILS}, handle, ensure_ascii=False, indent=2)
 
     print("\n%s  (%d fail)" % ("ALL PASS" if not FAILS else "FAILED", len(FAILS)))

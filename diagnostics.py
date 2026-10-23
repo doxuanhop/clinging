@@ -456,6 +456,91 @@ def _project_launch_ok():
             "2 diem vao MainController con nguyen")
 
 
+def _clip_teardown_ok():
+    """Dong cua so: khong duoc de luong giai ma clip ton tai qua `close()`.
+
+    ClipItem tu mo `QThread` + `MediaExtractionWorker` ngay trong ham construct
+    (dong 96 cua no) va worker do block trong `cv2.VideoCapture.read()`. Truoc
+    23/10/2026 khong co `closeEvent` o bat cu day UI nao: interpreter bat tay
+    khi thread van chay, Qt tra ve 0xC0000409 khong kem traceback — lan do tren
+    `--project-report` mo du an 4K cua nguoi dung ghi xong JSON
+    `mo_duoc=True/o_editor=True` roi chet o ma do 3/3 lan tren ban cai 1.0.6.
+
+    Do ba dieu, deu la dem duong, khong do thoi gian:
+      * luc mo: MOI ClipItem co `_extractor_thread` khong None (khong thi phep
+        thu xanh vi fixture rong);
+      * luc dong: khong clip nao con `_extractor_thread` — tuc duong dong THAT
+        di qua `shutdown_extraction()`;
+      * sau dong: 0 `QThread.isRunning()` trong so thread da bat luc mo.
+    `isRunning()` ma bi C++ xoa thi RuntimeError tinh la da chet: do la con
+    duong `finished -> deleteLater` cua chinh `shutdown_extraction`.
+    """
+    import shutil
+    import tempfile
+    from PySide6.QtWidgets import QApplication
+    from core import media_cache
+    from core.project_storage import ProjectManager
+
+    app = QApplication.instance() or QApplication([])
+    work = tempfile.mkdtemp(prefix="clinging_teardown_")
+    original_root = media_cache.cache_root
+    media_cache.cache_root = lambda: os.path.join(work, "cache")
+    original_project = ProjectManager().project_path
+    fails = []
+    try:
+        if not hasattr(media_cache, "image_key"):
+            raise RuntimeError("media_cache khong co image_key — dong nay gia")
+        fixture, _data = _project_fixture()
+        from ui.main_controller import MainController
+        controller = MainController()
+        controller.show()
+        for _ in range(6):
+            app.processEvents()
+        if not controller.open_project_path(fixture):
+            raise RuntimeError("mo fixture .clinq that bai")
+        for _ in range(6):
+            app.processEvents()
+        scene = controller.editor_page.timeline_panel.scene
+        if not hasattr(scene, "shutdown_clip_workers"):
+            raise RuntimeError("TimelineScene thieu shutdown_clip_workers")
+        items = list(scene._clip_items.values())
+        if not items:
+            raise RuntimeError("fixture mo ra 0 ClipItem — phep thu rong")
+        threads = [getattr(item, "_extractor_thread", None) for item in items]
+        started = len([t for t in threads if t is not None])
+        if started != len(items):
+            fails.append("luc mo: %d/%d clip khong co luong trich xuat"
+                         % (started, len(items)))
+
+        controller.close()
+        for _ in range(4):
+            app.processEvents()
+
+        left = [clip_id for clip_id, item in scene._clip_items.items()
+                if getattr(item, "_extractor_thread", None) is not None]
+        if left:
+            fails.append("dong cua so: %d/%d clip van con luong (%s)"
+                         % (len(left), len(items), ",".join(sorted(left))))
+        alive = 0
+        for thread in threads:
+            if thread is None:
+                continue
+            try:
+                if thread.isRunning():
+                    alive += 1
+            except RuntimeError:
+                pass
+        if alive:
+            fails.append("dong cua so: %d QThread van isRunning" % alive)
+    finally:
+        ProjectManager().project_path = original_project
+        media_cache.cache_root = original_root
+        shutil.rmtree(work, ignore_errors=True)
+    if fails:
+        raise RuntimeError("; ".join(fails))
+    return "moi clip mo ra luong, close() dung het luong tru khi thoat"
+
+
 def _save_atomic_ok():
     """Mot dong --selftest: lan ghi du an hong khong duoc pha ban dang co.
 
@@ -3596,6 +3681,7 @@ def run_selftest(argv=None):
          _project_layout_ok),
         ("8 kieu karaoke: quet theo tu + luu vao file", _karaoke_ok),
         ("mo du an tu file .clinq", _project_launch_ok),
+        ("dong cua so: dung luong giai ma clip tru khi thoat", _clip_teardown_ok),
         ("luu du an: ghi hong khong pha ban cu", _save_atomic_ok),
         ("media lac cho: preview va export cung duong dan", _media_locator_ok),
         ("undo cho chu + hinh hoc clip", _undo_text_transform_ok),

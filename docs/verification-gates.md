@@ -151,11 +151,11 @@ python scratch/user_data_snapshot.py capture scratch/_snap_before.json
 # 1) Audit tên icon + tham số color= trên toàn bộ nguồn
 python scratch/icon_name_audit.py
 
-# 2) Selftest 43 dòng trên tree nguồn (bundle 1.0.5 đóng ở 39 dòng)
+# 2) Selftest 44 dòng trên tree nguồn (bundle 1.0.6 cung 44; bundle 1.0.5 dong o 39 dong)
 python main.py --selftest
 
 # 2b) Cùng gate nhưng chỉ một dòng (dev tool, ~5-12 s thay vi ~49 s). KHONG bao gio
-#     duoc báo cáo là "43 dòng xanh"; payload trả về có khóa "only" để kiểm chứng.
+#     duoc báo cáo là "44 dòng xanh"; payload trả về có khóa "only" để kiểm chứng.
 python main.py --selftest t.json --only="chinh mau"
 
 # 3) Đo khởi động (bao gồm control cùng lần, xem mục dưới đây)
@@ -1610,6 +1610,132 @@ ALL PASS (0 fail) — số đo ở bốn dòng cuối bảng trên. Cây MSI
 cắt giữa giao dịch — xem dòng "Người dung yeu cau dong goi 1.0.4.1" ở bảng Thất
 bại), nên mọi `/i` `/x` đều treo cho tới khi reboot; hai product probe
 `{B3C15772-…}` / `{706DC2C6-…}` vẫn còn trong database Windows Installer.
+
+## Cổng đóng gói 1.0.6 (2026-10-23)
+
+Bốn cổng report mới (`--sfx-report`, `--canvas-layout-report`, `--library-report`,
+`--transform-report`) **chưa từng tồn tại trong bundle nào đã phát hành**, nên bảng
+dưới là lần đầu chúng chạy trên `dist\Clinging\Clinging.exe` chứ không trên
+`python main.py`. Chạy **tuần tự** (hai probe đổi byte song song là hỏng cả hai),
+máy nghỉ, mã thoát đọc bằng `subprocess.run` và ghi vào
+`scratch/_bundle_<cong>_106b.json` — không qua đường ống:
+
+| Cổng trên bundle 1.0.6 | rc | thời gian | Số đo trong payload |
+| --- | --- | --- | --- |
+| `--selftest` | 0 | 82,0 s | **44 dòng**, `failed=[]`, `only=null`, `frozen=True` |
+| `--split-report` | 0 | 9,3 s | `frozen=True`, `menu_actions` ba hành động đúng thứ tự, 3 đoạn `joints=[0.0, 0.0]`, `hue_gaps=[0.0, 0.0, 0.0]`, `distinct_colors 351` |
+| `--sfx-report` | 0 | 13,0 s | 23 cửa `failed=[]`: `entry_count 14`, `missing_files []`, `pack_bytes 181.167`, `pack_seconds 14,15`, `distinct_hashes 14`, `clip_count 2` / `overlap 0.0`, `user_cache_changed False` |
+| `--canvas-layout-report` | 0 | 18,1 s | 36 cửa `failed=[]`, `layout_combo_count 13` |
+| `--library-report` | 0 | 12,6 s | 13 cửa `failed=[]`: `machine_cards 66` / `cards_loaded 65`, `filter_passes_restore 1`, `restore_block_ms 251,6`, `block_ms_per_card 3,87`, `hidden_image_decodes 0`, `image_thumb_width 320`, `decodes_for_cleared 3` |
+| `--transform-report` | 0 | 3,6 s | 17 cửa `failed=[]` |
+| `--startup-report` | 0 | 3,5 s | `ok=True`, **11 cửa `True`** — gồm `boot_khong_keo_sfx` và `boot_khong_keo_bocuc`; cửa sổ hiện lúc **0,5610 s**, **69.308 KiB** lúc cửa sổ, **82.740 KiB** lúc nghỉ; control `cv2_da_nap_luc_boot False` |
+| `--audio-report` | 0 | 6,3 s | `frozen=True`, `card_visible=True`, 4 slider `[45, 100, 50, 0]`, `distinct_colors 157`, export token `volume=0.45` + `afade=t=in:` — trước 23/10 cổng này abort `0xC0000409` ở teardown vì `QMediaPlayer` giữ file fixture, đã sửa `stop()` + `setSource(QUrl())` trước `win.close()` |
+| `python scratch/frozen_bundle_probe.py` | 0 | 404,4 s | **ALL PASS (0 fail)**, 32 cửa: tự chạy `--selftest` trong exe (**44 checks, rc=0**) + ba phản chứng (lật `_internal/styles` → đỏ vì thiếu styles; ẩn `core/` rồi ẩn `ui/` của tree nguồn → vẫn xanh và chi tiết giống TỪNG BYTE) + cửa mới `bundle co dong selftest dung luong giai ma` |
+
+Bảng trên là **lan dung lai sau ban sua "dong cua so"** (exe 7.159.482 B, luc
+12:05), payload tung cong nam trong `scratch/_bundle_<cong>_106b.json` va log
+probe trong `scratch/_frozen_probe_106c.log`. Lan dung truoc ban sua (10:20) do
+`--selftest` 53,9 s / 43 dong va probe 164,4 s — hai con so khong con dung nua,
+giu lai chi de so sanh chi phi cua dong 44.
+
+Bốn dòng selftest mới so với bảng 39 dòng của 1.0.5 là **19** (bố cục + phong cách
+cấp dự án), **25** (thẻ Biến đổi), **32** (thư viện tài nguyên), **37** (kho SFX);
+dòng **44** là "đóng cửa số".
+`frozen_bundle_probe.py` không hard-code số dòng — nó soi theo TÊN dòng
+(`chroma`, `nen toi uu tep`, `vung xuat in/out`, `dong cua so`), nên bảng dài ra
+không làm cổng tự chết; đó cũng là lý do nó vẫn ALL PASS khi bảng nhảy 39 → 44.
+
+### Bản cài Inno 1.0.6 (đo 23/10/2026, log `scratch/_installed_probe_106d.log`)
+
+`ClingingSetup-1.0.6.exe` cài đè lên cây `%LOCALAPPDATA%\Programs\Clinging`
+rc=0 trong 33,9 s, rồi `python scratch/installed_app_probe.py` đo **chính bản cài**
+(máy nghỉ, `Clinging.exe` của người dùng đã đóng trước khi đo): **ALL PASS (0 fail)**,
+`TRUE_RC=0`, 401,7 s.
+
+| Số đo trên bản cài | Giá trị |
+| --- | --- |
+| `Clinging.exe` đã cài | 7.159.482 B, sha256[:16] `775ddfbd248b7314` — **trùng từng byte** với `dist\Clinging` |
+| Cây cài vs `dist` (set-diff đường dẫn tương đối) | **383 lá (dist) vs 385 (bản cài): 0 thiếu**, hai phần thừa đúng là `unins000.exe` + `unins000.dat`, **0 lá lạ** |
+| `_internal` + module sweep | 498,3 MB; **79 module nap / 0 loi**; `tkinter` vẫn không nap (phản chứng); `ffmpeg.exe` + `ffprobe.exe` nằm trong `_internal/tools` |
+| `--selftest` của exe đã cài | rc=0, `failed=[]`, chạy từ thư mục cài, **có dòng `dong cua so: dung luong giai ma clip tru khi thoat`** — dòng 44 đã vào PYZ chứ không chỉ ở nguồn |
+| Bốn cổng 1.0.6 trên exe đã cài | `--sfx-report` / `--canvas-layout-report` / `--library-report` / `--transform-report` **tự chấm rc=0 trong bundle** và đồng thời **qua hết điều kiện của thang đo trong `diagnostics.py` nguồn** (chống bẫy "hằng số cũ vào bundle"); `entry_count 14` / `distinct_hashes 14`, `layout_combo_count 13`, `filter_passes_restore 1` / `hidden_image_decodes 0`, `150% = 1,5 lan ca hai truc` |
+| Boot + RAM | cửa sổ hiện lúc **0,597 s**, **69.388 KiB** lúc cửa sổ, **83.052 KiB** lúc nghỉ; **mười một cửa `True`** (gồm `boot_khong_keo_sfx`, `boot_khong_keo_bocuc`) |
+| `--audio-report` của exe đã cài | rc=0 — cùng surface từng abort `0xC0000409` trước bản sửa teardown |
+| Mở `.clinq` | double-click qua Explorer vào đúng cửa sổ dựng phim; dự án THẬT `Clinging_Projects\Dự án 2\Dự án 2.clinq` mở ra **đúng clip + thư viện của nó** và **file vẫn nguyên byte** sau cả lượt đo |
+| Data người dùng quanh lượt đo | 2.084 → 2.122 mục, **`THEM: 53 / MAT: 15 / DOI: 0`** (đọc `DOI`, không đọc rc). Toàn bộ `MAT` và 15/53 `THEM` là vòng quay keep-5 của `.clinqing\recovery` cho fixture selftest (`Kiem recap` / `Kiem bo cuc` / `Kiem karaoke`); 38 `THEM` còn lại là `Roaming\Clinging\cache\image` dựng lại được. **Không đường nào thuộc `Clinging_Projects\`** |
+
+## Dòng "đóng cửa số": dừng luồng giải mã trước khi thoát (2026-10-23)
+
+**Hiện trạng trước khi sửa.** Không một class UI nào trong repo có `closeEvent`.
+`ClipItem` mở `QThread` + `MediaExtractionWorker` ngay trong hàm construct
+(`ui/graphics/clip_item.py:96`) và worker block trong
+`cv2.VideoCapture.read()`; `close()` trên `MainWindow` không gửi close event
+xuống con, nên không đường nào dừng được những thread đó trước khi interpreter
+finalize. Triệu chứng: process chết ở `0xC0000409` (Git Bash in ra `127`) **sau
+khi** đã ghi xong payload — tức sản phẩm đúng, chỉ cái xác là sai.
+
+**Lần đầu bắt được.** `scratch/installed_app_probe.py` chạy
+`<exe cài> --project-report <json> <du an .clinq that>` (một dự án hai clip
+3830×2160): cổng `project THAT exit 0` đỏ **3/3** với `returncode=3221226505`,
+payload trong file vẫn `mo_duoc=True / o_editor=True / user_cache_extra=[]`.
+Chạy cùng lệnh trên tree nguồn cũng chết (`-X faulthandler` in được dump: main
+thread đang ở `diagnostics.py` vòng `pump()`, HAI thread còn nằm trong
+`MediaExtractionWorker.run()` qua `core/media_frame.py`). Đây là bug có từ
+trước, không phải hồi quy của bốn tính năng 1.0.6: `ui/graphics/clip_item.py`
+không đổi một byte nào trong delta 1.0.5 → 1.0.6. Lý do nó chỉ lộ ra lần này là
+`diagnostics._cache_guard_start` (thêm 23/10) redirect cache ảnh về TEMP —
+trước đó mọi lần chạy đều ăn cache nóng của `%APPDATA%\Clinging\cache\image`
+(1.625 mục) nên worker xong trước lúc đóng.
+
+**Bề mặt sản phẩm đã sửa.** `TimelineScene.shutdown_clip_workers()`
+(`ui/graphics/timeline_scene.py:299`) gọi `shutdown_extraction()` của từng
+ClipItem, và `MainController.closeEvent()` (`ui/main_controller.py:461`) gọi nó
+trước `super().closeEvent(event)`. `shutdown_extraction()` đã có sẵn (disconnect
+→ `requestInterruption()` → `quit()` → `wait(5000)`), chỉ chưa ai gọi nó lúc
+thoát.
+
+**Cấu phần đo (44 dòng, thêm một dòng so với bảng 1.0.6 ở trên).**
+`("dong cua so: dung luong giai ma clip tru khi thoat", _clip_teardown_ok)` —
+ba điều ĐẾM được, không đo thời gian: lúc mở thì mọi ClipItem có
+`_extractor_thread is not None`; sau `controller.close()` thì không clip nào còn
+giữ thread; và `isRunning()` của đúng những thread đã bắt lúc mở phải trả 0
+(RuntimeError vì C++ đã `deleteLater` được tính là đã chết). Dòng này tự dựng
+`MainController()` và mở fixture `.clinq` cùng cây với `--project-report`.
+
+**Phản chứng.** `scratch/teardown_workers_counterfactual.py` — **ALL PASS 16/16,
+rc=0**, 2 vet × 2 lượt, mỗi vet chạy cả hai thang đo:
+
+| Vet | `--selftest --only="dong cua so"` | `main.py --project-report` (dự án 4K) |
+| --- | --- | --- |
+| `closeEvent` không gọi gì | đỏ: `dong cua so: 3/3 clip van con luong (c-one,c-tone,c-two)` | `rc=3221226505` ở **cả 2 lượt** (16,3 s / 17,2 s), payload vẫn `mo_duoc=True o_editor=True` |
+| vòng lặp trong `shutdown_clip_workers` không dừng ai | đỏ: cùng một chi tiết | `rc=3221226505` ở **cả 2 lượt** (16,5 s / 16,5 s) |
+| byte nguyên (baseline + spot) | xanh, `rc=0` | `rc=0`, **19,1 s** |
+
+Cái giá của phép dựng là **19,1 − 16,3…17,2 ≈ 2–3 s** lúc đóng cửa sổ trên một
+dải hình 4K 12 s (worker nghỉ ngay sau khung hình đang giải mã, không phải sau
+cả dải). Fixture do probe tự sinh bằng `tools\ffmpeg\ffmpeg.exe`
+(`testsrc2` 3840×2160 · 12 s · `-g 360 -keyint_min 360 -sc_threshold 0`) và
+được `ffprobe` kiểm là **1 keyframe / 360 khung hình** — cửa phản chứng chống
+lại fixture nhẹ: nhiều keyframe thì mỗi lần seek rẻ, worker xong trước lúc đóng,
+và phép thử sẽ xanh mà không đo gì. Không một video nào của người dùng được dùng
+làm vật thử; probe chốt bằng byte-hash các `.clinq` trong
+`%USERPROFILE%\Clinging_Projects` và `recent_projects.json`
+(`du_lieu_nguoi_dung_khong_doi PASS 0 file lech byte`).
+
+**Ảnh chứng minh:** `scratch/teardown_workers_evidence.png` — `--project-report`
+chụp từ code path sản xuất trên lượt byte-nguyên: editor mở đúng dự án 4K, dải
+hình clip hiện bảy khung giải mã thật, bảng chú thích dưới ảnh
+`mo = True, dung editor = True, tu Home = True` và `clip = 1/1 khop`. Ảnh **không
+commit**: dòng `argv ->` trong caption chứa đường dẫn cá nhân của máy đo
+(`C:\Users\...\Temp\clinging_teardown_cf\Teardown 4K.clinq`), nên nó chỉ xem được
+trên máy này; mọi số đo trong caption cũng nằm trong
+`scratch/teardown_workers_counterfactual.json` (16 cửa, `keyframes: 1`,
+`frames: 360`).
+
+**Cổng đóng gói.** `scratch/frozen_bundle_probe.py` thêm cửa
+`bundle co dong selftest dung luong giai ma` (đếm theo TÊN dòng, không hard-code
+số dòng), vì hai lần trước chính lớp lỗi "sửa ở nguồn nhưng thiếu trong PYZ" chỉ
+lộ khi chạy exe.
 
 ## Ảnh chứng minh đã commit của 1.0.5
 

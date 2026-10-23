@@ -35,35 +35,37 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   6.967.178 B, sha256[:16] `6785b32b92e8d0b3` giống hệt `dist\Clinging`,
   `installed_app_probe.py` ALL PASS rc=0 — nhưng bundle vẫn mang
   `--split-report` với hằng số menu cũ (xem bẫy "cổng đóng gói trong bundle").
-  **1.0.5 là bản hiện hành — đã dựng, đã verify, đã cài cây Inno, đã public**:
-  `dist\Clinging\Clinging.exe` 6.997.295 B (PE `1.0.5.0`), selftest bundle
-  **39 dòng `failed=[]` rc=0**, `--split-report` **rc=0** (thang đo mới đã nằm
-  trong payload), `frozen_bundle_probe.py` ALL PASS, hai file cài
-  `ClingingSetup-1.0.5.exe` 141.574.633 B / `.msi` 161.113.765 B, payload MSI
-  363 file / 514.159.312 B. Bản cài Inno
-  (`%LOCALAPPDATA%\Programs\Clinging`) là 1.0.5: exe sha256[:16] `33cbadb850d55464`
-  trùng từng byte với `dist`, `installed_app_probe.py` **ALL PASS 0 fail**,
-  `--split-report` của exe đã cài **rc=0**, boot 0,642 s / 68.880 KiB, cây cài
-  365 lá = 363 payload + `unins000.*` (0 thiếu). **Cây MSI vẫn 1.0.4**:
-  `msiserver` kẹt từ 22/10 (mục "Đừng cắt `msiexec` bằng `timeout`") nên chưa
-  `/i` được — phải reboot rồi gỡ hai product probe.
-  Clone mới muốn
+  **1.0.6 là bản hiện hành — đã dựng, đã verify, đã cài cây Inno**:
+  `dist\Clinging\Clinging.exe` 7.159.482 B (PE `1.0.6.0`), selftest bundle
+  **44 dòng `failed=[]` rc=0** trong 82,0 s, `--split-report` **rc=0**,
+  `frozen_bundle_probe.py` **ALL PASS 0 fail** (404,4 s, 32 cua), hai file cài
+  `ClingingSetup-1.0.6.exe` 143.940.720 B / `.msi` 163.537.096 B, payload MSI
+  **383 file / 516.682.602 B** (`msi_payload_check.py` ALL PASS). So với 1.0.5
+  (141.574.633 B / 161.113.765 B, 363 file / 514.159.312 B) bundle to thêm
+  ~1,8 MB chu yeu la `assets/sfx/` 14 tieng. Ban cài Inno
+  (`%LOCALAPPDATA%\Programs\Clinging`) là 1.0.6: exe sha256[:16]
+  `775ddfbd248b7314` trùng từng byte với `dist`, cây cài 385 lá = 383 payload +
+  `unins000.*` (0 thiếu). **Cây MSI vẫn 1.0.4**: `msiserver` kẹt từ 22/10 (mục
+  "Đừng cắt `msiexec` bằng `timeout`") nên chưa `/i` được — phải reboot rồi gỡ
+  hai product probe. Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
-- **Tree nguồn hiện đi trước bundle hai tính năng chưa đóng gói** (đo 23/10/2026):
-  kho SFX (`core/sfx.py`, `ui/sfx_dialog.py`, `assets/sfx/`, `--sfx-report` 23 cửa)
-  và "Bố cục & Phong cách" cấp dự án (`core/canvas_layout.py`,
-  `ui/canvas_layout_dialog.py`, `--canvas-layout-report` 36 cửa). Selftest tree
-  nguồn là **43 dòng `failed=[]` rc=0**, trong khi `dist\Clinging` và bản cài Inno
-  vẫn là bảng 39 dòng của 1.0.5 — đừng lấy số dòng của bundle làm số của nguồn,
-  và cũng đừng vì thấy hai cổng report mới mà đoán là đã ship.
+- **Ba tính năng SFX / Bố cục & Phong cách / dừng luồng giải mã đã vào bundle
+  1.0.6** — tree nguồn và `dist\Clinging` dùng chung bảng **44 dòng** (do
+  23/10/2026: `--selftest` nguồn 44 dòng `failed=[]` rc=0, và dòng 44
+  "đóng cửa sổ" cũng xanh trong PYZ). Kho SFX (`core/sfx.py`, `ui/sfx_dialog.py`,
+  `assets/sfx/`, `--sfx-report` 23 cửa), "Bố cục & Phong cách" cấp dự án
+  (`core/canvas_layout.py`, `ui/canvas_layout_dialog.py`,
+  `--canvas-layout-report` 36 cửa), và `shutdown_clip_workers()`
+  (`ui/graphics/timeline_scene.py:299` + `MainController.closeEvent`). **Cây MSI
+  vẫn là payload 1.0.4** — đừng lấy số dòng của một cây làm số của cây khác.
 
 ## Lệnh hay dùng
 
 ```bash
 python main.py                                  # chay app binh thuong
-python main.py --selftest                       # 43 dong cong (bundle 1.0.5 van 39), bao JSON co "failed"
-python main.py --selftest out.json --only="chinh mau"   # mot dong thoi (~5-12 s vs ~36-49 s); khong bao gio duoc bao cao la "43 dong xanh", doc payload["only"] truoc khi tin
+python main.py --selftest                       # 44 dong cong (bundle 1.0.6 cung 44; bundle 1.0.5 van 39), bao JSON co "failed"
+python main.py --selftest out.json --only="chinh mau"   # mot dong thoi (~5-12 s vs ~36-49 s); khong bao gio duoc bao cao la "44 dong xanh", doc payload["only"] truoc khi tin
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
@@ -85,9 +87,10 @@ python scratch/export_range_counterfactual.py   # phan chung: 18 vet tren vung x
 python scratch/export_range_evidence.py         # anh: 2 che do ExportDialog + 24/12 khung hue + ffprobe -count_frames + RMS, 16 cua
 python scratch/export_quality_cost_probe.py     # do 8 cau hinh preset/CRF, xen ke 2 vong -> scratch/export_quality_cost.json
 python scratch/transform_counterfactual.py      # phan chung: 18 vet tren the "Bien doi" (xoay tu do / lat / canh le / khoa ty le), 2 oracle selftest+report, 133 s, 1 lan SPOT du bang 42 dong
+python scratch/teardown_workers_counterfactual.py # phan chung: 2 vet byte (closeEvent / vong lap shutdown) tren 2 oracle — selftest row 44 + rc THAT cua `main.py --project-report` voi fixture 4K tu sinh; 16/16, ~13 phut, fixture phai co DUNG 1 keyframe/360 frame
 python scratch/icon_name_audit.py               # ten glyph + tham so tren toan bo nguon
 python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi dung ly do
-python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 18 probe (rc=0 = "ALL CLEAN: 16/18", hai probe khong co bang vet bi loai khong tinh)
+python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 19 probe (rc=0 = "ALL CLEAN: 17/19", hai probe khong co bang vet bi loai khong tinh)
 python scratch/selftest_filter_counterfactual.py # phan chung: bo loc --only, 10 cua (~3,7 phut)
 python scratch/boot_laziness_counterfactual.py  # phan chung: 5 cua (trang dung phim/psutil/nen/SFX/bo cuc) — boot khong duoc keo hop thoai nen
 python scratch/save_atomic_counterfactual.py    # phan chung: 4 phep doi byte o duong luu du an
@@ -302,7 +305,7 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   bang `git status`, phuc bang `git checkout -- <file>` (file do khong nam trong
   dam thay doi co y). KHONG bai dung hai vong probe song song.
 - **`--only` cat nua bang do luu do.** Lan chay loc co `failed=[]` khong nghia la
-  43 dong xanh; doc `payload["only"]` (phai la `null`) truoc khi bao cao. Probe
+  44 dong xanh; doc `payload["only"]` (phai la `null`) truoc khi bao cao. Probe
   phan chung da theo khuon: baseline du bang -> vet chay `--only` -> MOT lan SPOT
   du bang -> khoi phuc du bang. Gia do: tron bang 48,8 s (39 dong; 38 dong la
   31,1 s), mot dong 5,0-12,4 s; nen tep 17 vet 377,2 s -> 183,7 s, chroma 19 vet
@@ -353,6 +356,27 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   tung bao rc=0 nham. Neu muon phan loai "loi nay do tinh nang hay do san":
   `git worktree add --detach <tam> HEAD` + `mklink /H` hai file `tools\ffmpeg`
   (200 MB, khong commit) de do ma khong cham working tree.
+- **Cung lop abort do, o chieu nguoc lai: worker giai ma van sống khi thoát.**
+  `ClipItem` mo `MediaExtractionWorker` (QThread + `cv2.VideoCapture.read()`) ngay
+  luc the timeline duoc tao; khong co bat ky `closeEvent` nao trong `ui/` dung no
+  lai. Ban 1.0.5 da cai abort `0xC0000409` **3/3 lan** luc dong cua so, payload
+  van ghi xong va `failed=[]` — nen chi doc file bao cao la khong bat duoc. Lan
+  do `installed_app_probe.py` (do 23/10/2026). **Vi sao sao mai moi lo:** cung
+  ngay do them `_cache_guard_start` redirect cache anh nho ve TEMP, moi lan chay
+  LANH; truoc do an cache nong 1.625 muc cua `%APPDATA%\Clinging\cache\image` nen
+  worker xong truoc luc dong. Chua:
+  `TimelineScene.shutdown_clip_workers()` goi tu `MainController.closeEvent`,
+  va dong selftest 44 `dong cua so: dung luong giai ma clip tru khi thoat` dem
+  ba dieu (mo du luong / close het luong / khong con QThread song). **Cua do thoi
+  gian trong probe chay BON lan bang do thi phai rong hon 4 lan so do:**
+  `frozen_bundle_probe.py` dung `timeout=240` cho moi lan selftest — bang 44 dong
+  mat 82 s tren may nghi nen tuong du, nhung lan chay 23/10 hong o pha "an ui/"
+  vi toan bo probe keo 404 s tren may co `Clinging.exe` cua nguoi dung dang mo;
+  da nang len 600 s.
+- **Probe doi ten vat ly `core/` va `ui/` thi khong duoc `git add` song song.**
+  `frozen_bundle_probe.py` rename hai thu muc nguon de chung minh exe doc PYZ
+  (khong phai doc lai tree). Ne `git add` roi vua luc do thi commit thieu ca ngan
+  file. Thu tu an toan: probe xong va `ls -d core ui` con nguyen -> moi commit.
 - **Cổng đo `DOI: 0` mù với "thêm mục mới".** `--style-report` them 7 muc,
   `--project-report` them 6 muc anh nho FIXTURE vao cache THAT
   `%APPDATA%\Roaming\Clinging\cache\image` (do 23/10/2026; diff bao

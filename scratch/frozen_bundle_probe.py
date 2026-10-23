@@ -53,8 +53,16 @@ def check(label, got, want):
     return ok
 
 
-def run_selftest(report_path, timeout=240):
-    """Exe la GUI-subsystem nen stdout bac; ma thoat + file bao cao la chung cu."""
+def run_selftest(report_path, timeout=600):
+    """Exe la GUI-subsystem nen stdout bac; ma thoat + file bao cao la chung cu.
+
+    600 s chu khong phai 240 s: bang 39 dong do 82 s tren may nghi, nen 240 s
+    tung du gan 3 lan du phong. Tu khi co dong 44 ("dong cua so") thi probe phai
+    chay BON lan bang do, hai lan cuoi trong luc dia van đang flush cua hai lan
+    truoc — do 23/10/2026, loi cua "an ui/ cua tree nguon" hong vi
+    TimeoutExpired sau 240,0 s trong khi chinh doan do chi can ket luan cua
+    `ui/` KHONG duoc doc tu tree nguon, khong can no nhanh.
+    """
     if os.path.exists(report_path):
         os.remove(report_path)
     started = time.time()
@@ -144,6 +152,16 @@ def main():
     check("bundle co dong selftest vung xuat in/out", len(vung_rows), 1)
     if vung_rows:
         check("selftest dong goi: vung xuat in/out OK", vung_rows[0]["ok"], True)
+
+    # Dong "dong cua so" la bang chung `MainController.closeEvent` +
+    # `TimelineScene.shutdown_clip_workers` co MAT TRONG PYZ: ban 1.0.6 dau tien
+    # (dung truoc phep sua) mo du an 4K that cua nguoi dung xong payload roi chet
+    # o 0xC0000409, va doan ma sua nam trong `ui/` — noi ma bundle tung thieu.
+    # Xanh o day nghia la exe dong goi cung dung het luong giai ma tru khi thoat.
+    td_rows = [r for r in report["checks"] if "dong cua so" in r["name"]]
+    check("bundle co dong selftest dung luong giai ma", len(td_rows), 1)
+    if td_rows:
+        check("selftest dong goi: dung luong giai ma OK", td_rows[0]["ok"], True)
 
     # Counterfactual: lat resource cua bundle -> selftest PHAI fail.
     styles = os.path.join(INTERNAL, "styles")

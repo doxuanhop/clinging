@@ -296,6 +296,22 @@ class TimelineScene(QGraphicsScene):
             item.shutdown_extraction()
             self.removeItem(item)
 
+    def shutdown_clip_workers(self):
+        """Dừng mọi luồng trích xuất còn sống — gọi trước khi cửa sổ đóng.
+
+        Đóng app lúc dải hình clip vẫn đang giải mã là một abort không traceback:
+        do 23/10/2026, `--project-report` mo du an that cua nguoi dung (hai clip
+        AV1 3830x2160) ghi xong payload rồi chết ở 0xC0000409, faulthandler bắt
+        được HAI thread ClipItem còn ở `MediaExtractionWorker.run()` qua
+        `cv2.VideoCapture.read()` trong khi main thread đang `processEvents`
+        (`docs/verification-gates.md`, muc "Dong cua so"; phan chung va fixture
+        4K tu sinh nam trong `scratch/teardown_workers_counterfactual.py`).
+        `close()` trên MainWindow không gửi close event xuống con, nên phép dựng
+        phải nằm ở cửa sổ bị đóng thật — `MainController.closeEvent`.
+        """
+        for item in list(self._clip_items.values()):
+            item.shutdown_extraction()
+
     def _on_clip_moved(self, clip_id: str, new_start: float):
         """Cập nhật vị trí ClipItem sau khi model thay đổi."""
         item = self._clip_items.get(clip_id)

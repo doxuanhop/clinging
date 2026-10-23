@@ -25,7 +25,8 @@ PROBES = ["chroma_key_counterfactual", "color_grading_counterfactual",
           "popart_project_counterfactual", "boot_laziness_counterfactual",
           "split_plan_counterfactual", "export_range_counterfactual",
           "library_counterfactual", "sfx_counterfactual",
-          "transform_counterfactual", "canvas_layout_counterfactual"]
+          "transform_counterfactual", "canvas_layout_counterfactual",
+          "teardown_workers_counterfactual"]
 
 
 def entries(mod):

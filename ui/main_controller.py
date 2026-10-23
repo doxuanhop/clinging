@@ -457,6 +457,26 @@ class MainController(QMainWindow):
         if event.type() == event.Type.WindowStateChange:
             self._on_window_state_changed()
         super().changeEvent(event)
+
+    def closeEvent(self, event):
+        """Tắt luồng giải mã của timeline TRƯỚC khi cửa sổ bị phá.
+
+        Worker của ClipItem chạy trong QThread của nó và gọi
+        `cv2.VideoCapture.read()` (opencv + Media Foundation). Nếu interpreter bắt
+        tay khi những thread ấy còn chạy thì Qt đưa lỗi về 0xC0000409 — app chết
+        mà không có một dòng traceback nào. Số đo 23/10/2026
+        (`docs/verification-gates.md`, muc "Dong cua so"): vet ca hai phien ban
+        (cat loi goi o day, va cat vong lap trong `shutdown_clip_workers`) deu
+        chet 4/4 lan o ma 3221226505 tren `main.py --project-report` voi du an
+        4K tu sinh, trong khi byte nguyen thi `rc=0` 2/2 lan. `requestInterruption()`
+        trong `shutdown_extraction` khiến worker nghỉ ngay sau khung hình đang
+        giải mã, nên cái giá lúc đóng app là tối đa MỘT khung 4K: 19,1 s cho lan
+        co phep dung so voi 16,3-17,2 s khi bo no (toan bo bang do nam trong
+        `scratch/teardown_workers_counterfactual.py`).
+        """
+        if self.editor_page is not None:
+            self.editor_page.timeline_panel.scene.shutdown_clip_workers()
+        super().closeEvent(event)
     
     def _apply_stylesheet(self):
         """Áp dụng stylesheet cho MainController."""
