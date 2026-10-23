@@ -1895,6 +1895,34 @@ chỉ thỉnh thoảng chết ở bước dọn.
 
 **Cây MSI vẫn 1.0.4** (`msiserver` kẹt từ 22/10, chưa reboot).
 
+### Release v1.0.7 public + test tải ngược (23/10/2026)
+
+`scratch/github_release.py doxuanhop/clinging v1.0.7 --name "Clinging 1.0.7"
+--body-file docs/release-1.0.7.md <exe> <msi>` trả **rc=0**, log
+`scratch/_d107_release.log`: tạo Release **id `421753843`** cho tag `v1.0.7`
+(tag nhẹ, tạo SAU khi push nên nằm đúng trên commit `3807fdb` — commit mang
+`docs/release-1.0.7.md` cùng hai probe phân loại abort). Hai asset lên
+`uploaded`: `.exe` 144.656.273 B trong **251 s**, `.msi` 164.241.901 B trong
+**342 s**.
+
+Bằng chứng công khai, đọc lại **không dùng token** như người dùng thật:
+`draft=False prerelease=False`, `tag=v1.0.7`, hai asset đúng kích thước, `digest`
+GitHub tự tính khớp, và phép thử `Range: bytes=0-1023` trả **206 + đúng 1024 B**
+cho cả hai (URL ký số có tải ra file thật, không phải danh sách rỗng).
+
+Test tải ngược **toàn bộ** hai file từ `browser_download_url`:
+
+| Asset | Bytes tải về | sha256 file tải | sha256 file local | sha256 GitHub tính | Kết luận |
+| --- | --- | --- | --- | --- | --- |
+| `ClingingSetup-1.0.7.exe` | 144.656.273 | `4dcbb815c8e17992…b9a1c` | như cột bên | như cột bên | **KHOP** |
+| `ClingingSetup-1.0.7.msi` | 164.241.901 | `1d8d3158ddd4f81a…f82de` | như cột bên | như cột bên | **KHOP** |
+
+`2/2 asset khop sha256`, và sha256 của file local lại đúng hai chuỗi ghi trong
+bảng "File tải về" của `docs/release-1.0.7.md` — vòng khép "file người dùng tải
+về là file đã đo trên máy này". Thân Release trên GitHub **đúng bằng**
+`docs/release-1.0.7.md` (11.989 ký tự), nên sau khi đăng file notes không được
+sửa nữa; số của lượt đăng nằm ở mục này và trong `AGENTS.md`.
+
 ## Dòng "đóng cửa số": dừng luồng giải mã trước khi thoát (2026-10-23)
 
 

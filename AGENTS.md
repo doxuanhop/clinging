@@ -23,11 +23,16 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   `MSYS_NO_PATHCONV=1 msiexec /i <msi> INSTALLFOLDER="%LOCALAPPDATA%\Programs\ClingingMSI" /qn`
   rồi đọc lại cả hai cây + khóa HKCU Uninstall, đừng tin mỗi mã thoát (trả giá
   21/10/2026 khi ship 1.0.3).
-- Repo public: `github.com/doxuanhop/clinging`, Release `v1.0.6` (release id
-  `421505768`, hai asset `.exe` 143.940.720 B + `.msi` 163.537.096 B, tag
-  `v1.0.6` = commit `3acdfc2` — commit mang `docs/release-1.0.6.md` và bản sửa
-  crash-on-close; tag được tạo SAU khi push nên nó nằm đúng trên commit đó),
-  notes `docs/release-1.0.6.md`.
+- Repo public: `github.com/doxuanhop/clinging`, Release mới nhất `v1.0.7`
+  (release id `421753843`, hai asset `.exe` 144.656.273 B sha256
+  `4dcbb815c8e1…b9a1c` + `.msi` 164.241.901 B sha256 `1d8d3158ddd4…f82de`, tag
+  `v1.0.7` = commit `3807fdb` — commit mang `docs/release-1.0.7.md` và phần phân
+  loại abort `0xC0000409`; tag tạo SAU khi push nên nó nằm đúng trên commit đó),
+  notes `docs/release-1.0.7.md`. **Cả hai asset đã tải ngược từ URL công khai và
+  khớp sha256 với file local lẫn digest GitHub tự tính (2/2 KHOP).**
+  `v1.0.6` là cặp liền trước (release id `421505768`, hai asset `.exe`
+  143.940.720 B + `.msi` 163.537.096 B, tag `v1.0.6` = commit `3acdfc2` — commit
+  mang `docs/release-1.0.6.md` và bản sửa crash-on-close).
   `v1.0.5` là cặp liền trước (tag `9df00c3` — commit tài liệu 1.0.5; `main` đi tiếp
   sau đó nên đừng đợi tag nhích theo). `v1.0.4` là cặp liền trước nữa
   (tag gắn trên `155cef5`; `msi_payload_check.py` đọc bảng File của
@@ -38,7 +43,7 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   6.967.178 B, sha256[:16] `6785b32b92e8d0b3` giống hệt `dist\Clinging`,
   `installed_app_probe.py` ALL PASS rc=0 — nhưng bundle vẫn mang
   `--split-report` với hằng số menu cũ (xem bẫy "cổng đóng gói trong bundle").
-  **1.0.6 là bản đang cài trên cây Inno — đã dựng, đã verify**:
+  **1.0.6 từng là bản cài trên cây Inno — đã dựng, đã verify (nay 1.0.7 đè)**:
   `dist\Clinging\Clinging.exe` 7.159.482 B (PE `1.0.6.0`), selftest bundle
   **44 dòng `failed=[]` rc=0** trong 82,0 s, `--split-report` **rc=0**,
   `frozen_bundle_probe.py` **ALL PASS 0 fail** (404,4 s, 32 cua), hai file cài
@@ -53,7 +58,8 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   hai product probe. Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
-  **1.0.7 đã dựng + đã gate + ĐÃ cài cây Inno trên máy này (23/10/2026)**:
+  **1.0.7 đã dựng + đã gate + ĐÃ cài cây Inno + ĐÃ public (23/10/2026)** — Release
+  id `421753843`, tag `v1.0.7` = commit `3807fdb`, hai asset tải ngược khớp sha256:
   `dist\Clinging\Clinging.exe` 7.164.518 B (PE `1.0.7.0`, sha256[:16]
   `dde9fcbe5eb9b39b`), 10 cổng bundle đều `rc=0` (`--selftest` **44 dòng
   `failed=[]` only=null** trong 69,2 s; `--project-report` 10,3 s
