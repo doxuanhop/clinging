@@ -1258,6 +1258,148 @@ def _decode_cache_ok():
     return "round(t*fps), cache anh+song, nguon mat -> dead"
 
 
+def _library_panel_ok():
+    """Thu vien tai nguyen: mot luot doi luoi cho ca dot, o luoi chi doi khi lech,
+    the bi an khong lay task, the da xoa bi cat dien.
+
+    Dong nay nam bon su that ma lan toi uu 22/10/2026 dat tren duong production
+    `restore_resources()` (ui/main_window.py:214 goi luc mo project). Do tren
+    luoi 65 the cung may nay (scratch/_lib_report.json): 65 luot _apply_filter
+    -> 1, median mot phim go 17,72 -> 2,11 ms, anh tinh 1600 px/7,3 MiB ->
+    320 px/0,29 MiB, 20/20 luot giai ma cho dot da xoa -> 4.
+
+    Khong do thoi gian o day: dong selftest phai chay duoc trong bundle tren
+    moi may, con nguong ms thuoc ve `--library-report`. Day la cong CHUC NANG —
+    no do khi ban toi uu BI XOA hoac BI BAT HOAT, khong do no cham.
+    """
+    import tempfile
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication
+    from core import media_cache
+    import ui.library_panel as lp
+
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    work = tempfile.mkdtemp(prefix="clinging_lib_")
+    original_root = media_cache.cache_root
+    media_cache.cache_root = lambda: os.path.join(work, "cache")
+    panel = lp.LibraryPanel()
+    hidden_panel = lp.LibraryPanel()
+    fails = []
+    try:
+        # Fixture anh THAT (PNG 1200x900, doc qua duong production) + video gia
+        # danh: cua nay kiem "co ai dem task vao pool", khong kiem giai ma video
+        # thanh cong, nen file byte ran la du va khong can ffmpeg. Duong dan
+        # cua 22 the PHAI khac nhau: `add_resource` bo qua tep trung duong dan.
+        pngs = []
+        for i in range(2):
+            p = os.path.join(work, "photo_%02d.png" % i)
+            QImage(1200, 900, QImage.Format_RGB32).save(p)
+            pngs.append(p)
+        clips = []
+        for i in range(20):
+            p = os.path.join(work, "clip_%02d.mp4" % i)
+            with open(p, "wb") as handle:
+                handle.write(b"not a real video")
+            clips.append(p)
+        for path in pngs + clips:
+            if not os.path.isfile(path):
+                raise RuntimeError("fixture hong: %r" % path)
+
+        # 1. Anh tinh: thu nho TRONG LUC doc + luu cache dia co khoa rieng.
+        first = lp.decode_thumb_image(pngs[0], "image")
+        if first.isNull() or first.width() > 320:
+            fails.append("anh tinh >320 px: %dx%d" % (first.width(),
+                                                      first.height()))
+        key = media_cache.image_key(pngs[0], "img", 0.0, 320, 320)
+        if not key or not os.path.isfile(key):
+            fails.append("anh tinh khong ghi cache dia")
+        if lp.decode_thumb_image(pngs[0], "image").width() != first.width():
+            fails.append("lan doc thu hai tra anh khac kich thuoc")
+
+        # 2. Mot dot nap = MOT luot doi luoi. Dem tren instance nhung goi thang
+        #    ham cua lop nen doan duoc dung la code that trong bundle.
+        passes = [0]
+        real_filter = panel._apply_filter
+
+        def counted():
+            passes[0] += 1
+            real_filter()
+        panel._apply_filter = counted
+
+        adds = [0]
+
+        def counting_add(*args, **kw):
+            adds[0] += 1
+            return lp.QGridLayout.addWidget(panel.grid, *args, **kw)
+        panel.grid.addWidget = counting_add
+
+        assets = ([{"name": os.path.basename(p), "type": "image", "path": p}
+                   for p in pngs]
+                  + [{"name": os.path.basename(p), "type": "video", "path": p}
+                     for p in clips])
+        panel.restore_resources(assets)
+        if passes[0] != 1:
+            fails.append("restore 22 the chay %d luot doi luoi" % passes[0])
+        cards = [w for w in panel._items if isinstance(w, lp.ResourceCard)]
+        if len(cards) != 22:
+            fails.append("thieu the: %d/22" % len(cards))
+
+        # 3. O luoi chi doi khi o THUC SU doi: hai lan bo loc khong doi ket qua
+        #    khong duoc ban lai widget nao (do 65 the: 130 lan ban moi lan go).
+        before = [(id(w), getattr(w, "_grid_cell", None)) for w in panel._items]
+        base_adds = adds[0]
+        panel._apply_filter()
+        panel._apply_filter()
+        after = [(id(w), getattr(w, "_grid_cell", None)) for w in panel._items]
+        if before != after:
+            fails.append("bo nho o luoi bi lech khi lap lai bo loc")
+        if adds[0] != base_adds:
+            fails.append("%d lan ban lai o cu khi bo loc khong doi"
+                         % (adds[0] - base_adds))
+
+        # 4. The bi bo loc an khong duoc xep giai ma; the hien ra thi phai duoc.
+        #    Panel thu hai dat tab "Video" TRUOC khi nap, dung like luc mo
+        #    project trong thu vien dang hien tab khac. TAB_TO_KIND: 1=video,
+        #    2=audio, 3=image — anh nam o 3, khong phai 2.
+        hidden_panel._select_tab(1)
+        hidden_panel.restore_resources(assets)
+        img_cards = [c for c in hidden_panel._items
+                     if isinstance(c, lp.ResourceCard) and c.kind == "image"]
+        vid_cards = [c for c in hidden_panel._items
+                     if isinstance(c, lp.ResourceCard) and c.kind == "video"]
+        if len(img_cards) != 2 or len(vid_cards) != 20:
+            fails.append("panel tab Video co %d anh/%d video"
+                         % (len(img_cards), len(vid_cards)))
+        if any(c._thumb_task is not None for c in img_cards):
+            fails.append("the anh bi an van co task giai ma")
+        if any(c._thumb_task is None for c in vid_cards):
+            fails.append("the video dang hien khong duoc xep giai ma")
+        hidden_panel._select_tab(3)
+        if any(c._thumb_task is None for c in img_cards):
+            fails.append("the anh hien ra roi van khong duoc xep giai ma")
+
+        # 5. Xoa kho thi cat dien: task cua the khong con ton tai phai ngung.
+        live = [c._thumb_task for c in cards]
+        if not any(t is not None for t in live):
+            fails.append("khong co task nao de kiem cat dien")
+        panel.clear_resources(emit_change=False)
+        if any(not t.cancelled for t in live if t is not None):
+            fails.append("task cua the da xoa khong bi cat dien")
+        hidden_panel.clear_resources(emit_change=False)
+
+        lp.thumb_pool().waitForDone(5000)
+        app.processEvents()
+    finally:
+        media_cache.cache_root = original_root
+        for widget in (panel, hidden_panel):
+            widget.deleteLater()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    if fails:
+        raise RuntimeError("; ".join(fails))
+    return "1 luot luoi/dot, o luoi on dinh, the an khong giai ma, xoa la cat"
+
+
 def _thumbnail_export_ok():
     """Mot dong trong --selftest: trích xuất ảnh hàng loạt chạy thật trong bundle này.
 
@@ -1764,6 +1906,756 @@ def _detach_audio_ok():
         shutil.rmtree(folder, ignore_errors=True)
     return ("1 clip audio trung nguon/trung noi dung, export thay [0:a] "
             "adelay=1500, Ctrl+Z tra lai ca hai nua + giu hang audio trong")
+
+
+# Thang do cua kho SFX, lay tu lan do 22/10/2026 tren `tools/make_sfx.py` (lan
+# build 3: 14 tieng / 181.167 B / 14,15 s tieng, 15/15 sha256[:16] trung voi lan
+# chay lien truoc). Day la CUA DO chu khong phai so thich — them mot tieng, doi
+# mot bitrate la phai sua day va phai chay lai `--sfx-report` (bẫy "cổng tự chấm"
+# trong AGENTS.md: hang so cu theo duoc vao bundle cung chieu loi cat file 1.0.4).
+SFX_PACK_ENTRIES = 14
+SFX_PACK_GROUPS = 4
+SFX_PACK_BYTE_BUDGET = 200_000
+SFX_PACK_SECOND_BUDGET = 20.0
+# Lan do 22/10/2026 tren chinh pack nay: ffprobe tra ve DUNG con so manifest cho
+# ca 14 tieng (`duration_worst_dev` = 0,0) nen do lech = 0 la bang chung tot,
+# khong phai dau hieu do hoi. Nguong 0,12 de cho mp3 padding mot lan build khac
+# codec; con so nay phai doc tu payload, khong phai tu do luon.
+SFX_DURATION_TOL = 0.12
+SFX_RMS_TOL = 0.02
+
+
+def _sfx_audio_row(path):
+    """(giay thuc, rms, peak, zcr, sha16) cua mot tieng — do bang ffprobe/ffmpeg
+    nhu `tools/make_sfx.py` do, khong tin manifest."""
+    import hashlib
+    import subprocess
+
+    import numpy as np
+
+    from core import external_tools
+    from core.media_splitter import probe_duration
+
+    ffmpeg = external_tools.find("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError(external_tools.missing_message("ffmpeg"))
+    proc = subprocess.run([ffmpeg, "-v", "error", "-i", path, "-vn", "-ac", "1",
+                           "-ar", "8000", "-f", "f32le", "-"],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=120, check=False, creationflags=0x08000000)
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError("ffmpeg khong doc duoc %s" % os.path.basename(path))
+    data = np.frombuffer(proc.stdout, np.float32).astype(np.float64)
+    if data.size < 8:
+        raise RuntimeError("file khong co tieng: %s" % path)
+    sign = np.signbit(data[1:]) != np.signbit(data[:-1])
+    with open(path, "rb") as handle:
+        digest = hashlib.sha256(handle.read()).hexdigest()[:16]
+    return (probe_duration(path), float(np.sqrt(np.mean(data ** 2))),
+            float(np.max(np.abs(data))), float(np.mean(sign)), digest)
+
+
+def _sfx_pack_ok():
+    """Mot dong trong --selftest: kho hieu ung am thanh dung san trong app.
+
+    Dong nay tra loi ba cau hoi ma `--sfx-report` tra loi bang ca 22 cua, o day
+    bang toi thieu cho mot lan selftest (~1,5 s thay vi 14 lan do file):
+
+    (1) bundle/nguon co thuc su mang theo pack — `core/sfx.py` tim duoc manifest
+        va 14 tieng trong manifest co mat tren dia, dung bang so byte da ghi;
+    (2) ffprobe doc lai duoc ba tieng dau/giua/cuoi — manifest khong phai la mot
+        danh sach tu xuong duoc ve minh;
+    (3) chen qua ngan nap that cua timeline (`TimelinePanel._on_resource_dropped`)
+        ra clip audio noi lien, mot lane, Ctrl+Z tra ve timeline trong.
+
+    Khong dung MainWindow o day: no thu `--sfx-report`, con selftest phai chay
+    duoc tren moi may khong co thiet bi am thanh.
+    """
+    from types import SimpleNamespace
+
+    from core import sfx as sfx_core
+    from ui.sfx_dialog import SfxDialog, insert_to_timeline
+    from ui.timeline_panel import TimelinePanel
+
+    rows = sfx_core.entries()
+    if not rows:
+        raise RuntimeError("khong doc duoc manifest o %s" % sfx_core.pack_dir())
+    if len(rows) != SFX_PACK_ENTRIES:
+        raise RuntimeError("pack co %d tieng, thang do ghi %d"
+                           % (len(rows), SFX_PACK_ENTRIES))
+    missing = sfx_core.missing_files()
+    if missing:
+        raise RuntimeError("thieu file tren dia: %s" % ", ".join(missing))
+    wrong_size = [row["key"] for row in rows
+                  if os.path.getsize(row["path"]) != int(row["bytes"])]
+    if wrong_size:
+        raise RuntimeError("byte khop manifest: %s" % ", ".join(wrong_size))
+    total = sum(int(row["bytes"]) for row in rows)
+    if total > SFX_PACK_BYTE_BUDGET:
+        raise RuntimeError("pack %d B vuot ngan sach %d B"
+                           % (total, SFX_PACK_BYTE_BUDGET))
+    groups = sfx_core.groups()
+    if len(groups) != SFX_PACK_GROUPS:
+        raise RuntimeError("%d nhom, thang do ghi %d" % (len(groups),
+                                                         SFX_PACK_GROUPS))
+
+    for row in (rows[0], rows[len(rows) // 2], rows[-1]):
+        seconds, _rms, _peak, _zcr, _sha = _sfx_audio_row(row["path"])
+        if seconds <= 0 or abs(seconds - float(row["seconds"])) > SFX_DURATION_TOL:
+            raise RuntimeError("%s: ffprobe %.2fs, manifest %.2fs"
+                               % (row["key"], seconds, float(row["seconds"])))
+
+    panel = TimelinePanel()
+    window = SimpleNamespace(timeline_panel=panel)
+    first = insert_to_timeline(window, rows[0])
+    second = insert_to_timeline(window, rows[1])
+    if first is None or second is None:
+        raise RuntimeError("chen khong ra clip")
+    clips = [c for t in panel.model.tracks if t.track_type.name == "AUDIO"
+             for c in t.clips]
+    if len(clips) != 2:
+        raise RuntimeError("chen ra %d clip audio thay vi 2" % len(clips))
+    overlap = (second.start_time - (first.start_time + first.duration))
+    if abs(overlap) > 1e-6:
+        raise RuntimeError("hai tieng chong/chenh nhau %.3f s" % overlap)
+    audio_tracks = [t for t in panel.model.tracks if t.track_type.name == "AUDIO"]
+    if len(audio_tracks) != 1:
+        raise RuntimeError("chen tao %d lane audio, ky vong 1" % len(audio_tracks))
+    if any(c.media_type != "audio" for c in clips):
+        raise RuntimeError("clip chen vao khong phai kieu audio")
+
+    dialog = SfxDialog(panel)
+    dialog.refresh()
+    if dialog.list.count() != SFX_PACK_ENTRIES:
+        raise RuntimeError("hop tho liet %d dong, pack co %d tieng"
+                           % (dialog.list.count(), SFX_PACK_ENTRIES))
+    want_group = groups[0]
+    expect = len([r for r in rows if r.get("group") == want_group])
+    dialog.group_combo.setCurrentIndex(dialog.group_combo.findText(want_group))
+    if dialog.list.count() != expect or expect >= SFX_PACK_ENTRIES:
+        raise RuntimeError("loc nhom %s: %d dong, ky vong %d"
+                           % (want_group, dialog.list.count(), expect))
+    dialog.group_combo.setCurrentIndex(0)
+    needle = (rows[0].get("label") or "")[:3]
+    expect = len([r for r in rows if needle.casefold() in
+                  ("%s %s %s" % (r.get("label"), r.get("key"),
+                                 r.get("group"))).casefold()])
+    dialog.search.setText(needle)
+    if dialog.list.count() != expect or not expect:
+        raise RuntimeError("tim %r: %d dong, ky vong %d"
+                           % (needle, dialog.list.count(), expect))
+    dialog.search.clear()
+    # Pha phai MOI nguon THAT roi moi dung: neu chi goi `stop_preview()` tren
+    # mot player chua tung phat thi `source()` rong san va phep thu xanh ma
+    # khong do gi (phat hien 22/10 khi phan chung vet `setSource(QUrl())`).
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    dialog.list.setCurrentRow(0)
+    dialog.icon_play.click()
+    for _ in range(6):
+        app.processEvents()
+    loaded = not dialog._player.source().isEmpty()
+    dialog.icon_play.click()
+    for _ in range(4):
+        app.processEvents()
+    if not loaded:
+        raise RuntimeError("bam Nghe thu khong mo duoc nguon audio")
+    if not dialog._player.source().isEmpty():
+        raise RuntimeError("dung nghe thu ma van giu nguon (file bi khoa)")
+    dialog.deleteLater()
+
+    for _ in range(2):
+        panel.header.btn_undo.click()
+    left = [c for t in panel.model.tracks if t.track_type.name == "AUDIO"
+            for c in t.clips]
+    if left:
+        raise RuntimeError("Ctrl+Z con %d clip audio" % len(left))
+    panel.deleteLater()
+    return ("%d tieng / %d B / %d nhom, ffprobe khop manifest, "
+            "2 clip noi lien tren 1 lane + Ctrl+Z sach"
+            % (len(rows), total, len(groups)))
+
+
+TRANSFORM_BUTTON_LABELS = ("Đặt lại", "Đồng nhất", "−90°", "+90°", "Ngang",
+                           "Dọc", "Trái", "Giữa", "Phải", "Trên", "Dưới")
+# "Giữa" xuat hien o CA hai hang (ngang/doc) nen so nut nhieu hon so nhan.
+TRANSFORM_BUTTON_COUNT = 12   # dat lai + dong nhat + 2 xoay + 2 lat + 6 canh
+
+
+def _transform_ui_ok():
+    """Mot dong trong --selftest: nhom "Bien doi" (xoay, lat, khoa ty le, canh mep).
+
+    Tinh nang theo video mau 22/10: tay nam xoay tu do tren Canvas, mot o
+    "Tỷ lệ %" co nut "Đồng nhất", hai nut xoay ±90 goi lai duoi 180, lat
+    ngang/doc, sau nut canh mep va mot nut "Đặt lại". Nam xich ma ma ban dong
+    goi co the cat trom, do o day bang toi thieu (~2 s, khong ffmpeg):
+
+    (1) ba CO hinh hoc (flip_h / flip_v / uniform_scale) phai co trong model
+        voi mac dinh dung (khong lat, CO khoa), tron ven qua .clinq, va file CU
+        khong co ba khoa ay van mo duoc khong doi hinh;
+    (2) co phai la co: nam NGOAI PROPERTY_ORDER cua do thi keyframe ("lat 40%"
+        khong ton tai) va SetClipTransformCommand phai dao nguoc duoc chung;
+    (3) goc xoay phai trong (-180, 180] — QTransform va atan2 cua sync_to_model
+        chi noi cung mot tieng trong dai do; ngoai ra spin keo 270 ve 180 im
+        lang va hai lan doc cho hai goc khac nhau;
+    (4) cac phep toan canh mep (rotated_box_size / align_center /
+        base_display_size) phai dung, vi canh theo so CHUA xoay lech den 840 px
+        tren canvas 1920x1080;
+    (5) duong cua nguoi dung that: spin cua bang thuoc tinh di qua funnel
+        `_on_properties_changed_by_user`, tay nam Canvas di qua
+        `_on_canvas_edit_committed`, mot cu keo = MOT buoc undo, Ctrl+Z tra lai
+        dung ca so lan co, va "Đặt lại" tren clip sach khong them buoc rong;
+    (6) vung cham cua tay nam nam trong boundingRect TINH CO DONG (bat duoc
+        bang `item.contains()` cua chinh Qt) — boundingRect theo goc xoay la
+        loi da tra gia truoc day.
+
+    Pixel cua lat/xoay trong FrameComposer do `--transform-report` va
+    scratch/transform_evidence.py; o day chi do xich ma.
+    """
+    import math
+    import shutil
+    import tempfile
+    import types
+
+    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtWidgets import (QGraphicsScene, QGraphicsSceneMouseEvent,
+                                   QPushButton, QWidget)
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from core import keyframe_graph as kg
+    from core import project_storage
+    from core.canvas_utils import (align_center, apply_auto_fit,
+                                   base_display_size, rotated_box_size)
+    from core.commands import (GEOMETRY_FLAGS, GEOMETRY_KEYS, UndoStack,
+                               SetClipTransformCommand, transform_snapshot)
+    from core.frame_composer import FrameComposer
+    from core.timeline_model import TimelineModel, TrackType, TransformData
+    from ui.graphics_canvas_item import (CanvasClipItem, ROTATE_HIT,
+                                        ROTATE_ROOM, _normalize_angle)
+    from ui.main_window import MainWindow
+    from ui.properties_panel import ClipPropertiesWidget
+
+    TOL = 0.005
+    near = lambda a, b: abs(float(a) - float(b)) <= TOL
+
+    def mouse(item, kind, local, scene_pos):
+        """Goi dung handler cua item voi toa do that (local + scene), khong
+        tu dung mot ban mo phong: CanvasClipItem doc event.pos() de do va
+        event.scenePos() de tinh goc. Do PHAI la QGraphicsSceneMouseEvent —
+        QMouseEvent khong co scenePos(), nen item that khong doc duoc no."""
+        held = (Qt.LeftButton if kind in (QEvent.MouseButtonPress,
+                                         QEvent.MouseMove)
+                else Qt.NoButton)
+        ev = QGraphicsSceneMouseEvent(kind)
+        ev.setPos(QPointF(local))
+        ev.setScenePos(QPointF(scene_pos))
+        ev.setScreenPos(QPoint(int(scene_pos.x()), int(scene_pos.y())))
+        ev.setButton(Qt.LeftButton)
+        ev.setButtons(held)
+        ev.setModifiers(Qt.NoModifier)
+        if kind == QEvent.MouseButtonPress:
+            item.mousePressEvent(ev)
+        elif kind == QEvent.MouseMove:
+            item.mouseMoveEvent(ev)
+        else:
+            item.mouseReleaseEvent(ev)
+
+    def click_button(widget, text):
+        """Bam dung nut co nhan `text`; False neu khong tim thay (nut mat ten)."""
+        for btn in widget.findChildren(QPushButton):
+            if btn.text() == text:
+                btn.click()
+                return True
+        return False
+
+    def drag_rotate(item, clip, delta_deg):
+        """Keo tay nam xoay them `delta_deg` do, tra ve goc ma model nhan duoc.
+
+        Toa do lay tu `item.mapToScene`: tay nam da xoay cung item, nen nep
+        toa do tu tinh (local + goc) la do mot dau vo nghia — press phai dung
+        cho that cua tay nam ngay luc bay gio.
+        """
+        r = item.rect()
+        handle = QPointF(item._rotate_handle_pos())
+        centre = QPointF(item.mapToScene(QPointF(r.center())))
+        press = QPointF(item.mapToScene(handle))
+        radius = math.hypot(press.x() - centre.x(), press.y() - centre.y())
+        start = math.degrees(math.atan2(press.y() - centre.y(),
+                                        press.x() - centre.x()))
+        end = math.radians(start + float(delta_deg))
+        move = QPointF(centre.x() + radius * math.cos(end),
+                       centre.y() + radius * math.sin(end))
+        mouse(item, QEvent.MouseButtonPress, handle, press)
+        mouse(item, QEvent.MouseMove, handle, move)
+        mouse(item, QEvent.MouseButtonRelease, handle, move)
+        return float(clip.transform.rotation)
+
+    # (1) mac dinh cua co ────────────────────────────────────────────────
+    fresh = TransformData()
+    if (fresh.flip_h, fresh.flip_v, fresh.uniform_scale) != (False, False, True):
+        raise RuntimeError("mac dinh co sai: %r (mong khong lat, CO khoa ty le)"
+                           % ([fresh.flip_h, fresh.flip_v,
+                               fresh.uniform_scale],))
+
+    # (2) co dung ngoai do thi keyframe, lenh hinh hoc biet dao nguoc co ──
+    if tuple(GEOMETRY_KEYS) != tuple(kg.PROPERTY_ORDER):
+        raise RuntimeError("GEOMETRY_KEYS lech PROPERTY_ORDER: %s vs %s"
+                           % (list(GEOMETRY_KEYS), list(kg.PROPERTY_ORDER)))
+    if set(GEOMETRY_FLAGS) & set(kg.PROPERTY_ORDER):
+        raise RuntimeError("co hinh hoc nam trong do thi keyframe: %s"
+                           % sorted(set(GEOMETRY_FLAGS) & set(kg.PROPERTY_ORDER)))
+    if tuple(SetClipTransformCommand.FIELDS) != tuple(GEOMETRY_KEYS) + tuple(GEOMETRY_FLAGS):
+        raise RuntimeError("SetClipTransformCommand khong bao ca ba co: %s"
+                           % list(SetClipTransformCommand.FIELDS))
+    # Detector phai phan biet duoc "ghi thang model" va "ghi qua lenh".
+    ns = {}
+    exec(compile("class W:\n"
+                 "    def _on_flip_clicked(self):\n"
+                 "        self.clip_model.flip_h = True\n", "<mau>", "exec"), ns)
+    if "SetClipTransformCommand" in ns["W"]._on_flip_clicked.__code__.co_names:
+        raise RuntimeError("detector co_names khong phan biet duoc ghi thang/qua lenh")
+
+    # (3) dai goc ────────────────────────────────────────────────────────
+    out_of_band = [a for a in range(-720, 721, 5)
+                   if not (-180.0 < _normalize_angle(a) <= 180.0)]
+    if out_of_band:
+        raise RuntimeError("_normalize_angle tra goc ngoai (-180,180]: %s"
+                           % out_of_band[:4])
+    if not near(_normalize_angle(270.0), -90.0) or not near(_normalize_angle(-90.0), -90.0):
+        raise RuntimeError("270 khong goi ve -90 (ra %s)"
+                           % [_normalize_angle(270.0), _normalize_angle(-90.0)])
+
+    # (4) toan hoc canh mep ───────────────────────────────────────────────
+    w90, h90 = rotated_box_size(100.0, 40.0, 90.0)
+    if not near(w90, 40.0) or not near(h90, 100.0):
+        raise RuntimeError("xoay 90 khong dao truc: %.1fx%.1f" % (w90, h90))
+    d45 = rotated_box_size(100.0, 40.0, 45.0)
+    want45 = (100.0 + 40.0) / math.sqrt(2.0)
+    if not near(d45[0], want45) or not near(d45[1], want45):
+        raise RuntimeError("hop bao 45 do sai: %.1fx%.1f (mong %.1f)"
+                           % (d45[0], d45[1], want45))
+    if rotated_box_size(100.0, 40.0, -135.0) != rotated_box_size(100.0, 40.0, 135.0):
+        raise RuntimeError("hop bao doi chieu theo dau goc (canh meo lat chen)")
+    if align_center(1920, 960, "start") != -480.0 or align_center(1920, 960, "end") != 480.0:
+        raise RuntimeError("canh mep sai: %s / %s"
+                           % (align_center(1920, 960, "start"),
+                              align_center(1920, 960, "end")))
+    if align_center(1920, 960, "center") != 0.0 or align_center(1920, 960, "rac") != 0.0:
+        raise RuntimeError("canh giua hoac chu la khong tra ve 0.0")
+
+    folder = os.path.join(tempfile.gettempdir(), "clinging_transform")
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder, exist_ok=True)
+    seed = os.path.join(folder, "nen.png")
+    img = QImage(960, 540, QImage.Format.Format_RGB32)
+    img.fill(QColor("#3AA0FF"))
+    if not img.save(seed):
+        raise RuntimeError("khong tao duoc anh fixture trong %s" % folder)
+
+    real_recovery = project_storage.RECOVERY_DIR
+    project_storage.RECOVERY_DIR = os.path.join(folder, "recovery")
+    host = None
+    try:
+        # (1)+(2) vong doi .clinq cua sau so + ba co, va file cu thieu co ──
+        model = TimelineModel()
+        model.project_ratio = "16:9"
+        track = model.add_track(TrackType.IMAGE)
+        clip = model.add_clip(track.track_id, seed, "image", 0.0, 2.0,
+                              name="Bien doi")
+        if clip is None:
+            raise RuntimeError("add_clip tra None (track/media khong khop)")
+        want = {"x": -100.0, "y": 60.0, "scale_x": 0.5, "scale_y": 0.25,
+                "rotation": -135.0, "opacity": 1.0, "flip_h": True,
+                "flip_v": False, "uniform_scale": False}
+        model.update_clip_properties(clip.clip_id, **want)
+
+        path = os.path.join(folder, "gate.clinq")
+        if not project_storage.save_project_to_file(model, path):
+            raise RuntimeError("khong luu duoc gate.clinq")
+        data = project_storage.load_project_from_file(path)
+        if not data:
+            raise RuntimeError("load_project_from_file tra rong")
+        restored_model = TimelineModel()
+        project_storage.restore_model_from_clinq(restored_model, data,
+                                                media_roots=[folder])
+        reopened = [c for t in restored_model.tracks for c in t.clips]
+        if len(reopened) != 1:
+            raise RuntimeError("mo du an ra %d clip, mong 1" % len(reopened))
+        back = reopened[0].transform
+        leeway = [k for k, v in want.items()
+                  if isinstance(v, bool) and bool(getattr(back, k)) != v]
+        leeway += [k for k, v in want.items()
+                   if not isinstance(v, bool)
+                   and not near(getattr(back, k, 0.0), v)]
+        if leeway:
+            raise RuntimeError("luu mo lech o %s" % sorted(set(leeway)))
+        if not isinstance(back.flip_h, bool) or not isinstance(back.uniform_scale, bool):
+            raise RuntimeError("co bi bien thanh so khi doc lai: %r %r"
+                               % (back.flip_h, back.uniform_scale))
+
+        legacy = project_storage.serialize_transform(back)
+        for key in GEOMETRY_FLAGS:
+            legacy.pop(key, None)
+        old_t = TransformData()
+        project_storage.deserialize_transform(legacy, old_t)
+        if (old_t.flip_h, old_t.flip_v, old_t.uniform_scale) != (False, False, True):
+            raise RuntimeError("file cu bi gan co la: %r"
+                               % [old_t.flip_h, old_t.flip_v, old_t.uniform_scale])
+        if not near(old_t.rotation, -135.0):
+            raise RuntimeError("file cu mat goc xoay: %s" % old_t.rotation)
+
+        # (2) vong doi undo cua co ─────────────────────────────────────────
+        stack = UndoStack()
+        snap = transform_snapshot(clip)
+        stack.push(SetClipTransformCommand(model, clip.clip_id, flip_h=False,
+                                           uniform_scale=True))
+        if (clip.transform.flip_h, clip.transform.uniform_scale) != (False, True):
+            raise RuntimeError("lenh co khong ap: %r" % [clip.transform.flip_h,
+                                                         clip.transform.uniform_scale])
+        stack.undo()
+        if transform_snapshot(clip) != snap:
+            raise RuntimeError("Ctrl+Z khong tra lai dung co: %r vs %r"
+                               % (transform_snapshot(clip), snap))
+        if not isinstance(clip.transform.flip_h, bool):
+            raise RuntimeError("undo bien co thanh %s" % type(clip.transform.flip_h).__name__)
+        stack.redo()
+        if clip.transform.flip_h is not False:
+            raise RuntimeError("Ctrl+Y khong dat lai duoc co")
+        while stack.undo_count:
+            stack.undo()
+
+        # (4) mot nguon kich thuoc cho ca ba ben ───────────────────────────
+        apply_auto_fit(clip, 1920, 1080)
+        base = base_display_size(clip, 1920, 1080)
+        if not near(base[0], 1920.0) or not near(base[1], 1080.0):
+            raise RuntimeError("base_display_size khong tra hop da fit: %s"
+                               % (tuple(round(v, 1) for v in base),))
+
+        # (6) tay nam xoay tren Canvas ────────────────────────────────────
+        scene = QGraphicsScene()
+        scene.setSceneRect(-960.0, -540.0, 1920.0, 1080.0)
+        host = QWidget()
+        host.setObjectName("MainWindow")
+        host.timeline_panel = types.SimpleNamespace(
+            model=model, undo_stack=stack,
+            header=types.SimpleNamespace(combo_aspect_ratio=types.SimpleNamespace(
+                currentText=lambda: "16:9 - Ngang chuẩn")))
+        host.preview_panel = types.SimpleNamespace(
+            canvas=types.SimpleNamespace(_clip_items={}))
+
+        def on_commit(clip_model, kind, values, before=None):
+            MainWindow._on_canvas_edit_committed(host, clip_model, kind,
+                                                 values, before)
+
+        model.update_clip_properties(clip.clip_id, rotation=0.0, x=-100.0,
+                                     y=60.0, scale_x=0.5, scale_y=0.5,
+                                     flip_h=False, flip_v=False)
+        item = CanvasClipItem(clip, lambda c: None, on_commit)
+        scene.addItem(item)
+        apply_auto_fit(clip, 1920, 1080)
+        item.sync_from_model()
+
+        handle = item._rotate_handle_pos()
+        rect = item.rect()
+        if not handle.y() < rect.top():
+            raise RuntimeError("tay nam khong o tren mep khung: y=%.1f vs top=%.1f"
+                               % (handle.y(), rect.top()))
+        if handle.x() != rect.center().x():
+            raise RuntimeError("tay nam lech truc ngang khung: %s vs %s"
+                               % (handle.x(), rect.center().x()))
+        br = item.boundingRect()
+        if br.top() > handle.y() - ROTATE_HIT:
+            raise RuntimeError("vung xoay tron ngoai boundingRect: top=%.1f handle=%.1f"
+                               % (br.top(), handle.y()))
+        if not item.contains(QPointF(handle)):
+            raise RuntimeError("Qt khong hit-test duoc tay nam (shape thieu vung xoay)")
+        if item.contains(QPointF(handle.x(), handle.y() - ROTATE_HIT - 40.0)):
+            raise RuntimeError("shape mo rong vo han, click loai bo cung duoc chon")
+
+        before_geo = (clip.transform.x, clip.transform.y, clip.transform.scale_x,
+                      clip.transform.scale_y)
+        got = drag_rotate(item, clip, 45.0)
+        if not near(got, 45.0):
+            raise RuntimeError("keo tay nam +45 do ra goc %.2f trong model" % got)
+        if (clip.transform.x, clip.transform.y) != before_geo[:2]:
+            raise RuntimeError("keo xoay lam dich clip: %r -> %r"
+                               % (before_geo[:2], (clip.transform.x,
+                                                    clip.transform.y)))
+        if not near(clip.transform.scale_x, before_geo[2]) or not near(
+                clip.transform.scale_y, before_geo[3]):
+            raise RuntimeError("keo xoay lam doi ty le clip: %r"
+                               % [clip.transform.scale_x, clip.transform.scale_y])
+        if stack.undo_count != 1:
+            raise RuntimeError("mot cu xoay tao %d buoc undo, mong 1" % stack.undo_count)
+        stack.undo()
+        if abs(clip.transform.rotation) > TOL or stack.undo_count != 0:
+            raise RuntimeError("Ctrl+Z khong tra ve goc 0 (con %.2f)"
+                               % clip.transform.rotation)
+        # boundingRect PHAI tinh co dong: no theo goc xoay thi Qt don vung sai
+        # va de lai mo duoi tay nam (loi da tra gia).
+        model.update_clip_properties(clip.clip_id, rotation=135.0, flip_h=True)
+        item.sync_from_model()
+        if item.boundingRect() != br:
+            raise RuntimeError("boundingRect doi theo trang thai: %s -> %s"
+                               % (br, item.boundingRect()))
+
+        # (3) quay qua 180 van trong dai + item/model cung mot tieng ───────
+        model.update_clip_properties(clip.clip_id, rotation=135.0, flip_h=False)
+        item.sync_from_model()
+        wrapped = drag_rotate(item, clip, 90.0)
+        if not -180.0 < wrapped <= 180.0:
+            raise RuntimeError("keo vuot 180 de lai goc %.2f ngoai dai" % wrapped)
+        if not near(wrapped, -135.0):
+            raise RuntimeError("keo 135+90 phai goi ve -135, ra %.2f" % wrapped)
+        m = item.transform()
+        same = math.degrees(math.atan2(m.m12(), m.m11()))
+        if not near(same, clip.transform.rotation):
+            raise RuntimeError("item va model khong cung goc: %.2f vs %.2f"
+                               % (same, clip.transform.rotation))
+        while stack.undo_count:
+            stack.undo()
+        # Gim model ve MOT trang thai biet truoc truoc khi mo the: cac vong undo
+        # tren day tra lai co uniform_scale=False (cat tir phep luu .clinq), va
+        # panel dung khoa/mo theo dung co do — do lech la do gate, khong phai UI.
+        model.update_clip_properties(clip.clip_id, rotation=0.0, x=0.0, y=0.0,
+                                     scale_x=1.0, scale_y=1.0, flip_h=False,
+                                     flip_v=False, uniform_scale=True)
+        item.sync_from_model()
+
+        # (5) bang thuoc tinh ─────────────────────────────────────────────
+        editor = ClipPropertiesWidget(clip, parent=host)
+        editor.propertyChanged.connect(
+            lambda *a: MainWindow._on_properties_changed_by_user(host, *a))
+        if stack.undo_count != 0:
+            raise RuntimeError("mo the Bien doi da tao %d buoc undo rong"
+                               % stack.undo_count)
+
+        # Do PHAI trong pham vi the Bien doi: ca bang thuoc tinh co them hang
+        # "Canh le" cua chu (Trái/Giữa/Phải cho text_align), nam trong the
+        # "Style chu" — tinh ca editor thi bo dem nhan doi va do oan.
+        card = editor.card_transform
+        new_btns = ([editor.btn_transform_reset, editor.chk_uniform]
+                    + list(editor._flip_buttons.values()))
+        if any(b not in card.findChildren(QPushButton) for b in new_btns):
+            raise RuntimeError("nut Dat lại/Dong nhat/lat nam ngoai the Bien doi")
+        rot_btns = [b for b in card.findChildren(QPushButton)
+                    if b.text() in ("−90°", "+90°")]
+        align_btns = [b for b in card.findChildren(QPushButton)
+                      if b.text() in ("Trái", "Giữa", "Phải", "Trên", "Dưới")]
+        got_labels = sorted([b.text() for b in new_btns]
+                            + [b.text() for b in rot_btns]
+                            + [b.text() for b in align_btns])
+        # "Giữa" ca hai hang nen thang do ghi 12 nut, khong phai 11 nhan khac.
+        want_labels = sorted(list(TRANSFORM_BUTTON_LABELS) + ["Giữa"])
+        if got_labels != want_labels:
+            raise RuntimeError("bo nut Bien doi lech: %s (thang do ghi %d nut)"
+                               % (got_labels, TRANSFORM_BUTTON_COUNT))
+        if len(new_btns) + len(rot_btns) + len(align_btns) != TRANSFORM_BUTTON_COUNT:
+            raise RuntimeError("the co %d nut moi, thang do ghi %d"
+                               % (len(new_btns) + len(rot_btns) + len(align_btns),
+                                  TRANSFORM_BUTTON_COUNT))
+        if len(editor._flip_buttons) != 2 or editor.chk_uniform is None:
+            raise RuntimeError("nut lat/khoa khong duoc ghi nho de doc lai model")
+        if editor.spin_rotation.minimum() != -180.0 or editor.spin_rotation.maximum() != 180.0:
+            raise RuntimeError("spin goc khong o dai (-180,180]: %s..%s"
+                               % (editor.spin_rotation.minimum(),
+                                  editor.spin_rotation.maximum()))
+        if not near(editor.spin_scale_pct.value(), 100.0):
+            raise RuntimeError("% hien thi %.1f trong khi scale_x = 1.0"
+                               % editor.spin_scale_pct.value())
+
+        # Khoa: % ghi ca hai truc, va mot lan nhap = MOT lenh. Nhung phep do ke
+        # tiep KHONG duoc so buoc undo: SetClipTransformCommand.merge trong 0,75 s
+        # gop hai lan bam thanh mot buoc (dung y cua nguoi dung), ma 0,75 s do
+        # lech theo toc do may — nen o day chi do NOI DUNG, con "toan bo ve duoc
+        # trang thai goc" do bang vong undo ben duoi.
+        baseline = transform_snapshot(clip)
+        editor.spin_scale_pct.setValue(150.0)
+        if not (near(clip.transform.scale_x, 1.5) and near(clip.transform.scale_y, 1.5)):
+            raise RuntimeError("nhap 150%% ra %r (hai truc phai bang nhau)"
+                               % [clip.transform.scale_x, clip.transform.scale_y])
+        if stack.undo_count != 1:
+            raise RuntimeError("mot lan nhap % tao %d buoc undo" % stack.undo_count)
+        if editor.spin_scale_x.isEnabled() or not editor.spin_scale_pct.isEnabled():
+            raise RuntimeError("khoa dong ma van cho nhap tung truc")
+        editor.chk_uniform.click()
+        if not editor.spin_scale_x.isEnabled() or editor.spin_scale_pct.isEnabled():
+            raise RuntimeError("mo khoa roi ma spin truc van bi chan")
+        if clip.transform.uniform_scale is not False:
+            raise RuntimeError("mo khoa khong ghi co len model")
+        editor.spin_scale_x.setValue(0.8)
+        if not near(clip.transform.scale_x, 0.8) or near(clip.transform.scale_y, 0.8):
+            raise RuntimeError("khoa mo thi hai truc phai doc lap: %r"
+                               % [clip.transform.scale_x, clip.transform.scale_y])
+        editor.chk_uniform.click()
+        editor.spin_scale_pct.setValue(100.0)
+
+        # Xoay ±90 goi lai duoi 180, khong dung chot o mep dai.
+        editor.spin_rotation.setValue(135.0)
+        if not near(clip.transform.rotation, 135.0):
+            raise RuntimeError("spin goc khong ghi duoc model: %s"
+                               % clip.transform.rotation)
+        editor._flip_buttons["flip_h"].click()
+        if clip.transform.flip_h is not True:
+            raise RuntimeError("nut lat khong ghi co len model")
+        if not click_button(editor, "+90°"):
+            raise RuntimeError("khong tim thay nut +90° trong the Bien doi")
+        # 135 + 90 = 225 phai goi thanh -135; neu de spin tu kep thi no dung
+        # lai o 180 va nut "+90°" khong con quay toi dau.
+        if not near(clip.transform.rotation, -135.0):
+            raise RuntimeError("135 + 90 ra %.1f, mong -135 (goi nguoc hay kep?)"
+                               % clip.transform.rotation)
+        if not click_button(editor, "−90°"):
+            raise RuntimeError("khong tim thay nut -90 trong the Bien doi")
+        if not near(clip.transform.rotation, 135.0):
+            raise RuntimeError("-90 tu -135 ra %.1f, mong 135"
+                               % clip.transform.rotation)
+        while stack.undo_count:
+            stack.undo()
+        if transform_snapshot(clip) != baseline:
+            raise RuntimeError("undo khong ve duoc trang thai goc: %r vs %r"
+                               % (transform_snapshot(clip), baseline))
+
+        # Canh mep tren clip xoay 90: phai dung hop BAO, khong dung rect chua xoay.
+        model.update_clip_properties(clip.clip_id, rotation=90.0, x=0.0, y=0.0,
+                                     scale_x=0.5, scale_y=0.5, flip_h=False,
+                                     uniform_scale=True)
+        editor.update_values(clip)
+        click_button(editor, "Trái")
+        # 1920x1080 da fit, scale 0.5 -> 960x540; xoay 90 -> hop bao rong 540;
+        # canh trai = -960 + 270 = -690. Canh theo 960 (chua xoay) ra -480.
+        if not near(clip.transform.x, -690.0):
+            raise RuntimeError("canh trai khi xoay 90 ra x=%.1f, mong -690.0"
+                               % clip.transform.x)
+        click_button(editor, "Dưới")
+        # Hop bao cao 960 tren canvas 1080 -> canh duoi = 540 - 480 = 60.
+        if not near(clip.transform.y, 60.0):
+            raise RuntimeError("canh duoi khi xoay 90 ra y=%.1f, mong 60.0"
+                               % clip.transform.y)
+        click_button(editor, "Giữa")
+        while stack.undo_count:
+            stack.undo()
+
+        # "Đặt lại": sach moi thu, MOT buoc (stack con trong luc bam), va Ctrl+Z
+        # tra lai dung so cu — ke ca ba co.
+        model.update_clip_properties(clip.clip_id, x=-300.0, y=120.0,
+                                     scale_x=1.7, scale_y=0.4, rotation=-100.0,
+                                     flip_h=True, flip_v=True, uniform_scale=False)
+        editor.update_values(clip)
+        saved = transform_snapshot(clip)
+        if stack.undo_count:
+            raise RuntimeError("stack khong trong truoc khi do Dat lai: %d"
+                               % stack.undo_count)
+        editor.btn_transform_reset.click()
+        clean = {"x": 0.0, "y": 0.0, "scale_x": 1.0, "scale_y": 1.0,
+                 "rotation": 0.0, "flip_h": False, "flip_v": False,
+                 "uniform_scale": True}
+        bad = []
+        for key, value in clean.items():
+            got = getattr(clip.transform, key)
+            if isinstance(value, bool):
+                if bool(got) != value:
+                    bad.append(key)
+            elif not near(got, value):
+                bad.append(key)
+        if bad:
+            raise RuntimeError("Dat lai con sot %s" % sorted(bad))
+        if stack.undo_count != 1:
+            raise RuntimeError("Dat lai tao %d buoc, mong 1" % stack.undo_count)
+        if not near(editor.spin_scale_pct.value(), 100.0) or editor.spin_rotation.value() != 0.0:
+            raise RuntimeError("spin khong doc lai sau khi Dat lai: %s / %s"
+                               % (editor.spin_scale_pct.value(),
+                                  editor.spin_rotation.value()))
+        editor.btn_transform_reset.click()
+        if stack.undo_count != 1:
+            raise RuntimeError("Dat lai tren clip da sach them buoc rong (%d)"
+                               % stack.undo_count)
+        stack.undo()
+        if transform_snapshot(clip) != saved:
+            raise RuntimeError("Ctrl+Z sau Dat lai khong tra lai du so cu")
+        editor.update_values(clip)
+        if not near(editor.spin_scale_pct.value(), 170.0):
+            raise RuntimeError("the khong doc lai %% sau undo (%.1f)"
+                               % editor.spin_scale_pct.value())
+        while stack.undo_count:
+            stack.undo()
+
+        # File cu (goc 0..360) phai goi khi doc, khong bi spin kep tham lang.
+        model.update_clip_properties(clip.clip_id, rotation=270.0)
+        editor.update_values(clip)
+        if not near(editor.spin_rotation.value(), -90.0):
+            raise RuntimeError("goc cu 270 doc thanh %.1f (kep 180 la mat 90 do)"
+                               % editor.spin_rotation.value())
+        model.update_clip_properties(clip.clip_id, rotation=0.0)
+
+        # Clip chu khong co khung hinh: nut lat/canh/%/Dat lai khong duoc xuat hien.
+        text_track = model.add_track(TrackType.TEXT)
+        text_clip = model.add_clip(text_track.track_id, "", "text", 0.0, 2.0,
+                                   name="Chu")
+        text_editor = ClipPropertiesWidget(text_clip, parent=host)
+        for attr in ("chk_uniform", "spin_scale_pct", "btn_transform_reset"):
+            if hasattr(text_editor, attr):
+                raise RuntimeError("clip chu co %s: khong co khung hinh de lat/canh"
+                                   % attr)
+        if getattr(text_editor, "_flip_buttons", {}):
+            raise RuntimeError("clip chu co nut lat")
+        # Chi quet trong the Bien doi: hang "Canh le" cua chu (Trái/Giữa/Phải)
+        # song ở the Style chu va la dieu khung HOP LE o do.
+        text_labels = [b.text() for b in text_editor.card_transform
+                       .findChildren(QPushButton)]
+        stray = [name for name in ("Đặt lại", "Đồng nhất", "Trái", "Ngang")
+                 if name in text_labels]
+        if stray:
+            raise RuntimeError("clip chu con nut %s" % ", ".join(stray))
+
+        # Seam dung chung preview/export + mot nguon kich thuoc (co_names).
+        seams = (
+            ("FrameComposer._draw_media", FrameComposer._draw_media,
+             ("flip_h", "flip_v")),
+            ("FrameComposer._base_size", FrameComposer._base_size,
+             ("base_display_size",)),
+            ("CanvasClipItem.paint", CanvasClipItem.paint,
+             ("flip_h", "flip_v")),
+            ("CanvasClipItem.mouseMoveEvent", CanvasClipItem.mouseMoveEvent,
+             ("uniform_scale", "_apply_rotation")),
+            ("CanvasClipItem.mousePressEvent", CanvasClipItem.mousePressEvent,
+             ("_hit_test_rotate",)),
+            ("CanvasClipItem.boundingRect", CanvasClipItem.boundingRect,
+             ("ROTATE_ROOM",)),
+            ("ClipPropertiesWidget._on_align_clicked",
+             ClipPropertiesWidget._on_align_clicked,
+             ("base_display_size", "rotated_box_size", "align_center")),
+            ("ClipPropertiesWidget._on_transform_reset",
+             ClipPropertiesWidget._on_transform_reset,
+             ("SetClipTransformCommand", "transform_snapshot")),
+            ("ClipPropertiesWidget._push_transform_flags",
+             ClipPropertiesWidget._push_transform_flags,
+             ("SetClipTransformCommand",)),
+        )
+        for label, fn, helpers in seams:
+            code = fn.__code__
+            # Lat/xoay doc qua getattr(transform, "flip_h") nen ten nam trong
+            # hang so (co_consts), khong phai co_names — tinh ca hai, vet nao
+            # bi xoa khoi ca hai la do.
+            names = set(code.co_names) | {c for c in code.co_consts
+                                          if isinstance(c, str)}
+            miss = [h for h in helpers if h not in names]
+            if miss:
+                raise RuntimeError("%s thieu %s (hai ben khong con dung chung duong)"
+                                   % (label, ", ".join(miss)))
+        # Do luong tren la do bang TEN: thu vet ten xem no co do that khong.
+        fake = compile("def f():\n    return align_center(1, 2)\n", "<cf>", "exec")
+        canary = {}
+        exec(fake, canary)
+        if "align_center" not in set(canary["f"].__code__.co_names):
+            raise RuntimeError(" detector co_names khong bat duoc ten ham goi "
+                               "(seam do trong bang tren la gia)")
+    finally:
+        project_storage.RECOVERY_DIR = real_recovery
+        if host is not None:
+            host.deleteLater()
+        shutil.rmtree(folder, ignore_errors=True)
+    return ("3 co trong model + .clinq + undo, goc trong (-180,180], "
+            "12 nut Bien doi, xoay/lat/canh dat do tren widget that")
 
 
 def _trim_card_ok():
@@ -2700,21 +3592,27 @@ def run_selftest(argv=None):
         ("13 the mau/loc do duoc pixel that", _effect_liveness_ok),
         ("8 aura to sang va chay theo dong ho clip", _aura_ok),
         ("lop phu recap: vien/REC/kinh mo + luu vao file", _recap_overlay_ok),
+        ("bo cuc + phong cach cap du an (12 kieu, 10 chat lieu, luu vao file)",
+         _project_layout_ok),
         ("8 kieu karaoke: quet theo tu + luu vao file", _karaoke_ok),
         ("mo du an tu file .clinq", _project_launch_ok),
         ("luu du an: ghi hong khong pha ban cu", _save_atomic_ok),
         ("media lac cho: preview va export cung duong dan", _media_locator_ok),
         ("undo cho chu + hinh hoc clip", _undo_text_transform_ok),
+        ("bien doi: xoay tu do + lat + canh le + khoa ty le", _transform_ui_ok),
         ("clipboard clip Ctrl+C/V", _clipboard_copy_paste_ok),
         ("style chu: vien/bong/hop nen/can le", _text_styling_ok),
         ("chinh mau: hue/lift-gamma-gain/LUT .cube", _color_grading_ok),
         ("duc nen chroma key: goc hue + alpha qua chuoi loc", _chroma_key_ok),
         ("doc MRU khong ghi du lieu nguoi dung", _recent_readonly_ok),
         ("giai ma tuan tu + cache dia", _decode_cache_ok),
+        ("thu vien tai nguyen: 1 luot luoi + the an khong giai ma",
+         _library_panel_ok),
         ("xem truoc = xuat: moc thoi gian cuc bo dung mot ham", _local_time_ok),
         ("trich xuat anh thumbnail", _thumbnail_export_ok),
         ("cat file thanh N doan ra dia", _media_split_ok),
         ("tach tieng video thanh clip audio rieng", _detach_audio_ok),
+        ("kho hieu ung am thanh sfx: 14 tieng chen xuong timeline", _sfx_pack_ok),
         ("the Cat in/out trong bang thuoc tinh", _trim_card_ok),
         ("vung xuat in/out + preset chat luong", _export_range_ok),
         ("nen toi uu tep video: moov + codec-hop-container",
@@ -3785,6 +4683,18 @@ def run_audio_report(argv=None):
         "export_tokens": tokens,
         "graph": graph[:200],
     }
+    # Chon clip audio da keo QMediaPlayer cua MainWindow den file wav fixture va
+    # cho no chay: window dong bang `win.close()` van de player song, va teardown
+    # cua no abort 0xC0000409 (do 23/10/2026: rc=3221226505 tren CA tree nguon lan
+    # worktree HEAD, sau khi payload da ghi xong) — nen rc cua --audio-report
+    # vu kho tin. Phai dung + tha source roi moi dong window.
+    from PySide6.QtCore import QUrl
+    player = getattr(win, "_audio_player", None)
+    if player is not None:
+        player.stop()
+        player.setSource(QUrl())
+        for _ in range(6):
+            app.processEvents()
     win.close()
     with open(out, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -4615,6 +5525,241 @@ def _recap_overlay_ok():
     return ("vien %d px, tam ngam %d px, master off sach %d/%d, file giu nguyen %d khoa"
             % (border, reticle, int((np.abs(on - off).max(axis=2) > 6).sum()),
                W * H, len(reloaded.recap_overlay)))
+
+
+def _project_layout_ok():
+    """Một dòng --selftest: Bố cục & Phong cách cấp dự án, đo BẰNG PIXEL trên khung 1920x1080.
+
+    Cùng khuân với `_recap_overlay_ok` (cấu hình CẢ DỰ ÁN: model + file + hai
+    đường vẽ) nhưng phải chắn thêm ba mắt xích recap không có, vì bo cuc đổi
+    HINH DANG va doi theo DONG HO:
+
+      * clamp cua `normalize` — file `.clinq` cua 1.0.5 tro ve truoc khong co
+        khoa `project_layout`, nen thieu mot khoa la ve trang tinh;
+      * `slot_gap`/so o cua tung kieu bo cuc — do tren chinh `slots()`, khong
+        tin bang anh;
+      * `play_sequentially` va `manga_rotate_interval` la ham cua t, do bang so
+        tren `sequential_index`/`rotated_slot_source`.
+
+    Do o 1920x1080 vi FrameComposer ve lop phu TRUOC khi co ve kich thuoc xuat
+    (ly do da chang o dong recap: net 2px o 720px bi ha xuong 1px khi do 640x360).
+
+    `import ui.canvas_layout_dialog` o day la MAT NUI THU HAI cua quy tac hai
+    cho: module UI chi duoc import trong than
+    `MainWindow._open_canvas_layout` nen tree nguon luon xanh, con bundle thi
+    PyInstaller chi git no neu `ClingingQt.spec` co no trong hiddenimports.
+    """
+    import numpy as np
+    import tempfile
+    from PySide6.QtGui import QColor, QImage
+    from core import canvas_layout, project_storage
+    from core.frame_composer import FrameComposer
+    from core.timeline_model import TimelineModel
+
+    import ui.canvas_layout_dialog  # noqa: F401  (cua dong goi, xem docstring)
+
+    if canvas_layout.layout_active({}):
+        raise RuntimeError("mac dinh phai TAT nhung layout_active({}) = True")
+    defaults = canvas_layout.normalize({})
+    if defaults["enabled"] or defaults["layout"] != "none":
+        raise RuntimeError("mac dinh bi doi: %s" % defaults)
+    clamped = canvas_layout.normalize({
+        "overlay_opacity": 5.0, "slot_gap": 9.0, "texture_scale": 0.1,
+        "layout": "khong_co", "texture": "khong_co", "background_mode": "x",
+        "header_font": "x", "header_size": 2, "slot_seconds": 0.0})
+    got = tuple(clamped[key] for key in (
+        "overlay_opacity", "slot_gap", "texture_scale", "layout", "texture",
+        "background_mode", "header_font", "header_size", "slot_seconds"))
+    if got != (1.0, 0.2, 0.25, "none", "meme", "black", "sans", 6.0, 0.1):
+        raise RuntimeError("normalize khong clamp: %s" % (got,))
+
+    W, H = 1920, 1080
+
+    def boxes(**patch):
+        settings = dict(canvas_layout.LAYOUT_DEFAULTS)
+        settings.update(patch)
+        return canvas_layout.slots(W, H, settings)
+
+    if len(boxes(layout="none")) != 1:
+        raise RuntimeError("bo cuc 'none' phai mot o")
+    if tuple(round(v) for v in boxes(layout="none")[0]) != (0, 0, W, H):
+        raise RuntimeError("mot o khong lap day khung: %s" % boxes(layout="none")[0])
+    counts = {"split": 2, "split-3": 3, "split-4": 4, "split-6": 6}
+    for key, want in counts.items():
+        if len(boxes(layout=key)) != want:
+            raise RuntimeError("%s phai %d o, do duoc %d"
+                               % (key, want, len(boxes(layout=key))))
+    outside = []
+    for key in canvas_layout.LAYOUT_ORDER:
+        for box in boxes(layout=key):
+            if box[0] < -0.5 or box[1] < -0.5 or box[0] + box[2] > W + 0.5 \
+                    or box[1] + box[3] > H + 0.5:
+                outside.append("%s %s" % (key, tuple(round(v, 1) for v in box)))
+    if outside:
+        raise RuntimeError("o tro ra ngoai khung: %s" % outside[:4])
+    # `slot_gap` phai THU HO o dung len (canh ngan lam don vi), khong doi so o.
+    tight, loose = boxes(layout="split", slot_gap=0.2)[0], boxes(layout="split")[0]
+    if not (tight[0] > loose[0] + 1.0 and tight[2] < loose[2] - 1.0):
+        raise RuntimeError("slot_gap khong thu o: %.1f/%.1f vs %.1f/%.1f"
+                          % (tight[0], tight[2], loose[0], loose[2]))
+
+    folder = os.path.join(tempfile.gettempdir(), "clinging_canvas_layout")
+    os.makedirs(folder, exist_ok=True)
+
+    def qimage_rgb(img):
+        img = img.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+        buf = img.constBits()
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else bytes(buf)
+        row = img.bytesPerLine() // 4
+        px = np.frombuffer(raw, np.uint8).reshape(
+            (img.height(), row, 4))[:, :img.width(), :3]
+        # ARGB32 trên máy little-endian nằm trong bộ nhớ theo B,G,R,A.
+        return px[:, :, ::-1].astype(np.int16)
+
+    def tex(**patch):
+        settings = dict(canvas_layout.LAYOUT_DEFAULTS, enabled=True,
+                        background_mode="texture")
+        settings.update(patch)
+        return qimage_rgb(canvas_layout.backdrop(settings, 320, 240))
+
+    def frame(**patch):
+        model = TimelineModel()
+        model.project_ratio = "16:9"
+        settings = dict(canvas_layout.LAYOUT_DEFAULTS)
+        settings.update(patch)
+        model.set_project_layout(settings, emit=False)
+        composer = FrameComposer(model, W, H)
+        try:
+            return qimage_rgb(composer.render_frame(0.5))
+        finally:
+            composer.close()
+
+    def mask(px, hexcolor, tol=60):
+        c = QColor(hexcolor)
+        d = np.abs(px - np.array([c.red(), c.green(), c.blue()], np.int16))
+        return d.max(axis=2) <= tol
+
+    def count(px, hexcolor, tol=60):
+        return int(mask(px, hexcolor, tol).sum())
+
+    plain = frame(enabled=False)
+    dark = frame(enabled=True, background_mode="black")
+    # Nen "black" la NGUYEN hanh vi 1.0.5: mo bo cuc len ma chi chon den thi
+    # khung hinh phai y het nhu cu, neu khong thi tat o day la mot lop ve an.
+    if not np.array_equal(plain, dark):
+        raise RuntimeError("enabled + nen den van doi %d pixel"
+                           % int((np.abs(plain - dark).max(axis=2) > 6).sum()))
+    blue = frame(enabled=True, background_mode="color", background_color="#3673FE")
+    n_blue = count(blue, "#3673FE")
+    if n_blue < 0.9 * W * H:
+        raise RuntimeError("nen mau chi %d/%d px" % (n_blue, W * H))
+    grid = frame(enabled=True, background_mode="color", background_color="#3673FE",
+                 layout="split-4", frame_color="#00FFFF")
+    n_grid = count(grid, "#00FFFF")
+    # 4 o = 3 duong ke, moi duong ~2*1.5=3px dai 1080/1920 px ~ 9000 px; nguong
+    # 3000 de mot duong bi mat van do, con 0 la mat ca nui ve.
+    if n_grid < 3000:
+        raise RuntimeError("gach ngan bo cuc khong hien (%d px cyan)" % n_grid)
+    texture = frame(enabled=True, background_mode="texture", texture="blueprint")
+    if np.array_equal(texture, plain):
+        raise RuntimeError("bat chat lieu ma khung khong doi pixel")
+    # Mot chat lieu phai la NET, khong phai lop son: dem mau phan biet trong
+    # khung THAT. blueprint do 23/10 = 2 mau (nen cham + gach luoi sang), nen
+    # nguong la 2 chu khong phai 4 — do la so do duoc, khong so thich.
+    n_colors = len(np.unique(texture.reshape(-1, 3), axis=0))
+    if n_colors < 2:
+        raise RuntimeError("chat lieu ve thanh mot mau dac")
+    # 10 chat lieu phai la 10 buoc ve khac nhau (khong phai mot anh dung chung),
+    # va `texture_scale` phai doi duoc kich thuoc net. Do o 320x240 qua dung
+    # `backdrop()` ma paint_background goi, khong pha them 10 khung 1080p.
+    solids, means = [], []
+    for name in canvas_layout.TEXTURE_ORDER:
+        arr = tex(texture=name)
+        if len(np.unique(arr.reshape(-1, 3), axis=0)) < 2:
+            solids.append(name)
+        means.append(round(float(arr.mean()), 1))
+    if solids:
+        raise RuntimeError("chat lieu in lang: %s" % solids)
+    if len(set(means)) < 5:
+        raise RuntimeError("%d chat lieu chi co %d muc sang khac nhau: %s"
+                          % (len(means), len(set(means)), means))
+    if np.array_equal(tex(texture="lined-paper", texture_scale=0.5),
+                      tex(texture="lined-paper", texture_scale=2.0)):
+        raise RuntimeError("texture_scale khong doi net (0,5 == 2,0)")
+    veil = frame(enabled=True, background_mode="color", background_color="#FFFFFF",
+                 overlay_opacity=0.5)
+    mean_lum = float(veil.mean())
+    if abs(mean_lum - 127.5) > 12.0:
+        raise RuntimeError("overlay_opacity 0,5 khong toi xuong giua (%.1f)" % mean_lum)
+    ink = frame(enabled=True, layout="none", text_color="#FF0000",
+                header_font="sans", header_bold=True, header_size=64,
+                header_text="TIEU DE THU")
+    n_ink = count(ink, "#FF0000", 90)
+    if n_ink < 400:
+        raise RuntimeError("chu dau khong ve (%d px muc)" % n_ink)
+    hit = mask(ink, "#FF0000", 90)
+    ys, _xs = np.nonzero(hit)
+    hrect = canvas_layout.header_rect(W, H, {"layout": "none",
+                                             "header_size": 64})
+    if ys.min() < hrect[1] - 2 or ys.max() > hrect[1] + hrect[3] + 2:
+        raise RuntimeError("chu dau roi ngoai vung cua no (%d..%d, voi %.0f+%.0f)"
+                          % (ys.min(), ys.max(), hrect[1], hrect[3]))
+    if not np.array_equal(frame(enabled=True, layout="split"),
+                          frame(enabled=True, layout="split")):
+        raise RuntimeError("cung bo cuc ra hai khung khac nhau (khong tat)")
+
+    seq = dict(canvas_layout.LAYOUT_DEFAULTS, play_sequentially=True,
+               slot_seconds=2.0)
+    steps = [canvas_layout.sequential_index(seq, t, 3)
+             for t in (0.0, 1.9, 2.0, 5.9, 6.0, 7.5)]
+    if steps != [0, 0, 1, 2, 0, 0]:
+        raise RuntimeError("phat tuan tu sai vong o: %s" % steps)
+    if canvas_layout.sequential_index(dict(seq, play_sequentially=False), 1.0, 3) != -1:
+        raise RuntimeError("tat tuan tu ma van tinh o dang phat")
+    rot = dict(canvas_layout.LAYOUT_DEFAULTS, manga_rotate_interval=5.0)
+    if canvas_layout.rotated_slot_source(rot, 0.0, 3, 1, 4) != 1:
+        raise RuntimeError("trao o tai t=0 khong giu dung o cua no")
+    if canvas_layout.rotated_slot_source(rot, 5.0, 3, 1, 4) != (1 + 3) % 4:
+        raise RuntimeError("trao o khong nhay theo interval")
+    if canvas_layout.rotated_slot_source(dict(rot, manga_rotate_interval=0.0),
+                                         9.0, 3, 2, 4) != 2:
+        raise RuntimeError("interval 0 van trao noi dung")
+
+    path = os.path.join(folder, "Kiem bo cuc.clinq")
+    settings = dict(canvas_layout.LAYOUT_DEFAULTS, enabled=True,
+                    layout="manga-grid", background_mode="texture",
+                    texture="parchment", header_text="Tuan 42", slot_gap=0.05,
+                    play_sequentially=True, manga_rotate_interval=5.0)
+    model = TimelineModel()
+    model.project_ratio = "16:9"
+    model.set_project_layout(settings, emit=False)
+    if not project_storage.save_project_to_file(model, path):
+        raise RuntimeError("save_project_to_file tra False")
+    data = project_storage.load_project_from_file(path)
+    if not data:
+        raise RuntimeError("load_project_from_file tra rong")
+    if "project_layout" not in data.get("timeline", {}):
+        raise RuntimeError("file .clinq khong ghi khoa project_layout")
+    reloaded = TimelineModel()
+    project_storage.restore_model_from_clinq(reloaded, data)
+    if reloaded.project_layout != canvas_layout.normalize(settings):
+        raise RuntimeError("bo cuc khong tron ven qua file: %s"
+                           % (reloaded.project_layout,))
+    # File cua 1.0.5 tro ve truoc: KHONG co khoa nao ca. Duong nay phai tra ve
+    # mac dinh thay vi ve trang tinh hay crash.
+    stale = dict(data)
+    stale["timeline"] = {k: v for k, v in data["timeline"].items()
+                         if k != "project_layout"}
+    legacy = TimelineModel()
+    project_storage.restore_model_from_clinq(legacy, stale)
+    if legacy.project_layout != canvas_layout.LAYOUT_DEFAULTS:
+        raise RuntimeError("file cu bi doc thanh bo cuc bat: %s"
+                           % (legacy.project_layout,))
+    return ("%d kieu bo cuc, %d chat lieu | nen mau %d px, gach %d px, chu %d px"
+            " | tuan tu %s | file tron ven %d khoa, file cu tro ve %d mac dinh"
+            % (len(canvas_layout.LAYOUT_ORDER) - 1, len(canvas_layout.TEXTURES),
+               n_blue, n_grid, n_ink, steps, len(reloaded.project_layout),
+               len(legacy.project_layout)))
 
 
 # Khổ chữ đo "từ ĐANG HÁT có còn đọc được không": 40 là cỡ trong bản xuất,
@@ -5935,6 +7080,65 @@ def _project_fixture():
     return path, data
 
 
+def _cache_guard_start(tag):
+    """Don duong ghi cache anh cua MOT probe ra khoi %APPDATA% cua nguoi dung.
+
+    Probe nay mo MainWindow that nen keo theo `ResourceCard` /
+    `ClipTimelineItem._load_thumbnail` -> `media_cache.write_image`, tuc la moi
+    lan chay them anh nho cua FIXTURE vao cache that. Do 23/10/2026: mot lan
+    `--style-report` them 7 muc, mot lan `--project-report` them 6 muc duoi
+    `%APPDATA%\Roaming\Clinging\cache\image`, trong khi `DOI: 0` (khong pha gi)
+    nen selftest khong bao gio phat hien. Van di qua DUNG duong ghi that
+    (temp + `os.replace` + budget) chi khac goc.
+    """
+    import shutil
+    import tempfile
+    from core import media_cache
+    real_root = os.path.join(str(os.environ.get("APPDATA", "")), "Clinging",
+                             "cache")
+
+    def listing(root):
+        found = set()
+        if not os.path.isdir(root):
+            return found
+        for sub, _dirs, files in os.walk(root):
+            for name in files:
+                found.add(os.path.relpath(os.path.join(sub, name), root))
+        return found
+
+    folder = os.path.join(tempfile.gettempdir(), "clinging_%s_cache" % tag)
+    if os.path.isdir(folder):
+        shutil.rmtree(folder, ignore_errors=True)
+    state = {"real_cache_root": media_cache.cache_root, "folder": folder,
+             "before": listing(real_root), "real_root": real_root,
+             "shutil": shutil}
+    media_cache.cache_root = lambda: folder
+    return state
+
+
+def _cache_guard_finish(state):
+    """Khoi phuc `cache_root`, tra ve danh sach muc cache THAT bi them/mat.
+
+    Rong = probe khong cham vao cache cua nguoi dung. Thu muc tam duoc xoa o
+    day nen lan chay ke tiep khong de lai rac (%TEMP% la noi duy nhat no ghi).
+    """
+    from core import media_cache
+    media_cache.cache_root = state["real_cache_root"]
+    changed = sorted(state["before"] ^ _cache_listing(state["real_root"]))
+    state["shutil"].rmtree(state["folder"], ignore_errors=True)
+    return changed
+
+
+def _cache_listing(root):
+    found = set()
+    if not os.path.isdir(root):
+        return found
+    for sub, _dirs, files in os.walk(root):
+        for name in files:
+            found.add(os.path.relpath(os.path.join(sub, name), root))
+    return found
+
+
 def run_project_report(argv=None):
     """Mở project từ dòng lệnh — đo từ chính bản exe đã cài.
 
@@ -5967,6 +7171,7 @@ def run_project_report(argv=None):
     out = out or os.path.join(os.environ.get("TEMP", os.getcwd()),
                               "clinging_project.json")
     shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+    cache_state = _cache_guard_start("project_report")
 
     from PySide6.QtCore import QRect
     from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
@@ -6100,6 +7305,8 @@ def run_project_report(argv=None):
     }
     controller.close()
     pump(8)
+    cache_extra = _cache_guard_finish(cache_state)
+    payload["user_cache_extra"] = cache_extra
     with open(out, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
 
@@ -6116,7 +7323,7 @@ def run_project_report(argv=None):
           and payload["ten_du_an"] == data["project_meta"]["project_name"]
           and payload["ti_le"].startswith(data["project_meta"]["aspect_ratio"])
           and rejected is False and still_editor
-          and colors > 40 and os.path.isfile(shot))
+          and colors > 40 and os.path.isfile(shot) and not cache_extra)
     return 0 if ok else 1
 
 
@@ -6163,6 +7370,14 @@ def run_startup_report(argv=None):
     psutil_at_window = "psutil" in sys.modules
     nen_at_window = ("ui.compress_dialog" in sys.modules
                      or "core.media_compress" in sys.modules)
+    # Ten module phai ghi DUA CAI TEN THAT: `boot_khong_keo_nen` xanh khong ham
+    # y "khong hop thoai nao bi keo vao boot" (bẫy 21/10 ở ngay duoi). Pack SFX
+    # nam sau hai ten nay, va `ui.sfx_dialog` keo theo QAudioOutput.
+    sfx_at_window = ("ui.sfx_dialog" in sys.modules or "core.sfx" in sys.modules)
+    #Hop thoai "Boc cuc & Phong cach" chi can luc bam nut: no keo theo QColorDialog
+    # va QScrollArea, con `core.canvas_layout` thi lenh ve cua canvas nam trong
+    # duong boot cua cua so (core.timeline_model) nen do rieng ten module UI.
+    bocuc_at_window = "ui.canvas_layout_dialog" in sys.modules
     mark("cua so lo ra")
     settle_until = time.time() + 1.5
     while time.time() < settle_until:
@@ -6257,6 +7472,15 @@ def run_startup_report(argv=None):
         # khi boot them 0,428 s va RAM luc cua so them 1 MiB. Do la 40% cua
         # ngan sach 1,083 s ma ban 1.0.3 dang chay tren may nay.
         "boot_khong_keo_nen": not nen_at_window,
+        # Pack SFX (14 tep mp3 + manifest, 181.167 B) chi duoc doc khi nguoi dung
+        # mo hop thoai: `MainWindow._open_sfx` import trong than ham, va
+        # `ui/sfx_dialog.py` keo theo QAudioOutput. Neup mot dong `import
+        # ui.sfx_dialog` len dau module duong boot thi dong nay do thanh do.
+        "boot_khong_keo_sfx": not sfx_at_window,
+        # Nhu `boot_khong_keo_nen`: `MainWindow._open_canvas_layout` import trong
+        # than ham nen tree nguon luon xanh; do la ly do `ClingingQt.spec` phai co
+        # `ui.canvas_layout_dialog` trong hiddenimports cung luc.
+        "boot_khong_keo_bocuc": not bocuc_at_window,
         "bia_duoc_ve": covers == cards,
         "anh_chung_minh": os.path.isfile(shot),
     }
@@ -6301,6 +7525,7 @@ def run_style_report(argv=None):
     argv = list(argv if argv is not None else sys.argv)
     out = _report_path(argv).replace("clinging_selftest", "clinging_style")
     shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+    cache_state = _cache_guard_start("style_report")
 
     import numpy as np
     from PySide6.QtCore import QPointF, QRect
@@ -6569,6 +7794,7 @@ def run_style_report(argv=None):
         raise RuntimeError("anh chung minh doc lai bi loi (%s)" % shot)
     colors = len({tuple(row) for row in arr(saved).reshape(-1, 3).tolist()[::61]})
 
+    cache_extra = _cache_guard_finish(cache_state)
     checks = {
         "aura_du_8_the": len(cards) == 8,
         "aura_bam_duoc": len(applied) == 8,
@@ -6585,9 +7811,14 @@ def run_style_report(argv=None):
         "karaoke_doi_khung": karaoke_ok,
         "flame_khong_khoi_dac": not leg_bad,
         "anh_chung_minh": os.path.getsize(shot) >= 20000,
+        # Do bang danh sach duong dan, khong bang boolean: mot lan chay truoc khi
+        # co redirect de lai 7 muc anh nho FIXTURE duoi cache cua nguoi dung, va
+        # `DOI: 0` khong he noi duoc dieu do (them muc moi khong phai doi muc cu).
+        "khong_ghi_cache_nguoi_dung": not cache_extra,
     }
     payload = {
         "exe": os.path.abspath(sys.argv[0]),
+        "user_cache_extra": cache_extra,
         "frozen": bool(getattr(sys, "frozen", False)),
         "the_aura": names,
         "aura_applied": applied,
@@ -6683,6 +7914,2066 @@ def run_import_report(argv=None):
         print("counterfactual fail: tkinter van import duoc trong bundle")
         return 1
     return 1 if failures else 0
+
+
+LIBRARY_FIXTURE = {"video": 6, "image": 4, "tiny": 56, "img_wh": [1600, 1200],
+                   "batch": 20}
+
+
+def _library_report_fixture(media_dir):
+    """Video va anh THAT tren dia, sinh bang cv2 — khong lay media cua nguoi dung.
+
+    N = 66 media (6 video 640x360 + 4 anh 1600x1200 + 56 clip nho 320x240): du an
+    that dang mo co 18 the (`cards_real` trong scratch/library_perf.json), 66 la
+    diem cao nhat cua thang do P9 (18/30/66 the). Do o dung diem do vi nguong
+    "ms/the" can so duoc voi con so cu: 17,43 ms/the luc chua toi uu
+    (scratch/_lib_report_head.json, cung batch 65 the nay).
+    """
+    import cv2
+    import numpy as np
+    import shutil
+
+    shutil.rmtree(media_dir, ignore_errors=True)
+    os.makedirs(media_dir, exist_ok=True)
+    records = []
+
+    def add(path, kind):
+        if not os.path.isfile(path) or os.path.getsize(path) < 1500:
+            raise RuntimeError("fixture hong: %r" % path)
+        records.append({"path": path, "type": kind,
+                        "name": os.path.basename(path)})
+
+    for i in range(LIBRARY_FIXTURE["video"]):
+        path = os.path.join(media_dir, "lib_clip_%02d.mp4" % i)
+        writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 24,
+                                 (640, 360))
+        for frame in range(12):
+            image = np.zeros((360, 640, 3), np.uint8)
+            image[:, :] = ((i * 31 + frame * 5) % 256, (i * 53) % 256,
+                           (frame * 17) % 256)
+            cv2.rectangle(image, (60, 40), (580, 320),
+                          (255, (i * 40) % 256, 90), -1)
+            writer.write(image)
+        writer.release()
+        add(path, "video")
+    for i in range(LIBRARY_FIXTURE["image"]):
+        ext = "jpg" if i % 2 else "png"
+        path = os.path.join(media_dir, "lib_photo_%02d.%s" % (i, ext))
+        image = np.zeros((LIBRARY_FIXTURE["img_wh"][1],
+                          LIBRARY_FIXTURE["img_wh"][0], 3), np.uint8)
+        ramp = np.linspace(0, 255, LIBRARY_FIXTURE["img_wh"][0], dtype=np.uint8)
+        image[:, :, 0] = ramp
+        image[:, :, 1] = (255 - ramp)
+        image[:, :, 2] = (i * 60) % 256
+        cv2.imwrite(path, image)
+        add(path, "image")
+    for i in range(LIBRARY_FIXTURE["tiny"]):
+        path = os.path.join(media_dir, "lib_tiny_%02d.mp4" % i)
+        writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 10,
+                                 (320, 240))
+        for frame in range(6):
+            image = np.zeros((240, 320, 3), np.uint8)
+            image[:, :] = ((i * 29) % 256, (frame * 31) % 256, 120)
+            writer.write(image)
+        writer.release()
+        add(path, "video")
+    return records
+
+
+# Nguong do tren may nay (i7-2720QM, 12 GB, media tren HDD 5400 rpm), so cu lay
+# tu scratch/library_perf.json lan do TRUOC khi toi uu.
+LIBRARY_REPORT_CHECKS = (
+    # Do luoi PHAI co the moi so duoc — neu khong thi moi cua sau xanh vi
+    # dau vao rong, tuc la mot cong gia (hop dong buoc 2).
+    ("luoi da nap du the",
+     lambda p: p["cards_loaded"] == p["cards_requested"]),
+    # O(n^2): 65 lan them the tung ke 65 lan xay lai luoi = 944,3 ms trong tong
+    # 1132,8 ms block cua dot nap (scratch/_lib_report_head.json).
+    ("luoi xay dung 1 lan moi luot",
+     lambda p: p["filter_passes_restore"] == 1),
+    ("an nhat moi the duoi 8 ms",
+     lambda p: 0 < p["block_ms_per_card"] <= 8.0),
+    # The bi bo loc an thi khong ai nhin khung hinh cua no (P7: 6/6 luot giai
+    # ma chay cho 0 the hien).
+    ("the bi an khong giai ma",
+     lambda p: p["hidden_image_decodes"] == 0
+     and p["hidden_image_delivered"] == 0),
+    # Nhap nhiet cua dong tren: bo de quyien di thi dong "the bi an" cung xanh.
+    # Doi nay buoc luot giai ma van phai den khi the duoc hien ra, va CA HAI
+    # chieu phai khop: anh hien thi phai ve du, video an (luot 1) cung phai ve du.
+    ("the hien van giao anh du",
+     lambda p: p["images_delivered"] == p["images_expected"] > 0
+     and p["videos_delivered_p1"] == p["videos_expected_p1"] > 0),
+    ("anh nho anh tinh duoi 320 px",
+     lambda p: 0 < p["image_thumb_width"] <= 320),
+    ("anh nho anh tinh co cache dia",
+     lambda p: p["image_key_after_first"] and p["image_second_cached"]),
+    ("go tim kiem median duoi 8 ms",
+     lambda p: 0 < p["keystroke_median_ms"] <= 8.0),
+    # P10 cu: 20/20 luot giai ma van chay cho nhung the khong con ton tai.
+    # So voi ban cu tren CUNG batch nay: 20 luot, ban toi uu 4 luot (hai task
+    # dang chay trong 3 thread cua pool khong the huy duoc nua).
+    ("the da xoa khong giai ma them",
+     lambda p: p["tasks_requested"] == LIBRARY_FIXTURE["batch"]
+     and p["decodes_for_cleared"] <= 8),
+    ("khong loi emit qua bien C++", lambda p: p["emit_errors"] == 0),
+    # Cong gia neu redirect khong ghi gi: "khong sang cache nguoi dung" luc do
+    # chi la "khong ai ghi lan nao".
+    ("fixture ghi THAT o redirect", lambda p: p["redirect_image_files"] > 0),
+    ("khong ghi vao cache nguoi dung", lambda p: not p["user_cache_changed"]),
+    ("anh thu vien ve co that",
+     lambda p: os.path.isfile(p["screenshot"]) and p["distinct_colors"] > 40),
+)
+
+
+def library_report_fails(payload):
+    """Ten tung dieu kien ma `--library-report` do khong dat (rong = dat het)."""
+    return [name for name, ok in LIBRARY_REPORT_CHECKS if not ok(payload)]
+
+
+def run_library_report(argv=None):
+    """Thu vien tai nguyen tren may cau hinh thap — do bang duong THAT cua exe nay.
+
+    Nguoi dung bao "lag". Lag nam o dau phai do bang con so, va con so do phai
+    di qua dung nhung ham ma nguoi dung cham vao:
+
+      `MainWindow.restore_library_from_project()`  (duong mo project)
+      `LibraryPanel.restore_resources/add_resource/clear_resources`
+      `LibraryPanel._apply_filter()`               (go tim kiem, doi tab)
+      `ResourceCard.request_thumbnail/_apply_thumb`
+      `_ThumbTask.run()` + `thumb_pool()`          (pool That, 3 thread)
+      `decode_thumb_image()` -> `core.media_cache` (cache dia That)
+
+    Bong dong ho chi BOC lay ham production roi goi nguyen ham do, khong thay
+    duong nao. Toan bo anh nho ghi vao `cache_root()` redirect trong %TEMP%:
+    probe mo MainWindow tung de lai 1 muc vao cache cua nguoi dung (do 22/10),
+    nen cua "khong ghi vao cache nguoi dung" di kem cua "fixture ghi THAT o
+    redirect" — bo mot trong hai thi cua kia xanh gia.
+
+    Clinging.exe --library-report <duong-dan-json>
+    """
+    import shutil
+    import tempfile
+
+    argv = list(argv if argv is not None else sys.argv)
+    report = _report_path(argv).replace("clinging_selftest", "clinging_library")
+    shot = report[:-5] + ".png" if report.endswith(".json") else report + ".png"
+    work = os.path.join(tempfile.gettempdir(), "clinging_library_report")
+    media_dir = os.path.join(work, "media")
+    cache_dir = os.path.join(work, "cache")
+
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    def pump(times=6, pause=0.0):
+        end = time.perf_counter() + pause
+        for _ in range(times):
+            app.processEvents()
+            time.sleep(0.03)
+        while time.perf_counter() < end:
+            app.processEvents()
+            time.sleep(0.005)
+
+    def listing(root):
+        out = {}
+        if not os.path.isdir(root):
+            return out
+        for folder, _dirs, files in os.walk(root):
+            for name in files:
+                path = os.path.join(folder, name)
+                try:
+                    stat = os.stat(path)
+                except OSError:
+                    continue
+                out[os.path.relpath(path, root)] = (stat.st_size,
+                                                    stat.st_mtime_ns)
+        return out
+
+    real_cache = os.path.join(str(os.environ.get("APPDATA", "")), "Clinging",
+                              "cache")
+
+    from core import media_cache
+    from ui import library_panel as lp
+
+    counters = {"filters": [], "decodes": [], "delivered": [], "emit_errors": 0}
+    saved = []
+
+    def install_hooks():
+        """Boc ham production = goi nguyen ban cua no + ghi chep so do."""
+        def hook(cls, name, wrapper_factory):
+            original = getattr(cls, name)
+            setattr(cls, name, wrapper_factory(original))
+            saved.append((cls, name, original))
+
+        def timed_filter(original):
+            def wrapper(self):
+                started = time.perf_counter()
+                original(self)
+                counters["filters"].append(time.perf_counter() - started)
+            return wrapper
+
+        def counted_thumb(original):
+            def wrapper(self, image):
+                original(self, image)
+                counters["delivered"].append(
+                    (self.kind, self.full_path, image.width(), image.height()))
+            return wrapper
+
+        def counted_decode(original):
+            def wrapper(path, kind, max_width=320):
+                image = original(path, kind, max_width)
+                counters["decodes"].append((kind, path, image.width()))
+                return image
+            return wrapper
+
+        def guarded_run(original):
+            def wrapper(self):
+                try:
+                    original(self)
+                except RuntimeError as exc:
+                    # "Signal source has been deleted" nam o day chu khong phai
+                    # trong log: ngoai bien callback C++ thi process chet khong
+                    # bang nhau (0xC0000409 / rc=1), nen gate khong the dua rc.
+                    counters["emit_errors"] += 1
+                    counters.setdefault("emit_messages", []).append(str(exc))
+            return wrapper
+
+        hook(lp.LibraryPanel, "_apply_filter", timed_filter)
+        hook(lp.ResourceCard, "_apply_thumb", counted_thumb)
+        hook(lp, "decode_thumb_image", counted_decode)
+        hook(lp._ThumbTask, "run", guarded_run)
+
+    def uninstall_hooks():
+        for cls, name, original in reversed(saved):
+            setattr(cls, name, original)
+        del saved[:]
+
+    def wait_workers(want, timeout=45.0):
+        """Cho den khi DU `want` luot giai ma da chay (khong phai du pixmap).
+
+        Dem decode chu khong dem pixmap: `ResourceCard._load_thumbnail()` dat
+        ICON vao bang `set_label_icon()`, ma icon cung la QPixmap, nen "the da
+        co anh" khong chung minh duoc luot giai ma nao xong.
+        """
+        end = time.time() + timeout
+        while time.time() < end and len(counters["decodes"]) < want:
+            pump(4)
+            time.sleep(0.02)
+        pump(6, 0.15)
+
+    payload = {"exe": os.path.abspath(sys.argv[0]),
+               "frozen": bool(getattr(sys, "frozen", False)),
+               "python": sys.version.split()[0],
+               "machine_cards": LIBRARY_FIXTURE["video"]
+                               + LIBRARY_FIXTURE["image"]
+                               + LIBRARY_FIXTURE["tiny"]}
+    records = []
+    win = None
+    try:
+        records = _library_report_fixture(media_dir)
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        os.makedirs(cache_dir, exist_ok=True)
+
+        from ui.main_window import MainWindow
+        win = MainWindow()
+        win.resize(1500, 900)
+        win.show()
+        pump(12)
+        # Snapshot cache nguoi dung SAU khi cua so da on dinh: ban than boot da
+        # ghi bia cac project gan day, do la duong cua no khong phai do probe.
+        user_before = listing(real_cache)
+
+        original_root = media_cache.cache_root
+        media_cache.cache_root = lambda: cache_dir
+        try:
+            panel = win.library_panel
+            install_hooks()
+
+            # ── 1. Mo "project" 66 the luc dang o tab Video ───────────
+            big = [r for r in records if "lib_clip" in r["name"]]
+            images = [r for r in records if r["type"] == "image"]
+            tiny = [r for r in records if "lib_tiny" in r["name"]]
+            # Mot tam anh de ngoai batch: doan 5 can mot lock cache LAN DAU
+            # tien duoc doc, neu no nam trong batch thi cache da nong tu luot 1.
+            probe_image = images[-1]
+            images_batch = images[:-1]
+            batch = big + images_batch + tiny
+            counters["filters"].clear()
+            counters["decodes"].clear()
+            counters["delivered"].clear()
+            panel._select_tab(1)                 # tab Video -> anh bi an
+            pump(6)
+            counters["filters"].clear()
+            started = time.perf_counter()
+            win.restore_library_from_project({"assets": batch})
+            block = time.perf_counter() - started
+            passes = len(counters["filters"])
+            hidden_decodes = sum(1 for kind, _p, _w in counters["decodes"]
+                                 if kind == "image")
+            wait_workers(len(batch) - len(images_batch))
+            delivered = {}
+            for kind, path, _w, _h in counters["delivered"]:
+                delivered.setdefault(kind, set()).add(os.path.normcase(path))
+            payload["cards_requested"] = len(batch)
+            payload["cards_loaded"] = len(
+                [c for c in panel._items if isinstance(c, lp.ResourceCard)])
+            payload["filter_passes_restore"] = passes
+            payload["restore_block_ms"] = round(block * 1000.0, 1)
+            payload["block_ms_per_card"] = round(
+                block * 1000.0 / max(1, len(batch)), 2)
+            payload["filter_ms_total"] = round(
+                sum(counters["filters"]) * 1000.0, 1)
+            payload["hidden_image_decodes"] = hidden_decodes
+            payload["hidden_image_delivered"] = len(delivered.get("image", ()))
+            payload["videos_delivered_p1"] = len(delivered.get("video", ()))
+            payload["videos_expected_p1"] = len(big) + len(tiny)
+            payload["hidden_visible_cards"] = sum(
+                1 for c in panel._items if isinstance(c, lp.ResourceCard)
+                and c.isVisibleTo(panel.grid_host))
+
+            # ── 2. Mo tab Anh: the tung bi an PHAI bat dau giai ma ────
+            # TABS = ["Tất cả", "Video", "Âm thanh", "Hình ảnh"], nen "Anh" la
+            # index 3 CHU khong phai 2. Nham o nay thi dong "the hien van giao
+            # anh" choi tro xanh vi khong co the nao duoc hien ra.
+            counters["decodes"].clear()
+            counters["delivered"].clear()
+            started = time.perf_counter()
+            panel._select_tab(3)
+            switch_ms = round((time.perf_counter() - started) * 1000.0, 1)
+            wait_workers(len(images_batch))
+            delivered = {}
+            for kind, path, _w, _h in counters["delivered"]:
+                delivered.setdefault(kind, set()).add(os.path.normcase(path))
+            payload["tab_switch_ms"] = switch_ms
+            payload["images_delivered"] = len(delivered.get("image", ()))
+            payload["images_expected"] = len(images_batch)
+            payload["delivered_widths"] = sorted(
+                {w for kind, _p, w, _h in counters["delivered"]
+                 if kind == "image"})
+
+            # ── 3. Gõ mot ky tu vao ô tìm kiếm, luoi dang day 66 the ───
+            panel._select_tab(0)
+            pump(8, 0.4)
+            strokes = []
+            for term in ("", "l", "li", "lib", "b_", "p", "x", ""):
+                counters["filters"].clear()
+                started = time.perf_counter()
+                panel.search_box.input.setText(term)
+                app.processEvents()
+                strokes.append(time.perf_counter() - started)
+            strokes.sort()
+            payload["keystroke_median_ms"] = round(
+                strokes[len(strokes) // 2] * 1000.0, 2)
+            payload["keystroke_max_ms"] = round(strokes[-1] * 1000.0, 2)
+
+            # ── 4. Xoa the khi task dang xep hang ──────────────────────
+            panel.search_box.input.setText("")
+            lp.thumb_pool().waitForDone(60000)
+            pump(8, 0.2)
+            counters["decodes"].clear()
+            counters["delivered"].clear()
+            counters["emit_errors"] = 0
+            counters["emit_messages"] = []
+            subset = tiny[:LIBRARY_FIXTURE["batch"]]
+            win.restore_library_from_project({"assets": subset})
+            started = time.perf_counter()
+            panel.clear_resources()
+            clear_ms = round((time.perf_counter() - started) * 1000.0, 1)
+            running = len(counters["decodes"])
+            lp.thumb_pool().waitForDone(60000)
+            pump(8, 0.3)
+            payload["tasks_requested"] = len(subset)
+            # `decodes_for_cleared` = Tong so luot giai ma MA CA LO AI NEM XOA
+            # bay ra (do sau khi pool chay xong). Do "so luot sau luc clear"
+            # thi khong phan biet duoc: ban cu kip giai ma 17/20 the TRUOC luc
+            # clear nen chi con 3 luot sau, gan bang 2 cua ban moi (so cu
+            # 22/10: HEAD 20 luot, toi uu 4).
+            payload["decodes_at_clear"] = running
+            payload["decodes_after_clear"] = max(
+                0, len(counters["decodes"]) - running)
+            payload["decodes_for_cleared"] = len(counters["decodes"])
+            payload["clear_block_ms"] = clear_ms
+            payload["emit_errors"] = counters["emit_errors"]
+            payload["emit_messages"] = list(counters["emit_messages"])[:3]
+
+            # ── 5. Anh tinh: thu nho + cache dia, do tren file that ────
+            image_path = probe_image["path"]
+            key = media_cache.image_key(image_path, "img", 0.0, 320, 320)
+            counters["decodes"].clear()
+            started = time.perf_counter()
+            first = lp.decode_thumb_image(image_path, "image")
+            cold_ms = time.perf_counter() - started
+            # Phai lay duoc DUNG khoa cua tam anh nay sau lan doc dau. Dem so
+            # file trong thu muc `image/` thi khong phan biet duoc: 62 thumbnail
+            # video cung nam o do, nen cua "co cache dia" xanh ma duong anh tinh
+            # khong ghi lan nao.
+            key_after_first = bool(key) and os.path.isfile(key)
+            started = time.perf_counter()
+            warm = lp.decode_thumb_image(image_path, "image")
+            warm_ms = time.perf_counter() - started
+            payload["image_thumb_width"] = first.width()
+            payload["image_thumb_height"] = first.height()
+            payload["image_thumb_mib"] = round(
+                first.bytesPerLine() * first.height() / 1048576.0, 3)
+            payload["image_source_width"] = QImage(image_path).width()
+            payload["image_cache_files"] = len(listing(
+                os.path.join(cache_dir, "image")))
+            payload["image_first_ms"] = round(cold_ms * 1000.0, 1)
+            payload["image_second_ms"] = round(warm_ms * 1000.0, 1)
+            payload["image_key_after_first"] = key_after_first
+            payload["image_second_cached"] = bool(
+                not warm.isNull() and key_after_first
+                and warm.width() == first.width())
+
+            # ── 6. Anh chung minh: panel that, thumbnail that ─────────
+            counters["delivered"].clear()
+            panel._select_tab(0)
+            win.restore_library_from_project(
+                {"assets": big + images + tiny[:8]})
+            wait_workers(18)
+            pump(10, 0.6)
+            panel.grab().save(shot)
+            grabbed = QImage(shot).convertToFormat(QImage.Format_RGB32)
+            payload["screenshot"] = os.path.abspath(shot)
+            payload["shot_size"] = [grabbed.width(), grabbed.height()]
+            payload["distinct_colors"] = len({
+                grabbed.pixel(x, y)
+                for x in range(0, grabbed.width(), 3)
+                for y in range(0, grabbed.height(), 3)})
+        finally:
+            uninstall_hooks()
+            media_cache.cache_root = original_root
+
+        payload["user_cache_changed"] = listing(real_cache) != user_before
+        payload["user_cache_files"] = len(user_before)
+        payload["redirect_image_files"] = len(listing(
+            os.path.join(cache_dir, "image")))
+        payload["thumb_pool_threads"] = lp.thumb_pool().maxThreadCount()
+    except Exception as exc:
+        payload["error"] = "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        if win is not None:
+            try:
+                win.close()
+            except Exception:
+                pass
+        pump(6)
+        for attempt in range(20):
+            shutil.rmtree(work, ignore_errors=True)
+            if not os.path.isdir(work):
+                break
+            time.sleep(0.2)
+        payload["work_dir_left"] = os.path.isdir(work)
+
+    fails = library_report_fails(payload) if "error" not in payload else []
+    if "error" in payload:
+        # Mot exception o giua probe khong duoc tro thanh "ALL PASS": thang do
+        # thieu truong thi KeyError, va KeyError bat qua bien callback C++ cua
+        # Qt co the abort 0xC0000409 — do la lop loi repo da ghi.
+        payload["checks"] = [{"name": name, "ok": False}
+                             for name, _f in LIBRARY_REPORT_CHECKS]
+        payload["failed"] = ["probe chay khong xong"]
+        payload["ok"] = False
+        with open(report, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        print("library-report DO: probe chay khong xong — %s" % payload["error"])
+        return 1
+    payload["checks"] = [{"name": name, "ok": name not in fails}
+                         for name, _f in LIBRARY_REPORT_CHECKS]
+    payload["failed"] = fails
+    payload["ok"] = not fails
+    with open(report, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    print("library-report: %s  (%d cua, %d do)"
+          % ("ALL PASS" if not fails else "DO", len(LIBRARY_REPORT_CHECKS),
+             len(fails)))
+    for name in fails:
+        print("  library-report DO: %s" % name)
+    return 0 if not fails else 1
+
+
+# ── Kho SFX: thang do va cong --sfx-report ────────────────────────────────
+# Dat thang do o day, giong SPLIT_REPORT_CHECKS: mot cong do duoc tren source
+# VAN chay duoc tren bundle va tren ban cai, con `--selftest` chi tra loi
+# "module co trong PYZ". Nhung gi day la do tren SAN PHAM: tieng co that khong,
+# ffprobe co doc lai duoc khong, chen co ra clip audio khong, va nut tren thanh
+# thoi co mo duoc hop thoai khong.
+SFX_PEAK_CEILING = 0.95           # khop PEAK_CEIL cua tools/make_sfx.py
+SFX_ZCR_SPREAD = 0.30             # 14 tieng phai khong giong nhau: do 0,0144..0,7536
+
+SFX_REPORT_CHECKS = (
+    # Cong gia neu pack vang: moi cua duoi xanh vi dau vao rong.
+    ("doc duoc manifest",
+     lambda p: p["entry_count"] > 0 and not p["missing_files"]),
+    ("pack du %d tieng" % SFX_PACK_ENTRIES,
+     lambda p: p["entry_count"] == SFX_PACK_ENTRIES),
+    ("byte tren dia khop manifest", lambda p: p["byte_mismatches"] == []),
+    ("pack duoi ngan sach byte",
+     lambda p: 0 < p["pack_bytes"] <= SFX_PACK_BYTE_BUDGET),
+    ("tong thoi luong duoi ngan sach",
+     lambda p: 0 < p["pack_seconds"] <= SFX_PACK_SECOND_BUDGET),
+    ("manifest dung mot tran voi thang do",
+     lambda p: p["manifest_peak_ceiling"] == SFX_PEAK_CEILING
+     and p["manifest_target_rms"] == 0.18),
+    # Do LAI tung tieng bang ffprobe + f32le, khong tin con so trong manifest.
+    # Chan duoi dat tren CON SO DO (khong tren do lech): do lech = 0 la manifest
+    # khop tuyen tuy, con probe tra ve 0 s la ffprobe khong doc duoc tieng nao —
+    # va do la dau hieu dau vao rong, khong phai dau hieu pack tot.
+    ("ffprobe do lai tung tieng",
+     lambda p: p["probed_count"] == p["entry_count"]
+     and p["min_probe_seconds"] > 0.05
+     and p["duration_worst_dev"] <= SFX_DURATION_TOL),
+    ("RMS do lai khop manifest",
+     lambda p: p["rms_max"] > 0.05 and p["rms_worst_dev"] <= SFX_RMS_TOL),
+    ("peak duoi tran chong hoa mai",
+     lambda p: 0 < p["peak_max"] <= p["manifest_peak_ceiling"]),
+    ("14 tieng 14 hash", lambda p: p["distinct_hashes"] == p["entry_count"]),
+    ("tieng khong giong het nhau", lambda p: p["zcr_spread"] >= SFX_ZCR_SPREAD),
+    # Duong cua nguoi dung: bam nut tren thanh thoi -> hop thoai -> chen.
+    ("nut thanh mo duoc hop thoai",
+     lambda p: p["button_visible"] and p["dialog_opened"]),
+    ("hop thoai liet du pack", lambda p: p["dialog_rows"] == p["entry_count"]),
+    ("loc nhom rut dung nhom",
+     lambda p: p["group_rows"] == p["group_expected"]
+     and 0 < p["group_rows"] < p["entry_count"]),
+    ("tim kiem loc theo nhan",
+     lambda p: p["search_rows"] == p["search_expected"]
+     and 0 < p["search_rows"] < p["entry_count"]),
+    ("nghe thu tha khoa file khi dung",
+     lambda p: p["preview_source_was_loaded"] and p["preview_source_cleared"]),
+    ("chen ra clip audio tren timeline",
+     lambda p: p["clip_count"] == 2 and p["clip_kinds"] == ["audio", "audio"]
+     and p["clip_durations_audible"]),
+    ("hai tieng noi lien khong chong",
+     lambda p: p["overlap"] is not None and abs(p["overlap"]) <= 1e-6),
+    ("chen tao mot lane audio", lambda p: p["audio_tracks"] == 1),
+    ("playhead chay toi cuoi clip",
+     lambda p: p["playhead_after"] is not None
+     and abs(p["playhead_after"] - p["second_end"]) <= 1e-6),
+    ("Ctrl+Z tra ve timeline trong", lambda p: p["clips_after_undo"] == 0),
+    ("khong ghi vao cache nguoi dung", lambda p: not p["user_cache_changed"]),
+    ("anh hop thoai ve co that",
+     lambda p: os.path.isfile(p["screenshot"]) and p["distinct_colors"] > 40),
+)
+
+
+def sfx_report_fails(payload):
+    """Ten tung dieu kien ma `--sfx-report` do khong dat (rong = dat het)."""
+    return [name for name, ok in SFX_REPORT_CHECKS if not ok(payload)]
+
+
+def run_sfx_report(argv=None):
+    """Kho hiêu ứng âm thanh — đo từ chính cửa sổ thật của bản exe này.
+
+    Bốn thứ mà `--selftest` không nói được và ở đây phải tự đo lại:
+
+      * tung tieng trong pack duoc ffprobe va ffmpeg do LAI (thoi luong, RMS,
+        peak, ZCR, sha256) roi so voi manifest do `tools/make_sfx.py` tu viet —
+        manifest la loai "tu cham diem" ma AGENTS.md da goi ten;
+      * nut tren thanh thoi mo duoc hop thoai that, hop thoai liet ke du pack,
+        loc nhom va tim kiem cat dung so dong;
+      * chen qua ngan nap that cua timeline (`_on_resource_dropped` + undo
+        stack): clip audio, mot lane, noi lien, playhead tien, Ctrl+Z sach;
+      * probe mo MainWindow khong duoc de lai vet trong cache cua nguoi dung
+        (bẫy da tra gia 22/10 lan do thu vien).
+
+    Clinging.exe --sfx-report <duong-dan-json>
+    """
+    import time as _time
+
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication
+
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest", "clinging_sfx")
+    shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    def pump(times=6):
+        for _ in range(times):
+            app.processEvents()
+            _time.sleep(0.03)
+
+    def listing(root):
+        snapshot = {}
+        if not os.path.isdir(root):
+            return snapshot
+        for folder, _dirs, files in os.walk(root):
+            for name in files:
+                path = os.path.join(folder, name)
+                try:
+                    stat = os.stat(path)
+                except OSError:
+                    continue
+                snapshot[os.path.relpath(path, root)] = (stat.st_size,
+                                                         stat.st_mtime_ns)
+        return snapshot
+
+    real_cache = os.path.join(str(os.environ.get("APPDATA", "")), "Clinging",
+                              "cache")
+    payload = {"exe": os.path.abspath(sys.argv[0]),
+               "frozen": bool(getattr(sys, "frozen", False)),
+               "report": os.path.abspath(out), "pack_dir": "",
+               "entry_count": 0, "missing_files": [], "byte_mismatches": [],
+               "pack_bytes": 0, "pack_seconds": 0.0, "probed_count": 0,
+               "manifest_peak_ceiling": 0.0, "manifest_target_rms": 0.0,
+               "duration_worst_dev": 0.0, "rms_worst_dev": 0.0,
+               "min_probe_seconds": 0.0, "rms_max": 0.0,
+               "peak_max": 0.0, "distinct_hashes": 0, "zcr_spread": 0.0,
+               "measures": [], "button_visible": False, "dialog_opened": False,
+               "dialog_rows": 0, "group_name": "", "group_rows": 0,
+               "group_expected": 0, "search_needle": "", "search_rows": 0,
+               "search_expected": 0, "preview_source_was_loaded": False,
+               "preview_source_cleared": False,
+               "clip_count": 0, "clip_kinds": [], "clip_durations_audible": False,
+               "overlap": None, "audio_tracks": 0, "playhead_after": None,
+               "second_end": -1.0, "clips_after_undo": -1,
+               "user_cache_changed": True, "user_cache_files": 0,
+               "screenshot": os.path.abspath(shot), "distinct_colors": 0,
+               "shot_size": [0, 0]}
+
+    from core import sfx as sfx_core
+    from ui.main_window import MainWindow
+
+    win = None
+    dialog = None
+    user_before = {}
+    try:
+        win = MainWindow()
+        win.resize(1500, 900)
+        win.show()
+        pump(12)
+        # Snapshot cache NGAY SAU khi cua so on dinh: ban than boot ghi bia cac
+        # project gan day, do la duong cua no chu khong phai do probe.
+        user_before = listing(real_cache)
+        payload["user_cache_files"] = len(user_before)
+
+        panel = win.timeline_panel
+        rows = sfx_core.entries()
+        payload["pack_dir"] = sfx_core.pack_dir()
+        payload["entry_count"] = len(rows)
+        payload["missing_files"] = sfx_core.missing_files()
+        payload["byte_mismatches"] = [
+            row["key"] for row in rows if os.path.isfile(row["path"])
+            and os.path.getsize(row["path"]) != int(row["bytes"])]
+        payload["pack_bytes"] = sum(int(row["bytes"]) for row in rows)
+        payload["pack_seconds"] = round(sum(float(row["seconds"])
+                                            for row in rows), 3)
+        doc = {}
+        manifest_path = os.path.join(sfx_core.pack_dir(), sfx_core.MANIFEST_NAME)
+        if os.path.isfile(manifest_path):
+            with open(manifest_path, encoding="utf-8") as handle:
+                doc = json.load(handle)
+        payload["manifest_peak_ceiling"] = float(doc.get("peak_ceiling") or 0.0)
+        payload["manifest_target_rms"] = float(doc.get("target_rms") or 0.0)
+
+        for row in rows:
+            seconds, rms, peak, zcr, digest = _sfx_audio_row(row["path"])
+            payload["measures"].append({
+                "key": row["key"], "probe_seconds": round(seconds, 3),
+                "want_seconds": float(row["seconds"]),
+                "dev": round(abs(seconds - float(row["seconds"])), 3),
+                "rms": round(rms, 4), "want_rms": float(row["rms"]),
+                "rms_dev": round(abs(rms - float(row["rms"])), 4),
+                "peak": round(peak, 4), "zcr": round(zcr, 4), "sha16": digest})
+        measured = payload["measures"]
+        payload["probed_count"] = len(measured)
+        payload["duration_worst_dev"] = max([m["dev"] for m in measured] or [0.0])
+        payload["min_probe_seconds"] = min([m["probe_seconds"]
+                                            for m in measured] or [0.0])
+        payload["rms_max"] = max([m["rms"] for m in measured] or [0.0])
+        payload["rms_worst_dev"] = max([m["rms_dev"] for m in measured] or [0.0])
+        payload["peak_max"] = max([m["peak"] for m in measured] or [0.0])
+        payload["distinct_hashes"] = len({m["sha16"] for m in measured})
+        zcrs = [m["zcr"] for m in measured]
+        payload["zcr_spread"] = round(max(zcrs) - min(zcrs), 4) if zcrs else 0.0
+
+        # ── Duong that: bam nut -> hop thoai -> chen ─────────────────
+        payload["button_visible"] = panel.header.btn_sfx.isVisible()
+        panel.header.btn_sfx.click()
+        pump(8)
+        dialog = getattr(win, "_sfx_dialog", None)
+        payload["dialog_opened"] = dialog is not None and dialog.isVisible()
+        if dialog is None:
+            raise RuntimeError("bam nut SFX khong mo duoc hop thoai")
+        payload["dialog_rows"] = dialog.list.count()
+
+        groups = sfx_core.groups()
+        payload["group_name"] = groups[0] if groups else ""
+        payload["group_expected"] = len([r for r in rows
+                                         if r.get("group") == payload["group_name"]])
+        dialog.group_combo.setCurrentIndex(
+            dialog.group_combo.findText(payload["group_name"]))
+        payload["group_rows"] = dialog.list.count()
+        dialog.group_combo.setCurrentIndex(0)
+
+        needle = (rows[0].get("label") or "")[:3]
+        payload["search_needle"] = needle
+        payload["search_expected"] = len([
+            r for r in rows if needle.casefold() in ("%s %s %s" % (
+                r.get("label"), r.get("key"),
+                r.get("group"))).casefold()])
+        dialog.search.setText(needle)
+        payload["search_rows"] = dialog.list.count()
+        dialog.search.clear()
+        pump(2)
+
+        dialog.list.setCurrentRow(0)
+        dialog.icon_play.click()
+        pump(4)
+        # `preview_source_cleared` mot minh no xanh du khi khong ai mo nguon:
+        # phai ghi lai ca chieu "bam Nghe thu co moi duoc source" de vet
+        # `setSource(QUrl())` trong stop_preview do duoc.
+        payload["preview_source_was_loaded"] = not dialog._player.source().isEmpty()
+        dialog.icon_play.click()          # dung = stop_preview + setSource(QUrl())
+        pump(2)
+        payload["preview_source_cleared"] = dialog._player.source().isEmpty()
+
+        dialog.list.setCurrentRow(0)
+        dialog.icon_insert.click()
+        pump(4)
+        dialog.list.setCurrentRow(1)
+        dialog.icon_insert.click()
+        pump(4)
+        audio = [c for t in panel.model.tracks if t.track_type.name == "AUDIO"
+                 for c in t.clips]
+        payload["clip_count"] = len(audio)
+        payload["clip_kinds"] = [c.media_type for c in audio]
+        payload["clip_durations_audible"] = bool(
+            audio and all(c.duration > 0.05 for c in audio))
+        payload["audio_tracks"] = len(
+            [t for t in panel.model.tracks if t.track_type.name == "AUDIO"])
+        if len(audio) >= 2:
+            payload["overlap"] = round(audio[1].start_time
+                                       - (audio[0].start_time
+                                          + audio[0].duration), 6)
+            payload["second_end"] = audio[1].start_time + audio[1].duration
+        payload["playhead_after"] = round(float(panel.model.playhead), 6)
+
+        dialog.refresh()
+        pump(4)
+        dialog.grab().save(shot)
+        grabbed = QImage(shot).convertToFormat(QImage.Format_RGB32)
+        payload["shot_size"] = [grabbed.width(), grabbed.height()]
+        payload["distinct_colors"] = len({
+            grabbed.pixel(x, y) for x in range(0, grabbed.width(), 3)
+            for y in range(0, grabbed.height(), 3)})
+
+        panel.header.btn_undo.click()
+        panel.header.btn_undo.click()
+        pump(4)
+        payload["clips_after_undo"] = len(
+            [c for t in panel.model.tracks if t.track_type.name == "AUDIO"
+             for c in t.clips])
+    except Exception as exc:
+        payload["error"] = "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        if dialog is not None:
+            try:
+                dialog.stop_preview()
+                dialog.close()
+            except Exception:
+                pass
+        if win is not None:
+            try:
+                win.close()
+            except Exception:
+                pass
+        pump(8)
+
+    payload["user_cache_changed"] = listing(real_cache) != user_before
+
+    if "error" in payload:
+        # Mot exception o giua probe khong duoc tro thanh "ALL PASS": thang do
+        # thieu truong thi KeyError, va KeyError bat qua bien callback C++ cua
+        # Qt co the abort 0xC0000409 — do la lop loi repo da ghi.
+        payload["checks"] = [{"name": name, "ok": False}
+                             for name, _f in SFX_REPORT_CHECKS]
+        payload["failed"] = ["probe chay khong xong"]
+        payload["ok"] = False
+        with open(out, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        print("sfx-report DO: probe chay khong xong — %s" % payload["error"])
+        return 1
+    fails = sfx_report_fails(payload)
+    payload["checks"] = [{"name": name, "ok": name not in fails}
+                         for name, _f in SFX_REPORT_CHECKS]
+    payload["failed"] = fails
+    payload["ok"] = not fails
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    print("sfx-report: %s  (%d cua, %d do)"
+          % ("ALL PASS" if not fails else "DO", len(SFX_REPORT_CHECKS),
+             len(fails)))
+    for name in fails:
+        print("  sfx-report DO: %s" % name)
+    return 0 if not fails else 1
+
+
+TRANSFORM_REPORT_CHECKS = (
+    # Fixture phai lech mau that: mot tam nen trang thi moi phep lat deu "dung".
+    ("fixture lech mau bon goc", lambda p: p["fixture_ok"]),
+    ("lat ngang dao hai nua mau", lambda p: p["flip_h_swaps"]),
+    ("lat doc dao tren duoi", lambda p: p["flip_v_swaps"]),
+    ("lat khong doi tam noi dung",
+     lambda p: p["flip_center_dx"] <= 3.0 and p["flip_center_dy"] <= 3.0),
+    ("xoay 90 dao rong cao", lambda p: p["rot90_swaps_axes"]),
+    ("xoay 45 mo rong va van trong khung",
+     lambda p: p["rot45_grows"] and p["rot45_inside"]),
+    ("xoay 180 bang hai lan lat", lambda p: p["rot180_equals_double_flip"]),
+    ("canh trai cham mep trai", lambda p: p["align_left_x0"] <= 3.0),
+    ("canh phai cham mep phai", lambda p: p["align_right_edge"] <= 3.0),
+    ("canh tren cham mep tren", lambda p: p["align_top_y0"] <= 3.0),
+    ("canh duoi cham mep duoi", lambda p: p["align_bottom_edge"] <= 3.0),
+    ("canh giua ve tam canvas",
+     lambda p: p["align_center_dx"] <= 3.0 and p["align_center_dy"] <= 3.0),
+    ("nhap % mo rong dung 1,5 lan",
+     lambda p: 1.4 <= p["pct_width_ratio"] <= 1.6),
+    ("xem truoc cung mat voi xuat sau lat", lambda p: p["preview_matches_export"]),
+    ("the Bien doi ve co that",
+     lambda p: os.path.isfile(p["screenshot"]) and p["card_colors"] > 40
+     and p["sheet_colors"] > 60),
+    ("the Bien doi ve du chieu cao tren sheet",
+     lambda p: p["card_bottom_painted"]),
+    ("khong ghi vao cache nguoi dung", lambda p: not p["user_cache_changed"]),
+)
+
+
+def transform_report_fails(payload):
+    """Ten tung dieu kien ma `--transform-report` do khong dat (rong = dat het)."""
+    return [name for name, ok in TRANSFORM_REPORT_CHECKS if not ok(payload)]
+
+
+def run_transform_report(argv=None):
+    """Nhom "Bien doi" — do TREN ANH, khong do tren so.
+
+    `--selftest` dong "bien doi" chi noi rang xich ma noi: co ba co, goc dung
+    dai, 12 nut nam trong the, keo tay nam ra dung mot buoc undo. No KHONG noi
+    rang pixel doi mau — ma pixel doi mau moi la dieu nguoi dung nhin thay. Lo
+    dien hinh o day la mot ben dung co, ben kia im lang bo qua (preview lat,
+    export khong lat; hoac canh theo so CHUA xoay).
+
+    Clinging.exe --transform-report <duong-dan-json>
+
+    Moi con so duoc do tu QImage ma chinh `FrameComposer.render_frame` ve ra
+    (duong xuat), va mot doi lan tu QGraphicsScene cua preview. Fixture la anh
+    BON GOC bon mau — mot tam nen dong nhat khong the phat hien phep lat.
+    """
+    import shutil
+    import tempfile
+    import types
+
+    from PySide6.QtCore import QRect, QRectF, Qt
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from PySide6.QtWidgets import QApplication, QGraphicsScene, QPushButton, QWidget
+    from core import project_storage as core_project_storage
+
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest", "clinging_transform")
+    shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    import numpy as np
+
+    OUT_W, OUT_H = 960, 540
+    CANVAS_W, CANVAS_H = 1920, 1080
+    SCALE = 0.5           # clip chiem 960x540 tren canvas, 480x270 tren anh do
+
+    payload = {"exe": os.path.abspath(sys.argv[0]),
+               "frozen": bool(getattr(sys, "frozen", False)),
+               "report": os.path.abspath(out), "screenshot": os.path.abspath(shot),
+               "fixture_ok": False, "flip_h_swaps": False, "flip_v_swaps": False,
+               "flip_center_dx": 999.0, "flip_center_dy": 999.0,
+               "rot90_swaps_axes": False, "rot45_grows": False,
+               "rot45_inside": False, "rot180_equals_double_flip": False,
+               "align_left_x0": 999.0, "align_right_edge": 999.0,
+               "align_top_y0": 999.0, "align_bottom_edge": 999.0,
+               "align_center_dx": 999.0, "align_center_dy": 999.0,
+               "pct_width_ratio": 0.0, "preview_matches_export": False,
+               "card_colors": 0, "sheet_colors": 0, "box": [],
+               "card_bottom_painted": False,
+               "user_cache_changed": True}
+
+    folder = os.path.join(tempfile.gettempdir(), "clinging_transform_report")
+
+    def arr(img):
+        img = img.convertToFormat(QImage.Format.Format_RGBA8888)
+        buf = img.constBits()
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else bytes(buf)
+        return np.frombuffer(raw, np.uint8).reshape(
+            (img.height(), img.width(), 4))[:, :, :3].astype(np.float64)
+
+    def region_mean(a, x0, x1, y0, y1):
+        return tuple(float(v) for v in a[y0:y1, x0:x1].reshape(-1, 3).mean(axis=0))
+
+    def content_bbox(a, thr=60.0):
+        """Hop cua noi dung sang tren nen den (0,0,0) — do bang MASK, khong do
+        bang so tay nguoi dung ghi vao model."""
+        mask = (a.max(axis=2) > thr)
+        cols = np.nonzero(mask.any(axis=0))[0]
+        rows = np.nonzero(mask.any(axis=1))[0]
+        if not len(cols) or not len(rows):
+            return None
+        return (int(cols[0]), int(cols[-1]), int(rows[0]), int(rows[-1]))
+
+    def close(a, b, tol=18.0):
+        return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+    from core import media_cache
+    from core.frame_composer import FrameComposer
+    from core.timeline_model import TimelineModel, TrackType
+    real_cache_root = media_cache.cache_root
+    real_recovery = core_project_storage.RECOVERY_DIR
+    real_user_cache = os.path.join(str(os.environ.get("APPDATA", "")), "Clinging",
+                                   "cache")
+
+    def listing(root):
+        snapshot = set()
+        if not os.path.isdir(root):
+            return snapshot
+        for sub, _dirs, files in os.walk(root):
+            for name in files:
+                snapshot.add(os.path.relpath(os.path.join(sub, name), root))
+        return snapshot
+
+    model = None
+    host = None
+    composer = None
+    try:
+        media_cache.cache_root = lambda: os.path.join(folder, "cache")
+        core_project_storage.RECOVERY_DIR = os.path.join(folder, "recovery")
+        if os.path.isdir(folder):
+            shutil.rmtree(folder, ignore_errors=True)
+        os.makedirs(folder)
+
+        # Fixture: bon goc bon mau, khong goc nao giong goc nao, khong co mau nao
+        # gan den — nen lat/luon xoay deu in ra lech mau do duoc bang so.
+        fixture = os.path.join(folder, "fixture.png")
+        src = QImage(320, 180, QImage.Format.Format_RGB32)
+        src.fill(QColor("#000000"))
+        quad = QPainter(src)
+        try:
+            quad.fillRect(0, 0, 160, 90, QColor(230, 30, 40))      # trai tren
+            quad.fillRect(160, 0, 160, 90, QColor(40, 200, 90))    # phai tren
+            quad.fillRect(0, 90, 160, 90, QColor(40, 60, 220))     # trai duoi
+            quad.fillRect(160, 90, 160, 90, QColor(235, 235, 235))  # phai duoi
+        finally:
+            quad.end()
+        if not src.save(fixture, "PNG"):
+            raise RuntimeError("khong ghi duoc fixture.png")
+
+        model = TimelineModel()
+        model.project_ratio = "16:9"
+        track = model.add_track(TrackType.IMAGE)
+        clip = model.add_clip(track.track_id, fixture, "image", 0.0, 2.0,
+                              name="Bien doi")
+        if clip is None:
+            raise RuntimeError("add_clip tra None")
+        from core.canvas_utils import apply_auto_fit
+        apply_auto_fit(clip, CANVAS_W, CANVAS_H)
+        model.update_clip_properties(clip.clip_id, x=0.0, y=0.0, scale_x=SCALE,
+                                     scale_y=SCALE, rotation=0.0, opacity=1.0,
+                                     flip_h=False, flip_v=False, uniform_scale=True)
+        composer = FrameComposer(model, OUT_W, OUT_H)
+
+        a0 = arr(composer.render_frame(1.0))
+        box0 = content_bbox(a0)
+        if box0 is None:
+            raise RuntimeError("khung hinh goc rong: khong co noi dung de do")
+        x0, x1, y0, y1 = box0
+        payload["box"] = list(box0)
+        # Sample nam giua moi nua, cach le 12 px de net mo cua scale khong len
+        # vao mau do duoc.
+        mx = (x0 + x1) // 2
+        my = (y0 + y1) // 2
+        left_base = region_mean(a0, x0 + 12, mx - 12, y0 + 12, y1 - 12)
+        right_base = region_mean(a0, mx + 12, x1 - 12, y0 + 12, y1 - 12)
+        top_base = region_mean(a0, x0 + 12, x1 - 12, y0 + 12, my - 12)
+        bottom_base = region_mean(a0, x0 + 12, x1 - 12, my + 12, y1 - 12)
+        halves = (left_base, right_base, top_base, bottom_base)
+        # Mot tam nen trang thi moi phep lat deu "dung" va cua do xanh vi khong
+        # co gi de dao: phai do RANG bon mui trung binh doi mau nhau lon hon
+        # 60/255 tren moi cap, va khong mui nao gan den (ma noi dung nam duoi
+        # nguong content_bbox). Do 23/10/2026: cach so sanh `left_base[0] > 150`
+        # do RED + BLUE o nua trai ra 135, gan bang nua phai (GREEN + TRANG,
+        # 137) nen cua do mau theo mot truc tu duy nhat luong cuoc sai.
+        payload["fixture_ok"] = (
+            min(max(c) for c in halves) > 60
+            and min(max(abs(p - q) for p, q in zip(a, b))
+                    for i, a in enumerate(halves) for b in halves[i + 1:]) > 60.0)
+
+        def render_state(**changes):
+            model.update_clip_properties(clip.clip_id, **changes)
+            image = composer.render_frame(1.0)
+            return arr(image), image
+
+        # ── LAT ───────────────────────────────────────────────────────────
+        model.update_clip_properties(clip.clip_id, flip_h=True)
+        flipped = composer.render_frame(1.0)
+        af = arr(flipped)
+        bf = content_bbox(af)
+        lf = region_mean(af, bf[0] + 12, (bf[0] + bf[1]) // 2 - 12,
+                         bf[2] + 12, bf[3] - 12)
+        rf = region_mean(af, (bf[0] + bf[1]) // 2 + 12, bf[1] - 12,
+                         bf[2] + 12, bf[3] - 12)
+        payload["flip_h_swaps"] = (close(lf, right_base) and close(rf, left_base))
+        payload["flip_center_dx"] = abs(((bf[0] + bf[1]) / 2.0) - ((x0 + x1) / 2.0))
+        payload["flip_center_dy"] = abs(((bf[2] + bf[3]) / 2.0) - ((y0 + y1) / 2.0))
+        frame_flip_h = flipped
+
+        model.update_clip_properties(clip.clip_id, flip_h=False, flip_v=True)
+        frame_flip_v = composer.render_frame(1.0)
+        av = arr(frame_flip_v)
+        bv = content_bbox(av)
+        tf = region_mean(av, bv[0] + 12, bv[1] - 12, bv[2] + 12,
+                         (bv[2] + bv[3]) // 2 - 12)
+        df = region_mean(av, bv[0] + 12, bv[1] - 12,
+                         (bv[2] + bv[3]) // 2 + 12, bv[3] - 12)
+        payload["flip_v_swaps"] = (close(tf, bottom_base) and close(df, top_base))
+
+        # Xoay 180 = lat ca hai chieu: hai duong bien doi khac nhau trong
+        # FrameComposer (painter.rotate vs painter.scale(-1)) phai ra CUNG
+        # mot khung hinh mau.
+        model.update_clip_properties(clip.clip_id, flip_v=False, rotation=180.0)
+        a180 = arr(composer.render_frame(1.0))
+        model.update_clip_properties(clip.clip_id, rotation=0.0, flip_h=True,
+                                     flip_v=True)
+        adf = arr(composer.render_frame(1.0))
+        payload["rot180_equals_double_flip"] = (
+            a180.shape == adf.shape
+            and float(np.abs(a180 - adf).max()) <= 24.0)
+        model.update_clip_properties(clip.clip_id, flip_h=False, flip_v=False)
+
+        # ── XOAY ──────────────────────────────────────────────────────────
+        model.update_clip_properties(clip.clip_id, rotation=90.0)
+        frame_rot90 = composer.render_frame(1.0)
+        ar90 = arr(frame_rot90)
+        b90 = content_bbox(ar90)
+        w0, h0 = x1 - x0, y1 - y0
+        payload["rot90_swaps_axes"] = (b90 is not None
+            and abs((b90[1] - b90[0]) - h0) <= 6 and abs((b90[3] - b90[2]) - w0) <= 6)
+        model.update_clip_properties(clip.clip_id, rotation=45.0)
+        frame_rot45 = composer.render_frame(1.0)
+        a45 = arr(frame_rot45)
+        b45 = content_bbox(a45)
+        payload["rot45_grows"] = (b45 is not None
+                                  and (b45[1] - b45[0]) > w0 and (b45[3] - b45[2]) > h0)
+        payload["rot45_inside"] = (b45 is not None and b45[0] >= 0
+                                   and b45[1] <= OUT_W - 1 and b45[2] >= 0
+                                   and b45[3] <= OUT_H - 1)
+        model.update_clip_properties(clip.clip_id, rotation=0.0)
+
+        # ── CANH MEP + % qua chinh bang thuoc tinh ────────────────────────
+        from core.commands import UndoStack
+        from ui.graphics_canvas_item import CanvasClipItem
+        from ui.main_window import MainWindow
+        from ui.properties_panel import ClipPropertiesWidget
+
+        user_before = listing(real_user_cache)
+
+        host = QWidget()
+        host.setObjectName("MainWindow")
+        stack = UndoStack()
+        host.timeline_panel = types.SimpleNamespace(
+            model=model, undo_stack=stack,
+            header=types.SimpleNamespace(combo_aspect_ratio=types.SimpleNamespace(
+                currentText=lambda: "16:9 - Ngang chuan")))
+        host.preview_panel = types.SimpleNamespace(
+            canvas=types.SimpleNamespace(_clip_items={}))
+
+        editor = ClipPropertiesWidget(clip, parent=host)
+        editor.propertyChanged.connect(
+            lambda *a: MainWindow._on_properties_changed_by_user(host, *a))
+
+        def buttons(text):
+            found = [b for b in editor.card_transform.findChildren(QPushButton)
+                     if b.text() == text]
+            if not found:
+                raise RuntimeError("the Bien doi khong co nut %s" % text)
+            return found
+
+        def click(text):
+            """Bam MOI nut mang nhan do: "Giữa" xuat hien o ca hai hang (ngang
+            va doc), bam cai dau thi truc kia van nam ở mép va cua do lech."""
+            for btn in buttons(text):
+                btn.click()
+            return len(buttons(text))
+
+        def edge_of(image, label):
+            b = content_bbox(arr(image))
+            if b is None:
+                raise RuntimeError("khong do duoc hop noi dung sau %s" % label)
+            return b
+
+        click("Trái")
+        payload["align_left_x0"] = float(edge_of(composer.render_frame(1.0), "canh Trai")[0])
+        click("Phải")
+        payload["align_right_edge"] = float(
+            OUT_W - 1 - edge_of(composer.render_frame(1.0), "canh Phai")[1])
+        click("Trên")
+        payload["align_top_y0"] = float(edge_of(composer.render_frame(1.0), "canh Tren")[2])
+        click("Dưới")
+        payload["align_bottom_edge"] = float(
+            OUT_H - 1 - edge_of(composer.render_frame(1.0), "canh Duoi")[3])
+        click("Giữa")
+        bmid = edge_of(composer.render_frame(1.0), "canh Giua")
+        payload["align_center_dx"] = abs((bmid[0] + bmid[1]) / 2.0 - OUT_W / 2.0)
+        payload["align_center_dy"] = abs((bmid[2] + bmid[3]) / 2.0 - OUT_H / 2.0)
+
+        before_w = bmid[1] - bmid[0]
+        editor.spin_scale_pct.setValue(75.0)
+        if not (close((clip.transform.scale_x, clip.transform.scale_y),
+                      (0.75, 0.75), tol=0.01)):
+            raise RuntimeError("nhap 75%% ra %r (khoa ty le phai bang hai truc)"
+                               % [clip.transform.scale_x, clip.transform.scale_y])
+        b75 = edge_of(composer.render_frame(1.0), "nhap 75%")
+        payload["pct_width_ratio"] = (b75[1] - b75[0]) / float(before_w or 1)
+
+        # ── XEM TRUOC == XUAT: cùng clip lật, do bang QImage cua hai ben ───
+        model.update_clip_properties(clip.clip_id, scale_x=SCALE, scale_y=SCALE,
+                                     rotation=0.0, x=0.0, y=0.0, flip_h=True)
+        export_flip = arr(composer.render_frame(1.0))
+        scene_host = QGraphicsScene()
+        scene_host.setSceneRect(QRectF(-CANVAS_W / 2.0, -CANVAS_H / 2.0,
+                                       CANVAS_W, CANVAS_H))
+        item = CanvasClipItem(clip, lambda c: None, lambda *a, **k: None)
+        scene_host.addItem(item)
+        apply_auto_fit(clip, CANVAS_W, CANVAS_H)
+        item.sync_from_model()
+        preview_img = QImage(CANVAS_W, CANVAS_H, QImage.Format.Format_ARGB32_Premultiplied)
+        preview_img.fill(QColor("#000000"))
+        pp = QPainter(preview_img)
+        try:
+            scene_host.render(pp)
+        finally:
+            pp.end()
+        ap_ = arr(preview_img)
+        bp = content_bbox(ap_)
+        pmx = (bp[0] + bp[1]) // 2
+        bx = content_bbox(export_flip)
+        left_preview = region_mean(ap_, bp[0] + 24, pmx - 24, bp[2] + 24, bp[3] - 24)
+        right_preview = region_mean(ap_, pmx + 24, bp[1] - 24, bp[2] + 24, bp[3] - 24)
+        left_export = region_mean(export_flip, bx[0] + 12, (bx[0] + bx[1]) // 2 - 12,
+                                  bx[2] + 12, bx[3] - 12)
+        right_export = region_mean(export_flip, (bx[0] + bx[1]) // 2 + 12, bx[1] - 12,
+                                   bx[2] + 12, bx[3] - 12)
+        payload["preview_matches_export"] = (
+            close(left_preview, left_export, tol=30.0)
+            and close(right_preview, right_export, tol=30.0)
+            and left_preview != right_preview)
+        # apply_auto_fit o tren da doi scale cua clip ve Fit (1,0 cho nguon 16:9
+        # tren canvas 16:9): phai kien lai SCALE 0,5 truoc khi dung sheet de ca
+        # nam o "goc/lat/xoay" cung mot kich thuoc, neu khong o "goc" lo khung
+        # trong khi bon o kia chiem nua cell (do 23/10/2026 qua anh chung minh).
+        model.update_clip_properties(clip.clip_id, flip_h=False, scale_x=SCALE,
+                                     scale_y=SCALE, x=0.0, y=0.0)
+
+        # ── ANH CHUNG MINH ────────────────────────────────────────────────
+        cell_w, cell_h = 320, 180
+        card_pm = editor.card_transform.grab()
+        card_raw = card_pm.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+        # grab() cua card trong suot 87% (do 23/10/2026: 169.444/195.453 pixel
+        # co alpha < 255, min 0) — ve thang len sheet thi Qt tron voi nen, nen
+        # moi phep so sanh "card ve du chieu cao" khong bao gio khop. Flattening
+        # di qua dung buoc composite that, roi moi do va moi ve.
+        card_img = QImage(card_raw.width(), card_raw.height(),
+                          QImage.Format.Format_RGB32)
+        card_img.fill(QColor("#101014"))
+        fp = QPainter(card_img)
+        try:
+            fp.drawImage(0, 0, card_raw)
+        finally:
+            fp.end()
+        card_colors = len(set(map(
+            tuple, arr(card_img).reshape(-1, 3)[::37].astype(int).tolist())))
+        payload["card_colors"] = card_colors
+
+        frames = [("goc", composer.render_frame(1.0)), ("lat ngang", frame_flip_h),
+                  ("lat doc", frame_flip_v), ("xoay 45", frame_rot45),
+                  ("xoay 90", frame_rot90)]
+        # The card is drawn at its REAL grabbed size: thu nho no bang `// 2`
+        # lam mat 4 hang cuoi cua the Bien doi va probe van PASS vi no khong
+        # do toa do cua sheet (lan do 23/10/2026 thay "Do mo (%)" cat nan).
+        card_w, card_h = card_img.width(), card_img.height()
+        sheet_w = cell_w * len(frames) + card_w + 40
+        sheet_h = max(cell_h + 110, card_h + 56)
+        sheet = QImage(sheet_w, sheet_h, QImage.Format.Format_RGB32)
+        sheet.fill(QColor("#101014"))
+        sp = QPainter(sheet)
+        try:
+            x = 10
+            for label, image in frames:
+                sp.drawImage(QRect(x, 40, cell_w, cell_h),
+                             image.convertToFormat(QImage.Format.Format_RGBA8888))
+                sp.setPen(QColor("#E0E0E0"))
+                sp.drawText(QRect(x, 12, cell_w, 24), Qt.AlignLeft, label)
+                x += cell_w
+            sp.drawImage(QRect(x + 10, 40, card_w, card_h), card_img)
+            sp.drawText(QRect(x + 10, 12, card_w, 24), Qt.AlignLeft,
+                        "the Bien doi")
+        finally:
+            sp.end()
+        if not sheet.save(shot, "PNG"):
+            raise RuntimeError("khong luu duoc anh chung minh")
+        payload["sheet_colors"] = len(set(map(
+            tuple, arr(sheet).reshape(-1, 3)[::101].astype(int).tolist())))
+
+        # Do BANG PIXEL rang the Bien doi ve du chieu cao trong sheet. Lan do
+        # 23/10/2026: `card_img.height() // 2` cat nan 4 hang cuoi cua the
+        # ("Do mo (%)") ma probe van PASS vi no khong do toa do sheet — day
+        # chinh la lop loi "dong duoi fold" cua bang chung minh.
+        ash = arr(sheet)
+        acard = arr(card_img)
+        strip_sheet = ash[40 + card_h - 16: 40 + card_h - 8, x + 10: x + 10 + card_w]
+        strip_card = acard[card_h - 16: card_h - 8]
+        payload["card_bottom_painted"] = (
+            strip_sheet.shape == strip_card.shape
+            and float(np.abs(strip_sheet - strip_card).max()) <= 12.0)
+
+        payload["user_cache_changed"] = listing(real_user_cache) != user_before
+    except Exception as exc:
+        payload["error"] = "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        media_cache.cache_root = real_cache_root
+        core_project_storage.RECOVERY_DIR = real_recovery
+        if host is not None:
+            host.deleteLater()
+        if composer is not None:
+            try:
+                composer.close()
+            except Exception:
+                pass
+        shutil.rmtree(folder, ignore_errors=True)
+
+    if "error" in payload:
+        payload["checks"] = [{"name": name, "ok": False}
+                             for name, _f in TRANSFORM_REPORT_CHECKS]
+        payload["failed"] = ["probe chay khong xong"]
+        payload["ok"] = False
+        with open(out, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        print("transform-report DO: probe chay khong xong — %s" % payload["error"])
+        return 1
+    fails = transform_report_fails(payload)
+    payload["checks"] = [{"name": name, "ok": name not in fails}
+                         for name, _f in TRANSFORM_REPORT_CHECKS]
+    payload["failed"] = fails
+    payload["ok"] = not fails
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    print("transform-report: %s  (%d cua, %d do)  anh: %s"
+          % ("ALL PASS" if not fails else "DO", len(TRANSFORM_REPORT_CHECKS),
+             len(fails), payload["screenshot"]))
+    for name in fails:
+        print("  transform-report DO: %s" % name)
+    return 0 if not fails else 1
+
+
+# ── --canvas-layout-report ────────────────────────────────────
+# `--selftest` dong "bo cuc" do pixel trong PYZ; no khong the noi nam dieu ma
+# nguoi dung dung tay cham vao: nut tren thanh thoi co mo duoc hop thoai cua
+# BAN NAY khong, 22 dieu khien co that ghi duoc vao model khong (mot khoa gui
+# thieu trong `_collect` thi widget van xam ma khong doi gi), dong nao nam
+# duoi thanh cuon khong (bẫy SplitDialog 22/10), bo cuc cua hop thoai co in
+# ra khung xuat va co keo theo canvas preview khong, "Dan clip vao o" co viet
+# transform that khong. Report nay do ca nam thu, tren MainWindow that.
+#
+# Moi muc duoi day la MOT khoa cua LAYOUT_DEFAULTS, KHAC mac dinh va nam TRONG
+# mien cua chinh widget do: gia tri ngoai mien (interval 1.0 khong co trong
+# ROTATE_CHOICES) khien combo tu nhay ve muc 0 nen phep do xanh ma khong do gi.
+CANVAS_LAYOUT_TEST_VALUES = {
+    "enabled": True,
+    "layout": "split-4",
+    "background_mode": "color",
+    "background_color": "#FF8800",
+    "texture": "blueprint",
+    "texture_scale": 1.5,
+    "overlay_opacity": 0.40,
+    "slot_gap": 0.10,
+    "header_text": "CHU DAU",
+    "footer_text": "CHU CUOI",
+    "header_font": "serif",
+    "footer_font": "display",
+    "header_size": 64,
+    "footer_size": 48,
+    "header_bold": False,
+    "footer_bold": True,
+    "text_color": "#00FF00",
+    "frame_color": "#00FFFF",
+    "auto_fit": False,
+    "play_sequentially": True,
+    "slot_seconds": 3.0,
+    "manga_rotate_interval": 5.0,
+}
+
+# Ten widget phai TOM khi master tat. `chk_enabled` co y khong nam trong danh
+# sach: no la cai ma nguoi dung vua bam.
+CANVAS_LAYOUT_CHILD_WIDGETS = (
+    "combo_layout", "combo_mode", "combo_texture", "btn_bg_color",
+    "btn_slot_color", "btn_text_color", "chk_auto_fit", "edit_header",
+    "edit_footer", "combo_header_font", "combo_footer_font",
+    "spin_header_size", "spin_footer_size", "chk_header_bold",
+    "chk_footer_bold", "chk_sequential", "spin_slot_seconds", "combo_rotate",
+    "btn_arrange",
+)
+
+# Bon trang thai do fold: tat / nen toan-den (mat het dieu khien con) / chat
+# lieu + hai vung chu / luoi 6 o + che do chay. Day la bon hop hinh that ma
+# `sizeHint()` khac nhau; mot dong bi an o mot trong bon thi nguoi dung khong
+# bao gio nhin thay loi nhap cua chinh minh.
+CANVAS_LAYOUT_STATES = (
+    ("tat", {"enabled": False}),
+    ("den + none", {"enabled": True, "background_mode": "black",
+                    "layout": "none"}),
+    ("chat lieu + chu", {"enabled": True, "background_mode": "texture",
+                         "texture": "blueprint", "layout": "magazine-editorial",
+                         "header_text": "Tuan 42", "footer_text": "Canva aura"}),
+    ("luoi 6 o + tuan tu", {"enabled": True, "layout": "split-6",
+                            "slot_gap": 0.2, "play_sequentially": True,
+                            "manga_rotate_interval": 5.0, "auto_fit": False}),
+)
+
+CANVAS_LAYOUT_REPORT_CHECKS = (
+    # Cong gia neu hop thoai rong: count = 0 khong duoc xanh o bat cu cua nao.
+    ("combo bo cuc du 13 kieu",
+     lambda p: p["layout_combo_count"] == 13
+     and p["layout_combo_count"] == p["layout_module_count"]),
+    ("combo chat lieu du 10 phong cach",
+     lambda p: p["texture_combo_count"] == 10
+     and p["texture_combo_count"] == p["texture_module_count"]),
+    ("bang thu du 22 khoa",
+     lambda p: p["test_values_complete"] and p["widget_key_count"] == 22),
+    ("moi khoa co dieu khien ghi duoc model", lambda p: p["unwired"] == []),
+    ("nut thanh mo duoc hop thoai",
+     lambda p: p["button_visible"] and p["dialog_opened"]),
+    ("bam lan 2 dung mot instance", lambda p: p["reused"]),
+    ("dem du dieu khien de do fold", lambda p: p["control_count"] >= 24),
+    ("khong dieu khien nao bi fold",
+     lambda p: p["folded"] == [] and p["fold_states"] == 4),
+    ("hop thoai vua man hinh",
+     lambda p: 0 < p["max_dialog_h"] <= p["screen_h"]),
+    ("master tat an het dieu khien", lambda p: p["disabled_leak"] == []),
+    ("mo hop thoai duoi 0,6 s", lambda p: 0 < p["open_s"] < 0.6),
+    ("do duoc private RAM cua chinh process", lambda p: p["ram_kib"] > 0),
+    ("hop thoai chiem duoi 8 MiB private", lambda p: p["ram_delta_kib"] < 8192),
+    ("keo slider model doi ngay", lambda p: p["slider_live"]),
+    ("canvas preview ve lai theo bo cuc",
+     lambda p: p["preview_px_changed"] >= 20000),
+    ("dong hop thoai dung MOT muc undo", lambda p: p["undo_rows"] == 1),
+    ("Ctrl+Z tra bo cuc cu", lambda p: p["undo_restores"]),
+    ("mo lai widget doc dung model", lambda p: p["refresh_widget_ok"]),
+    ("dan clip ra transform dung tam o",
+     lambda p: p["center_bad"] == [] and p["arranged"] == p["boxes"]
+     and p["boxes"] > 0),
+    ("clip thua khong bi lat vao o", lambda p: p["leftover_moved"] == []),
+    ("dan clip la MOT lenh undo", lambda p: p["arrange_rows"] == 1),
+    ("Ctrl+Z tra nguyen vi tri cu", lambda p: p["arrange_reverted"]),
+    ("nut dan bao ro du o hay lap o cuoi", lambda p: p["hint_ok"]),
+    ("khong co clip thi nut dan tu choi", lambda p: p["empty_refused"]),
+    ("bo cuc hop thoai in ra khung xuat",
+     lambda p: p["bg_px"] >= 0.9 * p["frame_px"]),
+    ("gach ngan split-4 hien ra trong xuat", lambda p: p["divider_px"] >= 3000),
+    ("10 chat lieu la 10 buoc ve khac nhau",
+     lambda p: p["texture_solids"] == [] and p["texture_steps"] >= 5),
+    ("chu dau ve trong vung cua no",
+     lambda p: p["header_px"] >= 400 and p["header_inside"]),
+    ("nen den khong lam doi khung", lambda p: p["black_same"]),
+    ("slot_gap thu o dung len", lambda p: p["gap_shrinks"]),
+    ("phat tuan tu quay dung vong o",
+     lambda p: p["seq_steps"] == [0, 0, 1, 2, 0, 0] and p["seq_off_ok"]),
+    ("trao o nhay theo interval", lambda p: p["rotate_ok"] and p["rotate_off_ok"]),
+    ("bo cuc tron ven qua file .clinq",
+     lambda p: p["round_trip_ok"] and p["round_trip_keys"] == 22),
+    ("file cu khong key tro ve mac dinh",
+     lambda p: p["legacy_ok"] and p["legacy_keys"] == 22),
+    ("khong ghi vao cache nguoi dung", lambda p: not p["user_cache_extra"]),
+    ("anh hop thoai ve co that",
+     lambda p: p["shot_readable"] and p["shot_colors"] > 40
+     and p["shot_bytes"] > 20000),
+)
+
+
+def canvas_layout_report_fails(payload):
+    """Ten tung dieu kien ma `--canvas-layout-report` do khong dat (rong = dat het)."""
+    return [name for name, ok in CANVAS_LAYOUT_REPORT_CHECKS if not ok(payload)]
+
+
+def run_canvas_layout_report(argv=None):
+    """Bố cục & Phong cách — đo từ chính cửa sổ thật của bản exe này.
+
+    Nam mata xich o day chi lon len khi chay tren dung ban nguoi dung nhan,
+    khong phai tren tree nguon:
+
+      * nut "Bo cuc & Phong cach" tren header thanh thoi mo duoc hop thoai, va
+        bam lan hai van dung MOT instance (khong mo chong);
+      * du 22 khoa cua `LAYOUT_DEFAULTS` co widget va widget that ghi duoc model
+        -- gui tung widget qua tin hieu `_apply`, tuc dung duong nguoi dung keo;
+      * khong dieu khien nao nam ngoai viewport cua `QScrollArea` o ca BON
+        trang thai, va chieu cao cua khong vuot vung lam viec cua man hinh
+        (chinh xac la loi da an nut Dong cua SplitDialog 22/10);
+      * bo cuc ma hop thoai ghi vao model in ra KHUNG XUAT that (do bang pixel
+        qua `FrameComposer`) va keo theo canvas preview ve lai;
+      * "Dan clip vao o" viet transform that, dung tam o, MỘT lenh undo, Ctrl+Z
+        sach, va clip thua thi khong bi dong;
+      * dong hop thoai chi day DUNG MOT muc undo, mo lai doc dung gia tri model.
+
+    Clinging.exe --canvas-layout-report <duong-dan-json>
+    """
+    import gc
+    import shutil
+    import tempfile
+    import time as _time
+
+    import numpy as np
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from PySide6.QtWidgets import (
+        QApplication, QCheckBox, QComboBox, QLineEdit, QPushButton, QSlider,
+        QSpinBox, QWidget,
+    )
+    from core import canvas_layout, project_storage
+    from core.canvas_utils import ASPECT_RATIOS, base_display_size
+    from core.frame_composer import FrameComposer
+    from core.timeline_model import TimelineModel, TrackType
+
+    argv = list(argv if argv is not None else sys.argv)
+    out = _report_path(argv).replace("clinging_selftest",
+                                     "clinging_canvas_layout")
+    shot = out[:-5] + ".png" if out.endswith(".json") else out + ".png"
+
+    app = QApplication.instance() or QApplication([])
+    from theme import theme_manager
+    app.setStyleSheet(theme_manager.stylesheet())
+
+    def pump(times=6):
+        for _ in range(times):
+            app.processEvents()
+            _time.sleep(0.03)
+
+    W, H = 1920, 1080
+    CONTROLS = (QComboBox, QLineEdit, QSpinBox, QSlider, QCheckBox, QPushButton)
+    folder = os.path.join(tempfile.gettempdir(), "clinging_canvas_layout_report")
+    stills = [os.path.join(folder, "slot%d.png" % i) for i in range(3)]
+
+    payload = {"exe": os.path.abspath(sys.argv[0]),
+               "frozen": bool(getattr(sys, "frozen", False)),
+               "report": os.path.abspath(out), "screenshot": os.path.abspath(shot),
+               "layout_combo_count": 0, "layout_module_count": 0,
+               "texture_combo_count": 0, "texture_module_count": 0,
+               "test_values_complete": False, "widget_key_count": 0,
+               "unwired": [], "control_count": 0, "folded": [], "fold_states": 0,
+               "max_dialog_h": 0, "screen_h": 0, "disabled_leak": [],
+               "button_visible": False, "dialog_opened": False, "reused": False,
+               "dialog_type": "", "open_s": 0.0, "ram_kib": 0,
+               "ram_delta_kib": 0, "slider_live": False,
+               "preview_px_changed": 0, "undo_rows": 0, "undo_restores": False,
+               "refresh_widget_ok": False, "arranged": 0, "boxes": 0,
+               "center_bad": [], "leftover_moved": [], "arrange_rows": 0,
+               "arrange_reverted": False, "hint_ok": False,
+               "empty_refused": False, "frame_px": W * H, "bg_px": 0,
+               "divider_px": 0, "texture_solids": [], "texture_steps": 0,
+               "header_px": 0, "header_inside": False, "black_same": False,
+               "gap_shrinks": False, "seq_steps": [], "seq_off_ok": False,
+               "rotate_ok": False, "rotate_off_ok": False,
+               "round_trip_ok": False, "round_trip_keys": 0, "legacy_ok": False,
+               "legacy_keys": 0, "user_cache_extra": [], "shot_readable": False,
+               "shot_colors": 0, "shot_bytes": 0, "values_seen": {}}
+
+    def rgb_of(image):
+        """QImage/QPixmap -> (H, W, 3) int16, DA composite qua nen den truoc khi do.
+
+        `grab()` cua widget bo tron stylesheet tra anh co alpha < 255 o DPR>1
+        (vet da ghi trong AGENTS.md): hai lan grab deu trong suot thi hieu
+        lech = 0 va cua do "canvas ve lai" do sai.
+
+        `grab()` tra VE QPIXMAP khong QImage, ma `QPainter.drawImage(int, int, ...)`
+        chi nhan QImage -- lan chay 23/10 abort 0xC0000409 o chinh do, va stdout
+        cua probe mat het nen khong con dong DO nao.
+        """
+        if not isinstance(image, QImage):
+            image = image.toImage()
+        flat = QImage(image.size(), QImage.Format.Format_RGB32)
+        flat.fill(QColor("#000000"))
+        painter = QPainter(flat)
+        painter.drawImage(0, 0, image)
+        painter.end()
+        flat = flat.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+        buf = flat.constBits()
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else bytes(buf)
+        row = flat.bytesPerLine() // 4
+        px = np.frombuffer(raw, np.uint8).reshape(
+            (flat.height(), row, 4))[:, :flat.width(), :3]
+        # ARGB32 nam trong bo nho theo thu tu B,G,R,A.
+        return px[:, :, ::-1].astype(np.int16)
+
+    def count_color(px, hexcolor, tol=60):
+        c = QColor(hexcolor)
+        d = np.abs(px - np.array([c.red(), c.green(), c.blue()], np.int16))
+        return int((d.max(axis=2) <= tol).sum())
+
+    def transform_of(clip):
+        """Biet danh transform cua clip -- do lech cua "Dan clip vao o" bang so."""
+        t = clip.transform
+        return (round(t.x, 3), round(t.y, 3), round(t.scale_x, 5),
+                round(t.scale_y, 5))
+
+    def _close_to(got, want):
+        if isinstance(want, bool) or isinstance(got, bool):
+            return bool(got) == bool(want)
+        if isinstance(want, (int, float)) and isinstance(got, (int, float)):
+            return abs(float(got) - float(want)) <= 0.011
+        return got == want
+
+    win = None
+    dialog = None
+    composer = None
+    cache_state = None
+    real_autosave = None
+    real_recovery = None
+    try:
+        # Redirect cache ANH qua `_cache_guard_start`: probe mo MainWindow that
+        # keo theo `ClipTimelineItem._load_thumbnail` cho ba anh fixture, va mot
+        # lan chay truoc khi co redirect de lai 6 muc duoi cache cua nguoi dung
+        # trong khi `DOI: 0` khong he bao (do 23/10, phia style-report).
+        cache_state = _cache_guard_start("canvas_layout_report")
+        real_autosave = project_storage.AUTO_SAVE_FILE
+        real_recovery = project_storage.RECOVERY_DIR
+        project_storage.AUTO_SAVE_FILE = os.path.join(folder, "autosave.json")
+        project_storage.RECOVERY_DIR = os.path.join(folder, "recovery")
+        if os.path.isdir(folder):
+            shutil.rmtree(folder, ignore_errors=True)
+        os.makedirs(folder)
+
+        for index, path in enumerate(stills):
+            tile = QImage(640, 360, QImage.Format.Format_RGB32)
+            tile.fill(QColor(60 + 60 * index, 120, 200))
+            mark = QPainter(tile)
+            mark.setPen(QColor(255, 255, 255))
+            mark.drawRect(40, 30, 560, 300)
+            mark.end()
+            if not tile.save(path, "PNG"):
+                raise RuntimeError("khong ghi duoc fixture %s" % path)
+
+        payload["test_values_complete"] = (
+            sorted(CANVAS_LAYOUT_TEST_VALUES) == sorted(canvas_layout.LAYOUT_DEFAULTS))
+
+        from ui.main_window import MainWindow
+        win = MainWindow()
+        win.resize(1500, 900)
+        win.show()
+        timer = getattr(win, "_autosave_timer", None)
+        if timer is not None:
+            timer.stop()
+        pump(12)
+
+        panel = win.timeline_panel
+        header = panel.header
+        stack = panel.undo_stack
+        from ui.canvas_layout_dialog import ROTATE_CHOICES
+
+        def rows_by_key():
+            return {row.key: row for row in dialog._rows()}
+
+        def touch(key, value):
+            """Ghi mot khoa QUA WIDGET that de tin hieu `_apply` chay nhu nguoi dung."""
+            rows = rows_by_key()
+            if key == "enabled":
+                dialog.chk_enabled.setChecked(bool(value))
+            elif key == "layout":
+                dialog.combo_layout.setCurrentIndex(
+                    canvas_layout.LAYOUT_ORDER.index(value))
+            elif key == "background_mode":
+                dialog.combo_mode.setCurrentIndex(
+                    canvas_layout.BACKGROUND_MODES.index(value))
+            elif key == "texture":
+                dialog.combo_texture.setCurrentIndex(
+                    canvas_layout.TEXTURE_ORDER.index(value))
+            elif key in ("header_font", "footer_font"):
+                combo = (dialog.combo_header_font if key == "header_font"
+                         else dialog.combo_footer_font)
+                combo.setCurrentIndex(canvas_layout.FONT_FAMILIES.index(value))
+            elif key == "manga_rotate_interval":
+                dialog.combo_rotate.setCurrentIndex(
+                    list(ROTATE_CHOICES).index(value))
+            elif key in ("header_text", "footer_text"):
+                edit = (dialog.edit_header if key == "header_text"
+                        else dialog.edit_footer)
+                edit.setText(value)
+            elif key in ("header_size", "footer_size"):
+                spin = (dialog.spin_header_size if key == "header_size"
+                        else dialog.spin_footer_size)
+                spin.setValue(int(value))
+            elif key in ("auto_fit", "play_sequentially", "header_bold",
+                         "footer_bold"):
+                widget = {"auto_fit": dialog.chk_auto_fit,
+                          "play_sequentially": dialog.chk_sequential,
+                          "header_bold": dialog.chk_header_bold,
+                          "footer_bold": dialog.chk_footer_bold}[key]
+                widget.setChecked(bool(value))
+            elif key == "slot_seconds":
+                dialog.spin_slot_seconds.setValue(int(value))
+            elif key in rows:
+                rows[key].slider.setValue(int(round(float(value) * 100)))
+            elif key in ("background_color", "text_color", "frame_color"):
+                # Duong cua nut chon mau: son lai button (tooltip la cho duy
+                # nhat luu mau) roi Goi `_apply` -- khong them bom truc thai.
+                dialog._paint_color_buttons(
+                    dict(dialog._model.project_layout, **{key: value}))
+                dialog._apply()
+            else:
+                raise RuntimeError("khong co dieu khien cho khoa %s" % key)
+            pump(2)
+
+        def load_state(**patch):
+            """Nap ca bo 22 khoa qua `_load_from` cua hop thoai (do BOC DE).
+
+            Khong phai `touch`: 4 trang thai x 22 khoa gui tung widget thieu
+            gi ~5 s rieng cho vong do; duong widget -> model da do o cua
+            "moi khoa co dieu khien ghi duoc model".
+            """
+            settings = canvas_layout.normalize(
+                dict(canvas_layout.LAYOUT_DEFAULTS, **patch))
+            dialog._loading = True
+            dialog._model.set_project_layout(settings, emit=False)
+            dialog._load_from(settings)
+            dialog._loading = False
+            pump(3)
+
+        # ── A. diem vao ──────────────────────────────────────────
+        payload["button_visible"] = header.btn_layout.isVisible()
+        first = getattr(win, "_canvas_layout_dialog", None)
+        header.btn_layout.click()
+        pump(6)
+        dialog = getattr(win, "_canvas_layout_dialog", None)
+        payload["dialog_opened"] = dialog is not None and dialog.isVisible()
+        if dialog is None:
+            raise RuntimeError("bam nut Bo cuc khong mo duoc hop thoai")
+        payload["dialog_type"] = type(dialog).__name__
+        payload["reused"] = first is None
+        header.btn_layout.click()
+        pump(4)
+        payload["reused"] = (payload["reused"]
+                             and getattr(win, "_canvas_layout_dialog", None) is dialog)
+
+        # ── B. bang dieu khien ───────────────────────────────────
+        payload["layout_combo_count"] = dialog.combo_layout.count()
+        payload["layout_module_count"] = len(canvas_layout.LAYOUT_ORDER)
+        payload["texture_combo_count"] = dialog.combo_texture.count()
+        payload["texture_module_count"] = len(canvas_layout.TEXTURE_ORDER)
+
+        # ── C. 22 khoa: widget -> model, tung cai mot ────────────
+        touch("enabled", True)
+        unwired = []
+        for key in sorted(canvas_layout.LAYOUT_DEFAULTS):
+            if key == "enabled":
+                continue
+            want = CANVAS_LAYOUT_TEST_VALUES[key]
+            touch(key, want)
+            got = dialog._model.project_layout[key]
+            if not _close_to(got, want):
+                unwired.append("%s: widget muon %r model con %r" % (key, want, got))
+            payload["values_seen"][key] = [CANVAS_LAYOUT_TEST_VALUES[key], got]
+        payload["unwired"] = unwired
+        payload["widget_key_count"] = len(dialog._collect())
+
+        # ── D. fold + chieu cao cua o ca BON trang thai ──────────
+        screen = QApplication.primaryScreen().availableGeometry()
+        payload["screen_h"] = int(screen.height())
+        folded, counted = [], 0
+        for name, patch in CANVAS_LAYOUT_STATES:
+            load_state(**patch)
+            bar = dialog._scroll.verticalScrollBar()
+            if bar.maximum() != 0:
+                folded.append("%s:scroll=%d" % (name, bar.maximum()))
+            viewport = dialog._scroll.viewport()
+            top_left = viewport.mapToGlobal(viewport.rect().topLeft())
+            bottom_right = viewport.mapToGlobal(viewport.rect().bottomRight())
+            for widget in dialog._body.findChildren(QWidget):
+                if not isinstance(widget, CONTROLS) or not widget.isVisible():
+                    continue
+                counted += 1
+                origin = widget.mapToGlobal(widget.rect().topLeft())
+                end = widget.mapToGlobal(widget.rect().bottomRight())
+                if not (top_left.x() <= origin.x() and top_left.y() <= origin.y()
+                        and end.x() <= bottom_right.x()
+                        and end.y() <= bottom_right.y()):
+                    folded.append("%s:%s" % (name, widget.objectName()
+                                             or type(widget).__name__))
+            if dialog.height() > payload["max_dialog_h"]:
+                payload["max_dialog_h"] = int(dialog.height())
+        payload["folded"] = sorted(set(folded))
+        payload["fold_states"] = len(CANVAS_LAYOUT_STATES)
+        payload["control_count"] = counted
+
+        # ── E. master tat tom het dieu khien ─────────────────────
+        load_state(**{"enabled": False})
+        leak = []
+        for attr in CANVAS_LAYOUT_CHILD_WIDGETS:
+            widget = getattr(dialog, attr, None)
+            if widget is None:
+                leak.append("thieu:" + attr)
+            elif widget.isEnabled():
+                leak.append(attr)
+        for row in dialog._rows():
+            if row.isEnabled():
+                leak.append("slider:" + row.key)
+        payload["disabled_leak"] = leak
+
+        # ── F. chi phi mo lai (do TRUOC vong pixel de RAM sach numpy) ──
+        def _private_kib():
+            try:
+                import psutil
+                return int(psutil.Process().memory_info().private / 1024)
+            except Exception:
+                return 0
+
+        dialog.close()
+        pump(4)
+        del win._canvas_layout_dialog
+        gc.collect()
+        pump(4)
+        ram_before = _private_kib()
+        started = _time.perf_counter()
+        dialog = win._open_canvas_layout()
+        pump(6)
+        payload["open_s"] = round(_time.perf_counter() - started, 3)
+        ram_after = _private_kib()
+        payload["ram_kib"] = ram_after
+        payload["ram_delta_kib"] = (ram_after - ram_before
+                                    if ram_before and ram_after else 0)
+
+        # ── G. keo slider = model doi = canvas ve lai; dong = 1 undo ──
+        load_state(enabled=True, layout="split", background_mode="color",
+                   background_color="#3673FE", overlay_opacity=0.0,
+                   slot_gap=0.0)
+        # `refresh()` la duong ma hop thoai tu dung khi mo lai: no chap
+        # `_opening` = model luc ay, nen lenh undo do `Dong` day LA snapshot that,
+        # khong phai snapshot ma probe tu gian vao.
+        dialog.refresh()
+        pump(3)
+        opening = dict(dialog._model.project_layout)
+        grab_before = rgb_of(win.preview_panel.canvas.viewport().grab())
+        slider = rows_by_key()["overlay_opacity"].slider
+        slider.setValue(40)
+        pump(3)
+        payload["slider_live"] = _close_to(
+            dialog._model.project_layout["overlay_opacity"], 0.40)
+        grab_after = rgb_of(win.preview_panel.canvas.viewport().grab())
+        payload["preview_px_changed"] = int(
+            (np.abs(grab_after - grab_before).max(axis=2) > 24).sum())
+        del grab_before, grab_after
+        base_rows = stack.undo_count
+        close_button = None
+        for widget in dialog.findChildren(QPushButton):
+            if widget.text() == "Đóng":
+                close_button = widget
+                break
+        if close_button is None:
+            raise RuntimeError("hop thoai khong co nut Dong")
+        slider.setValue(60)
+        pump(3)
+        close_button.click()
+        pump(3)
+        payload["undo_rows"] = stack.undo_count - base_rows
+        stack.undo()
+        pump(3)
+        payload["undo_restores"] = dict(dialog._model.project_layout) == opening
+        dialog = win._open_canvas_layout()
+        pump(3)
+        payload["refresh_widget_ok"] = (
+            rows_by_key()["overlay_opacity"].slider.value()
+            == int(round(opening["overlay_opacity"] * 100)))
+
+        # ── H. "Dan clip vao o": transform that + MOT undo ───────
+        model = dialog._model
+        w, h = ASPECT_RATIOS.get(getattr(model, "project_ratio", "16:9"), (W, H))
+        clips = []
+        for index, path in enumerate(stills):
+            # TrackType.IMAGE: `track_accepts_media` tu choi "image" tren track
+            # VIDEO, va track IMAGE khong tu hap nen ca ba clip cung nam o
+            # [0, 4) -- playhead 1,0 tinh ca ba la dang hien.
+            track = model.add_track(TrackType.IMAGE, name="slot %d" % index)
+            clip = model.add_clip(track.track_id, path, "image", 0.0, 4.0,
+                                 name="still%d" % index)
+            if clip is None:
+                raise RuntimeError("khong tao duoc clip fixture %d" % index)
+            clips.append(clip)
+        model.playhead = 1.0
+        load_state(enabled=True, layout="split", slot_gap=0.0, auto_fit=True,
+                   background_mode="color", background_color="#0B0B0F")
+        before = [_transform(c) for c in clips]
+        base_rows = stack.undo_count
+        dialog.btn_arrange.click()
+        pump(4)
+        boxes = canvas_layout.slots(w, h, model.project_layout)
+        payload["boxes"] = len(boxes)
+        payload["arrange_rows"] = stack.undo_count - base_rows
+        moved = sum(1 for c, snap in zip(clips, before)
+                    if _transform(c) != snap)
+        payload["arranged"] = moved
+        # Quy tac cua `_arrange`: tracks di duoi-len-tren nen track CUOI la lop
+        # tren cung va nhan o 0. Doi chieu theo thu tu do, khong theo thu tu tao
+        # clip (do lan chay 23/10: zip theo `clips` do tam lech cua mot nan nhan
+        # CHUA di chuyen va bao DO sai).
+        order = list(reversed(clips))[:len(boxes)]
+        leftover = [c for c in clips if c not in order]
+        bad = []
+        for clip, box in zip(order, boxes):
+            base_w, base_h = base_display_size(clip, w, h)
+            drawn_w = base_w * clip.transform.scale_x
+            drawn_h = base_h * clip.transform.scale_y
+            cx = w / 2.0 + clip.transform.x
+            cy = h / 2.0 + clip.transform.y
+            if abs(cx - (box[0] + box[2] / 2.0)) > 0.75:
+                bad.append("tam lech ngang %s %.1f" % (clip.name, cx))
+            if abs(cy - (box[1] + box[3] / 2.0)) > 0.75:
+                bad.append("tam lech doc %s %.1f" % (clip.name, cy))
+            if drawn_w > box[2] + 0.75 or drawn_h > box[3] + 0.75:
+                bad.append("trao o %s" % clip.name)
+        payload["center_bad"] = bad
+        payload["leftover_moved"] = [c.name for c in leftover
+                                    if _transform(c) != before[clips.index(c)]]
+        payload["hint_ok"] = (("du o" if not leftover else "lap o cuoi")
+                              in dialog.lbl_arrange.text())
+        stack.undo()
+        pump(4)
+        payload["arrange_reverted"] = [_transform(c) for c in clips] == before
+        # Playhead ngoai khoang clip: nut dan PHAI tu choi va khong day lenh.
+        # Do la thu duy nhat phat hien mot `active` rong (neu khong, cua "dan
+        # clip" xanh vi mo hinh da san ro).
+        model.playhead = 4.0
+        base_rows = stack.undo_count
+        dialog.btn_arrange.click()
+        pump(3)
+        payload["empty_refused"] = (stack.undo_count == base_rows
+                                    and "clip" in dialog.lbl_arrange.text().lower())
+        model.playhead = 1.0
+        for track in list(model.tracks):
+            for clip in list(track.clips):
+                model.remove_clip(clip.clip_id)
+        for track in list(model.tracks):
+            if not track.clips:
+                model.remove_track(track.track_id)
+        pump(4)
+
+        # ── I. pixel tren KHUNG XUAT cua dung model ma hop thoai ghi ──
+        composer = FrameComposer(model, W, H)
+
+        def render(**patch):
+            load_state(**patch)
+            return rgb_of(composer.render_frame(0.5))
+
+        plain = render(enabled=False)
+        dark = render(enabled=True, background_mode="black", layout="none",
+                      overlay_opacity=0.0)
+        # Nen "black" la NGUYEN hanh vi 1.0.5: mo bo cuc len ma chi chon den thi
+        # khung phai y het nhu cu, neu khong thi tat o day la mot lop ve an.
+        payload["black_same"] = bool(np.array_equal(plain, dark))
+        del plain
+        blue = render(enabled=True, background_mode="color",
+                      background_color="#3673FE")
+        payload["bg_px"] = count_color(blue, "#3673FE")
+        del blue
+        grid = render(enabled=True, background_mode="color",
+                      background_color="#3673FE", layout="split-4",
+                      frame_color="#00FFFF")
+        payload["divider_px"] = count_color(grid, "#00FFFF")
+        del grid
+        ink = render(enabled=True, layout="none", background_mode="black",
+                     background_color="#0B0B0F", texture="meme",
+                     overlay_opacity=0.0, frame_color="#FFFFFF",
+                     text_color="#FF0000", header_font="sans",
+                     header_bold=True, header_size=64, header_text="TIEU DE THU")
+        payload["header_px"] = count_color(ink, "#FF0000", 90)
+        hit = np.abs(ink - np.array([255, 0, 0], np.int16)).max(axis=2) <= 90
+        ys, _xs = np.nonzero(hit)
+        hrect = canvas_layout.header_rect(W, H, {"layout": "none",
+                                                 "header_size": 64})
+        payload["header_inside"] = bool(
+            len(ys) and ys.min() >= hrect[1] - 2
+            and ys.max() <= hrect[1] + hrect[3] + 2)
+        del ink
+
+        # 10 chat lieu phai la 10 buoc ve khac nhau, khong phai mot tam nen dung
+        # chung. Do qua `backdrop()` ma `paint_background` goi, o 320x240.
+        def tex(name):
+            settings = canvas_layout.normalize(
+                dict(canvas_layout.LAYOUT_DEFAULTS, enabled=True,
+                     background_mode="texture", texture=name))
+            return rgb_of(canvas_layout.backdrop(settings, 320, 240))
+
+        solids, means = [], []
+        for name in canvas_layout.TEXTURE_ORDER:
+            arr = tex(name)
+            if len(np.unique(arr.reshape(-1, 3), axis=0)) < 2:
+                solids.append(name)
+            means.append(round(float(arr.mean()), 1))
+            del arr
+        payload["texture_solids"] = solids
+        payload["texture_steps"] = len(set(means))
+
+        # ── J. dong ho cua bo cuc (khong co pixel nao o day) ─────
+        tight = canvas_layout.slots(W, H, canvas_layout.normalize(
+            dict(canvas_layout.LAYOUT_DEFAULTS, layout="split",
+                 slot_gap=0.2)))[0]
+        loose = canvas_layout.slots(W, H, canvas_layout.normalize(
+            dict(canvas_layout.LAYOUT_DEFAULTS, layout="split",
+                 slot_gap=0.0)))[0]
+        payload["gap_shrinks"] = (tight[0] > loose[0] + 1.0
+                                  and tight[2] < loose[2] - 1.0)
+        seq = dict(canvas_layout.LAYOUT_DEFAULTS, play_sequentially=True,
+                   slot_seconds=2.0)
+        payload["seq_steps"] = [canvas_layout.sequential_index(seq, t, 3)
+                                for t in (0.0, 1.9, 2.0, 5.9, 6.0, 7.5)]
+        payload["seq_off_ok"] = (canvas_layout.sequential_index(
+            dict(seq, play_sequentially=False), 1.0, 3) == -1)
+        rot = dict(canvas_layout.LAYOUT_DEFAULTS, manga_rotate_interval=5.0)
+        # pool = 4 KHAC so o 3: khi count == pool thi
+        # `(slot + step*count) % n` = slot, tuc khong trao gi ca, va cua do xanh
+        # ma khong do duoc gi (do lan chay 23/10).
+        payload["rotate_ok"] = (
+            canvas_layout.rotated_slot_source(rot, 0.0, 3, 1, 4) == 1
+            and canvas_layout.rotated_slot_source(rot, 5.0, 3, 1, 4) == (1 + 3) % 4)
+        payload["rotate_off_ok"] = (canvas_layout.rotated_slot_source(
+            dict(rot, manga_rotate_interval=0.0), 9.0, 3, 2, 4) == 2)
+
+        # ── K. van qua file .clinq (model THAT cua cua so nay) ────
+        path = os.path.join(folder, "Kiem bo cuc.clinq")
+        settings = canvas_layout.normalize(dict(canvas_layout.LAYOUT_DEFAULTS, **{
+            "enabled": True, "layout": "manga-grid",
+            "background_mode": "texture", "texture": "parchment",
+            "header_text": "Tuan 42", "slot_gap": 0.05,
+            "play_sequentially": True, "manga_rotate_interval": 5.0}))
+        probe_model = TimelineModel()
+        probe_model.project_ratio = "16:9"
+        probe_model.set_project_layout(settings, emit=False)
+        if not project_storage.save_project_to_file(probe_model, path):
+            raise RuntimeError("save_project_to_file tra False")
+        data = project_storage.load_project_from_file(path)
+        if not data:
+            raise RuntimeError("load_project_from_file tra rong")
+        if "project_layout" not in data.get("timeline", {}):
+            raise RuntimeError("file .clinq khong ghi khoa project_layout")
+        reloaded = TimelineModel()
+        project_storage.restore_model_from_clinq(reloaded, data)
+        payload["round_trip_keys"] = len(reloaded.project_layout)
+        payload["round_trip_ok"] = (
+            reloaded.project_layout == canvas_layout.normalize(settings))
+        # File cua 1.0.5 tro ve truoc: KHONG co khoa nao ca. Duong nay phai tra
+        # ve mac dinh thay vi ve trang tinh hay crash.
+        stale = dict(data)
+        stale["timeline"] = {k: v for k, v in data["timeline"].items()
+                             if k != "project_layout"}
+        legacy = TimelineModel()
+        project_storage.restore_model_from_clinq(legacy, stale)
+        payload["legacy_keys"] = len(legacy.project_layout)
+        payload["legacy_ok"] = legacy.project_layout == canvas_layout.LAYOUT_DEFAULTS
+
+        # ── L. anh chung minh: cua so THAT, nen THAT ─────────────
+        load_state(enabled=True, layout="split-4", background_mode="texture",
+                   texture="blueprint", frame_color="#00FFFF",
+                   header_text="BO CUC", footer_text="Phong cach",
+                   slot_gap=0.06)
+        pump(6)
+        raw = dialog.grab().toImage()
+        sheet = QImage(raw.size(), QImage.Format.Format_RGB32)
+        sheet.fill(QColor("#101215"))
+        grabber = QPainter(sheet)
+        grabber.drawImage(0, 0, raw)
+        grabber.end()
+        if not sheet.save(shot, "PNG"):
+            raise RuntimeError("khong luu duoc anh hop thoai")
+        back = QImage(shot)
+        payload["shot_readable"] = (not back.isNull()
+                                    and back.width() == sheet.width())
+        payload["shot_bytes"] = os.path.getsize(shot) if os.path.isfile(shot) else 0
+        flat = back.convertToFormat(QImage.Format.Format_RGB32)
+        payload["shot_colors"] = len({flat.pixel(x, y)
+                                      for x in range(0, flat.width(), 3)
+                                      for y in range(0, flat.height(), 3)})
+    except Exception as exc:
+        # Mot exception o giua probe khong duoc tro thanh "ALL PASS": cua do thieu
+        # truong thi KeyError, va KeyError bat qua bien callback C++ cua Qt co the
+        # abort 0xC0000409 do la lop loi repo da ghi.
+        payload["error"] = "%s: %s" % (type(exc).__name__, exc)
+        # Traceback ra STDERR, flush ngay: lan chay 23/10 probe abort 0xC0000409
+        # o dong 9664 va an TOAN BO stdout -- khong co dong nay thi chi biet "chet
+        # im lang", khong biet chet o dau (3 lan chay moj de tìm 1 dong loi).
+        import traceback
+        traceback.print_exc()
+        sys.stderr.flush()
+    finally:
+        if dialog is not None:
+            try:
+                dialog.close()
+            except Exception:
+                pass
+        if composer is not None:
+            try:
+                composer.close()
+            except Exception:
+                pass
+        if win is not None:
+            # QMediaPlayer (backend WMF) giu NGUON mo cho toi khi
+            # setSource(QUrl()), ke ca sau stop()/close(): do lan chay 23/10,
+            # psutil liet ke dung MOT handle cua process tro vao file fixture
+            # trong khi gc khong con reader nao.
+            player = getattr(win, "_audio_player", None)
+            if player is not None:
+                try:
+                    player.stop()
+                    player.setSource(QUrl())
+                except Exception:
+                    pass
+            try:
+                win.close()
+            except Exception:
+                pass
+        pump(8)
+        if cache_state is not None:
+            payload["user_cache_extra"] = _cache_guard_finish(cache_state)
+        project_storage.AUTO_SAVE_FILE = real_autosave
+        project_storage.RECOVERY_DIR = real_recovery
+        shutil.rmtree(folder, ignore_errors=True)
+
+    if "error" in payload:
+        payload["checks"] = [{"name": name, "ok": False}
+                             for name, _f in CANVAS_LAYOUT_REPORT_CHECKS]
+        payload["failed"] = ["probe chay khong xong"]
+        payload["ok"] = False
+        with open(out, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        print("canvas-layout-report DO: probe chay khong xong — %s"
+              % payload["error"])
+        return 1
+    fails = canvas_layout_report_fails(payload)
+    payload["checks"] = [{"name": name, "ok": name not in fails}
+                         for name, _f in CANVAS_LAYOUT_REPORT_CHECKS]
+    payload["failed"] = fails
+    payload["ok"] = not fails
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    print("canvas-layout-report: %s  (%d cua, %d do)  anh: %s"
+          % ("ALL PASS" if not fails else "DO",
+             len(CANVAS_LAYOUT_REPORT_CHECKS), len(fails), payload["screenshot"]))
+    for name in fails:
+        print("  canvas-layout-report DO: %s" % name)
+    return 0 if not fails else 1
+
+
+def _transform(clip):
+    """Biet danh transform cua clip -- do lech cua "Dan clip vao o" so bang so."""
+    t = clip.transform
+    return (round(t.x, 3), round(t.y, 3), round(t.scale_x, 5), round(t.scale_y, 5))
 
 
 if __name__ == "__main__":

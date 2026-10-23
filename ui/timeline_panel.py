@@ -88,7 +88,9 @@ class TimelineHeader(QWidget):
     deleteRequested = Signal()
     duplicateRequested = Signal()
     themeToggleRequested = Signal()
+    canvasLayoutRequested = Signal()
     recapOverlayRequested = Signal()
+    sfxRequested = Signal()
     fitModeChanged = Signal(str)  # "fit" hoặc "fill"
     focusModeToggled = Signal(bool)  # True = timeline chiếm gần hết cửa sổ
     mutedToggled = Signal(bool)   # True = câm ở ô nghe thử
@@ -263,12 +265,26 @@ class TimelineHeader(QWidget):
         layout.addWidget(slash)
         layout.addWidget(self.time_total)
 
+        # ── Bo cuc + phong cach cap du an (cung khuân với lớp phủ recap) ──
+        self.btn_layout = IconButton("", "Bố cục & Phong cách",
+                                     object_name="TimelineIconBtn", size=28,
+                                     icon_name="fa6s.table-cells")
+        self.btn_layout.clicked.connect(self.canvasLayoutRequested.emit)
+        layout.addWidget(self.btn_layout)
+
         # ── Lớp phủ recap (cấu hình cả dự án, mở hộp thoại riêng) ──
         self.btn_recap = IconButton("", "Lớp phủ recap",
                                     object_name="TimelineIconBtn", size=28,
                                     icon_name="fa6s.crosshairs")
         self.btn_recap.clicked.connect(self.recapOverlayRequested.emit)
         layout.addWidget(self.btn_recap)
+
+        # ── Hieu ung am thanh dung san (chen xuong playhead) ──
+        self.btn_sfx = IconButton("", "Hiệu ứng âm thanh",
+                                  object_name="TimelineIconBtn", size=28,
+                                  icon_name="fa6s.wand-magic-sparkles")
+        self.btn_sfx.clicked.connect(self.sfxRequested.emit)
+        layout.addWidget(self.btn_sfx)
 
         # ── Theme Toggle Button ──
         layout.addSpacing(10)
@@ -355,7 +371,9 @@ class TimelinePanel(QWidget):
     keyframeGraphRequested = Signal(str)   # clip_id muon mo do thi duong cong
     themeToggleRequested = Signal()
     coverRequested = Signal(object)   # Main Storyline video clip
+    canvasLayoutRequested = Signal()
     recapOverlayRequested = Signal()
+    sfxRequested = Signal()        # hop thoai hieu ung am thanh dung san
     focusModeToggled = Signal(bool)  # nút toàn màn hình timeline
 
     def __init__(self, parent=None):
@@ -470,7 +488,9 @@ class TimelinePanel(QWidget):
         self.header.deleteRequested.connect(self._on_delete_selected)
         self.header.duplicateRequested.connect(self._on_duplicate_selected)
         self.header.themeToggleRequested.connect(self.themeToggleRequested.emit)
+        self.header.canvasLayoutRequested.connect(self.canvasLayoutRequested.emit)
         self.header.recapOverlayRequested.connect(self.recapOverlayRequested.emit)
+        self.header.sfxRequested.connect(self.sfxRequested.emit)
         self.header.focusModeToggled.connect(self.focusModeToggled.emit)
 
         # Zoom slider ↔ TimePixelMapper

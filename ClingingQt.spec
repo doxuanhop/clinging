@@ -23,6 +23,8 @@ hiddenimports = ['theme', 'diagnostics', 'bar_measure', 'psutil',
                  'core.keyframe_graph', 'ui.keyframe_graph_dialog',
                  'core.media_compress', 'ui.compress_dialog',
                  'core.export_range', 'ui.export_dialog',
+                 'core.sfx', 'ui.sfx_dialog',
+                 'core.canvas_layout', 'ui.canvas_layout_dialog',
                  'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
                  'PySide6.QtMultimedia', 'PySide6.QtSvg']
 

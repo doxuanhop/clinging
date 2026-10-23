@@ -3,6 +3,7 @@ core/canvas_utils.py
 Utility functions cho Player Canvas — tính toán vị trí và tỉ lệ media.
 """
 
+import math
 import os
 from PySide6.QtCore import QRectF
 
@@ -60,6 +61,62 @@ def calculate_fit_and_center(media_w: float, media_h: float,
         'new_w': new_w,
         'new_h': new_h
     }
+
+
+ALIGN_EDGES = ("start", "center", "end")
+
+
+def rotated_box_size(box_w: float, box_h: float, rotation: float) -> tuple:
+    """Hộp BAO của một rect xoay quanh tâm — (rộng, cao) luôn dương.
+
+    Canh mép phải dùng hộp bao, không dùng rect chưa xoay: clip xoay 90° thì bề
+    rộng TA nhìn thấy chính là chiều cao của rect, lấy số chưa xoay thì mép
+    chạm lệch một khoảng bằng hiệu hai trục (1920x1080 là 840 px).
+    """
+    a = math.radians(rotation)
+    c, s = abs(math.cos(a)), abs(math.sin(a))
+    return box_w * c + box_h * s, box_w * s + box_h * c
+
+
+def align_center(canvas_size: float, box_size: float, edge: str) -> float:
+    """Tọa độ TAM (hệ tâm canvas) đặt hộp `box_size` chạm `edge` của canvas.
+
+    Canvas và FrameComposer cùng dùng hệ tọa độ tâm (sceneRect = -w/2..w/2) và
+    `transform.x` là ĐỘ LỆCH khỏi tâm, nên "canh trái" là -canvas/2 + box/2 chứ
+    không phải 0. Mọi chuỗi lạ trả 0.0 để nút không ghi một số vô nghĩa.
+    """
+    half = canvas_size / 2.0
+    if edge == "start":
+        return -half + box_size / 2.0
+    if edge == "end":
+        return half - box_size / 2.0
+    return 0.0
+
+
+def base_display_size(clip, canvas_w: float, canvas_h: float) -> tuple:
+    """Kích thước nền (đã fit/fill) TRƯỚC khi nhân scale — một nguồn cho ba bên.
+
+    FrameComposer lẫn bảng thuộc tính cùng đọc ở đây: nút canh mép cần đúng hộp
+    mà máy vẽ đang DISPLAY, tự tính lại bằng công thức riêng là canh theo một hệ
+    quy chiếu khác hệ đang vẽ ra file.
+    """
+    tw = getattr(clip.transform, "_media_w", 0.0)
+    th = getattr(clip.transform, "_media_h", 0.0)
+    if tw > 0 and th > 0:
+        return float(tw), float(th)
+
+    if clip.media_type == "sticker":
+        return 220.0, 220.0
+
+    media_w = getattr(clip.transform, "original_w", 0) or 0
+    media_h = getattr(clip.transform, "original_h", 0) or 0
+    if media_w <= 0 or media_h <= 0:
+        media_w, media_h = get_media_dimensions(clip.source_path, clip.media_type)
+    if media_w <= 0 or media_h <= 0:
+        media_w, media_h = 400.0, 300.0
+
+    layout = calculate_fit_and_center(media_w, media_h, canvas_w, canvas_h)
+    return layout["new_w"], layout["new_h"]
 
 
 def get_media_dimensions(file_path: str, media_type: str) -> tuple[float, float]:

@@ -151,11 +151,11 @@ python scratch/user_data_snapshot.py capture scratch/_snap_before.json
 # 1) Audit tên icon + tham số color= trên toàn bộ nguồn
 python scratch/icon_name_audit.py
 
-# 2) Selftest 39 dòng trên tree nguồn
+# 2) Selftest 43 dòng trên tree nguồn (bundle 1.0.5 đóng ở 39 dòng)
 python main.py --selftest
 
 # 2b) Cùng gate nhưng chỉ một dòng (dev tool, ~5-12 s thay vi ~49 s). KHONG bao gio
-#     duoc báo cáo là "39 dòng xanh"; payload trả về có khóa "only" để kiểm chứng.
+#     duoc báo cáo là "43 dòng xanh"; payload trả về có khóa "only" để kiểm chứng.
 python main.py --selftest t.json --only="chinh mau"
 
 # 3) Đo khởi động (bao gồm control cùng lần, xem mục dưới đây)
@@ -269,6 +269,26 @@ python scratch/selftest_filter_counterfactual.py  # -> 10/10 cua, 218,8 s; loi "
                                                   #     dau vao rong" phai do bang dong tu
 python scratch/needle_canary.py                   # -> "ALL CLEAN: n/m probe con nguyen
                                                   #     ven mau", 0,6 s, KHONG doi byte nao
+
+# 4p) Thu vien tai nguyen (nhom L, 2026-10-22): 6 toi uu tren duong nap the,
+#     thang do la cua DEM (cua ms bi loi contention cua may lam do)
+python main.py --library-report scratch/_lib_report.json   # -> 13 cua, 11,8-13,4 s, rc=0
+python scratch/library_counterfactual.py                   # -> 45/45 ALL PASS, 131,3 s
+                                                           #    (19 vet theo so do ban chua toi uu + 5 vet byte)
+
+# 4q) The "Bien doi" (nhom N, 2026-10-23): xoay tu do tren canvas, lat ngang/doc,
+#     sau nut canh le, mot o "Tỷ lệ %" co khoa "Đồng nhất"
+python main.py --transform-report scratch/_tf_report.json  # -> 17 cua do tu pixel xuat, 4,0-4,4 s, rc=0
+python scratch/transform_counterfactual.py                 # -> 18/18 do dung ly do, 133 s, rc=0
+                                                           #    (hai oracle: dong selftest + --transform-report)
+
+# 4r) "Bố cục & Phong cách" cap du an (nhom O, 2026-10-23): 12 kieu bo cuc,
+#     10 chat lieu nen, hai vung chu, chay tuan tu, dan clip vao o
+python main.py --canvas-layout-report scratch/_cl_report.json  # -> 36 cua, rc=0
+python scratch/canvas_layout_counterfactual.py  # -> 50/50 ALL PASS, rc=0 (~3 phut,
+                                                #     4 vet SONG doi byte + 1 lan phuc)
+python scratch/canvas_layout_evidence.py        # -> sheet 3 bang + anh CHUP THAT cua so, rc=0
+python scratch/boot_laziness_counterfactual.py  # -> 5 cua RED vi dung ly do (them bocuc)
 
 # 5) Chụp lại rồi diff: phải ra 0 THEM / 0 MAT / 0 DOI
 python scratch/user_data_snapshot.py capture scratch/_snap_after.json
@@ -1136,6 +1156,387 @@ Những gì KHÔNG đổi: đường xuất mặc định vẫn là `window=None
 `medium`, không `-shortest`), nên hành vi của bản 1.0.4 giữ nguyên khi người
 dùng không chọn vùng. `export_audio` vẫn chỉ gates tệp mp3 sidecar.
 
+## Cổng "thư viện tài nguyên" (nhóm L, 2026-10-22)
+
+Nguồn ý tưởng: người dùng báo "vẫn lag với máy cấu hình thấp" và chỉ đích danh
+bảng **THƯ VIỆN TÀI NGUYÊN**. Đo trên đúng đường sản xuất
+(`MainWindow.restore_library_from_project()` → `LibraryPanel.restore_resources()`
+→ `add_resource()` → `ResourceCard._load_thumbnail()` → `_apply_filter()`), với
+tư liệu là fixture tự sinh của chính lệnh đo — `diagnostics.LIBRARY_FIXTURE`: 66
+file bằng cv2 (6 video 640×360 + 4 ảnh 1600×1200 + 56 clip nhỏ 320×240), **không
+lấy media của người dùng**. 66 là bậc cao nhất của thang đo chi phí
+`scratch/library_perf_probe.py` (18 → 30 → 66 thẻ, cache redirect ra khỏi `%APPDATA%`);
+chọn đúng bậc đó để ngưỡng "ms/thẻ" còn so được với con số cũ. Đợt nạp của báo
+cáo là **65** thẻ: một tấm ảnh để riêng ngoài batch vì đoạn đo cache cần một khóa
+chưa đọc lần nào (`diagnostics.py:7110`). `restore_resources()` nhận cả `dict`
+(đúng shape file `.clinq`) lẫn `list` record (`ui/library_panel.py:740`) — báo cáo
+đi nhánh list, cùng nhánh mà `restore_library_from_project` tự dựng khi dự án
+không có mục `assets`. Rồi mới sửa; đầu ra đo là `python main.py
+--library-report [out.json]` — 13 cửa đặt tên, thang đo
+`diagnostics.LIBRARY_REPORT_CHECKS`, 11,5–13,4 s.
+
+Sáu sửa đổi, tất cả ở `ui/library_panel.py` + `core/media_cache.py`, **không đổi
+hành vi bán được**: (1) `_batch_depth` — một lần xây lưới cho cả đợt nạp thay vì
+một lần cho mỗi thẻ; (2) thumbnail ảnh tĩnh được giảm cỡ bằng
+`QImageReader.setScaledSize` **và** cache ra đĩa; (3) `_ThumbTask.cancelled` được
+kiểm tra TRƯỚC khi giải mã và TRƯỚC khi emit; (4) `request_thumbnail()` do bộ lọc
+gọi — thẻ đang ẩn thì không xin giải mã; (5) `hide()/show()` bọc bằng
+`isVisibleTo(grid_host)`; (6) `_grid_cell` — chỉ `removeWidget/addWidget` khi ô
+THỰC SỰ đổi.
+
+| Dòng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| 13 cửa của `--library-report` | **Mười cửa đếm** (số lần, kích thước, cờ tồn tại): `cards_loaded == cards_requested`; `filter_passes_restore == 1`; `hidden_image_decodes == 0 and hidden_image_delivered == 0`; `images_delivered == images_expected > 0 and videos_delivered_p1 == videos_expected_p1 > 0`; `image_thumb_width <= 320`; `image_key_after_first and image_second_cached`; `tasks_requested == batch and decodes_for_cleared <= 8`; `emit_errors == 0`; `redirect_image_files > 0`; `not user_cache_changed`. **Hai cửa ms** (`block_ms_per_card <= 8`, `keystroke_median_ms <= 8`) và **một cửa ảnh** (`anh thu vien ve co that`: tệp tồn tại + `distinct_colors > 40`). | `scratch/library_counterfactual.py`: **45 cửa ALL PASS, rc=0, 131,3 s**. Phần A = 19 vet trét lên payload thật đang xanh (`scratch/_lib_report.json`), mỗi vet lấy ĐÚNG con số của bản chưa tối ưu (`scratch/_lib_report_head.json` — đỏ 7/13) và đòi ĐÚNG tên cửa đó núp lên, không term nào lặng cùng; cộng hai vet phủ (bo vet ket hop do tron 13 cua / moi cua co vet cua no) và một vet baseline phải xanh. Phần B = 5 phép đổi byte trên nguồn thật `ui/library_panel.py`, mỗi phép chạy **CA HAI** lệnh production (`--library-report` và `--selftest --only="thu vien tai nguyen"`), đòi đúng tập cửa ĐẾM đỏ + `rc=1` + đúng câu trong chi tiết dòng selftest, rồi khôi phục bằng byte. |
+| `thu vien tai nguyen: 1 luot luoi + the an khong giai ma` (dòng 30 của bảng 40 dòng) | Năm khúc, toàn bộ là số đếm: (1) `decode_thumb_image(png, "image")` trả ảnh ≤ 320 px, **khóa cache tồn tại ngay sau lần đọc đầu** và lần đọc hai trả cùng cỡ; (2) `restore_resources` 22 thẻ gọi `_apply_filter` đúng MỘT lần; (3) hai lượt lọc không đổi thêm **0** widget và bản đồ `_grid_cell` bất động; (4) panel có tab đặt TRƯỚC khi nạp thì thẻ ảnh `_thumb_task is None`, thẻ video có task, đổi sang tab ảnh mới xếp hàng; (5) `clear_resources()` đặt `cancelled` trên mọi task còn sống. | vet 1/3/4/5 của phần B; chi tiết dòng: `1 luot luoi/dot, o luoi on dinh, the an khong giai ma, xoa la cat` |
+
+Số đo trước / sau trên CÙNG máy, CÙNG fixture 65 thẻ (đầu ra của chính
+`--library-report`; "trước" là một lần chạy của `scratch/_lib_report_head.json` —
+bản nguồn chưa tối ưu, bảng đã đỏ **7/13 cửa**; "sau" là **giải đo 3 lần chạy
+`--library-report`** trên tree đã hoàn tất (197,0 ms · 214,0 ms · và baseline của
+lần phản chứng), vì đồng hồ ms dao động theo đĩa chứ không theo code):
+
+| Chỉ số | Trước | Sau |
+| --- | --- | --- |
+| Lượt xây lưới cho một đợt nạp | 65 | 1 |
+| GUI block khi `restore_resources` | 1132,8 ms | 197,0–214,0 ms |
+| Block mỗi thẻ | 17,43 ms | 3,03–3,30 ms |
+| Tổng thời gian trong `_apply_filter` | 944,3 ms | 103,6–107,0 ms |
+| Median một phím tìm kiếm | 17,72 ms | 1,27–2,82 ms |
+| Lượt giải mã ảnh của thẻ đang ẩn | 3 | 0 |
+| Thumbnail ảnh tĩnh | 1600×1200 = 7,324 MiB | 320×240 = 0,293 MiB |
+| Ảnh đọc lần hai (đã cache đĩa) | 28,2 ms, `image_second_cached=False` | 3,8–4,4 ms, `=True` |
+| Lượt giải mã sau khi thẻ bị xóa | 20 (17 đang chạy + 3 mới) | 3–4 |
+| `emit_errors` qua biên C++ | 0 | 0 |
+
+Bốn con số đếm (`passes`, `hidden_image_decodes`, `image_thumb_*`, `emit_errors`)
+giống hệt nhau ở cả ba lần chạy — đó là lý do cổng chỉ chốt bằng chúng.
+
+Vì sao các con số fixture lại là những con số đó:
+
+* Ngưỡng `8 ms` cho block/thẻ và keystroke lấy từ chính số đo cũ (17,43 và
+  17,72): một nửa của cái-là là ngưỡng mà vết đổi byte phải vượt qua, còn
+  `<= 0` thì không đo được gì (`0 < p[...]` bắt buộc có trong cả hai cửa).
+* Cửa `anh nho anh tinh co cache dia` đếm **tệp khóa** chứ không đếm số file
+  trong thư mục `image/`: 62 thumbnail video cũng nằm ở đó, nên đếm thư mục thì
+  cửa xanh kể cả khi đường ảnh tĩnh không ghi lần nào (đã trả giá khi viết cửa này).
+* Cửa `fixture ghi THAT o redirect` tồn tại để `khong ghi vao cache nguoi dung`
+  không xanh vì "không ai ghi gì": redirect của `core.media_cache.cache_root`
+  phải đi qua đúng đường ghi sản xuất (temp + `os.replace` + ngân sách).
+
+Ảnh: `scratch/_lib_report.png` 450×693, `distinct_colors = 276` — ảnh chụp THAT
+bảng thư viện từ đúng code path sản xuất (`panel.grab()` của `run_library_report`):
+4 tab `Tất cả / Video / Âm thanh / Hình ảnh`, ô tìm kiếm, thẻ "Tải lên tài
+nguyên", lưới 2 cột đầy thumbnail. Đã mở ra xem: chữ Việt đọc được (không tofu),
+không ô trống. Thumbnail trong ảnh là fixture tự sinh của cổng
+(`lib_clip_00..05.mp4` 640×360, `lib_photo_00..03.png/jpg` 1600×1200,
+`lib_tiny_00..55.mp4` 320×240), **không** phải media của người dùng.
+Ảnh này **không** copy sang `assets/uiux/`: repo chỉ nhận ảnh chụp THẬT cửa sổ
+editor toàn màn hình cho người đọc (`scratch/editor_screen_shots.py`), còn đây là
+ảnh cắt một panel 450 px dùng làm chứng cứ đo; số đo của nó đã nằm nguyên văn
+trong `scratch/_lib_report.json` và bảng ở trên.
+
+Vòng kiểm cuối (tree nguồn, 2026-10-22, máy đã đóng hết app — `tasklist` xác
+nhận không còn `Clinging.exe`; rc đọc bằng `subprocess.run`, không qua ống):
+
+* `python main.py --library-report scratch/_lib_report.json`: rc=0, **12,3 s**,
+  `library-report: ALL PASS (13 cua, 0 do)`, `block_ms_per_card=3,29`,
+  `keystroke_median_ms=2,82`, `filter_passes_restore=1`.
+* `python main.py --selftest`: rc=0, **38,0 s** (lan lien truoc do 36,2 s),
+  `rows 40 failed=[] only=None frozen=False`. Dòng 30 xanh với chi tiết ở bảng
+  trên; chạy lẻ `--only="thu vien tai nguyen"` rc=0, **2,1 s**.
+* `python scratch/library_counterfactual.py`: **ALL PASS (45/45)**, rc=0,
+  **~131 s** (hai lần trong ngày: 131,3 s và một lần chốt sau khi sửa comment).
+  Cửa thứ 45 là `thu muc tam cua probe bi xoa het`: hai đường dẫn vet nằm trong
+  `%TEMP%\clinging_libcf_*` vì `--library-report` sinh `.png` ngay canh `.json`
+  (`shot = report[:-5] + ".png"`) — để trong `scratch/` thì mỗi vet bỏ lại một
+  `_lib_vet.png` rác. Canary: `library_counterfactual 5 vet OK`, `ALL CLEAN: 13/15`.
+* Cặp snapshot **quanh hai lệnh cuối trên tree đã hoàn tất** (`--library-report`
+  rồi `--selftest --only="thu vien tai nguyen"`): **1996 → 1996 file,
+  `THEM: 0 / MAT: 0 / DOI: 0`**, rc lệnh diff = **0** — hai cổng này không ghi gì
+  vào `%APPDATA%` của người dùng.
+* Cặp snapshot của **vòng chốt 18:44 → 18:50** (gồm `--library-report` ×3, một lần
+  `--selftest` trọn bảng và một lần phản chứng): **1996 → 1996 file,
+  `THEM: 6 / MAT: 6 / DOI: 0`** — sáu đường thêm và sáu đường mất đều nằm trong
+  `.clinqing\recovery`, đúng hai stem fixture của `--selftest` (`Kiem karaoke` 5,
+  `Kiem recap` 1) và là vòng quay keep-N; **không có mục nào thay đổi nội dung**
+  (`DOI: 0`) và không mục nào dưới `%APPDATA%\Roaming\Clinging`.
+* Cặp snapshot **rộng hơn** (17:51 → 18:20, gồm hai lần `--selftest` trọn bảng và
+  lần app của người dùng tự đóng): **1996 → 1996 file, `THEM: 10 / MAT: 10 /
+  DOI: 1`**, rc lệnh diff = **1** — `user_data_snapshot.py` trả 1 khi có thêm/mất
+  (`scratch/user_data_snapshot.py:98`), nên con số phải đọc là `DOI` kèm danh sách
+  đường dẫn. Mười đường thêm/mất đều trong
+  `.clinqing\recovery` và đúng ba stem fixture của `--selftest` (`Kiem karaoke` 5,
+  `Kiem recap` 2, `Pop Art Demo` 3) — vòng quay keep-N, không phải dữ liệu người
+  dùng. `DOI: 1` là `Clinging_Projects\Pop Art Demo\Pop Art Demo.clinq`: cùng cỡ
+  16.826 B, mtime dịch đúng 1200 s và rơi vào nhịp `:47` của recovery, tức autosave
+  của chính app người dùng đang chạy (lệnh `taskkill` theo yêu cầu đã để app tự
+  đóng sau ~16 s flush). Không probe nào ghi vào dữ liệu người dùng.
+
+Ba bẫy mới học được trong nhóm này, đã ghi vào `AGENTS.md`:
+
+1. **Chạy probe song song với app của người dùng thì cửa đo thời gian nói dối.**
+   Cùng một vet mất **900 s** (timeout) khi `Clinging.exe` còn mở trên HDD, và
+   **13 s** khi máy nghỉ. Vet số 5 (`ban lai moi o luoi`) đỏ vì
+   `keystroke_median_ms = 8,64` trên máy đang contention, dù cấu trúc vẫn đúng.
+   Vì vậy `library_counterfactual.py` **loại hai cửa thời gian khỏi tập kỳ vọng**
+   và chỉ đòi cửa đếm; và nó raise `PROBE DUNG: ... may dang chay don cong viec
+   khac` sau 300 s thay vì chờ tiếp.
+2. **Cửa "một lượt xây lưới" cũng đỏ hộ cửa khác.** Vet tắt `_batch_depth` làm đỏ
+   HAI cửa (`luoi xay dung 1 lan moi luot` và `the da xoa khong giai ma them`) vì
+   66 lượt `removeWidget` quét qua cả thẻ đã xóa; đó là quan hệ nhân quả thật, nên
+   kỳ vọng ghi nguyên văn cả hai.
+3. **`--only` của dòng mới vẫn phải chạy `cache_root` redirect**, nếu không nó ghi
+   thumbnail fixture vào cache `%APPDATA%` của người dùng (bẫy cũ của
+   `media_split_probe.py` lặp lại ở quy mô 22 thẻ).
+
+Những gì KHÔNG đổi: không sửa logic chọn/tìm/xóa thẻ, không đổi kích thước thẻ
+116×76, không đổi tab, không thêm dependency. Bundle 1.0.5 và exe đã cài **vẫn
+chưa** có dòng 30 và cờ `--library-report` (chúng đóng gói từ trước nhóm L) — chỉ
+tree nguồn được đo ở trên; dựng lại bundle là thao tác shared-state phải xin duyệt.
+
+## Cổng "Kho SFX" (nhóm M, dựng 2026-10-22, đo lại 2026-10-23)
+
+Nguồn ý tưởng: yêu cầu "thêm sfx test", và lựa chọn được chốt là **kho tiếng
+dựng sẵn trong app** — không tải audio từ mạng, không phụ thuộc thư viện bên
+thứ ba. Pack gồm **14 tiếng** do `tools/make_sfx.py` vẽ bằng `lavfi` rồi nén
+bằng `ffmpeg` (181.167 B, tổng 14,15 s), nằm trong `assets/sfx/` kèm
+`manifest.json` tự ghi thời lượng/RMS/peak/sha256 cho từng file.
+
+Năm chỗ chia nhau một sự thật, và cổng phải do cả năm:
+
+| Chỗ | Vai trò |
+| --- | --- |
+| `tools/make_sfx.py` → `assets/sfx/` | dựng pack + manifest; manifest là loại "tự chấm điểm" nên **không** được là chân lý duy nhất |
+| `core/sfx.py` | resolver đọc manifest một lần rồi cache: `entries() / by_key() / groups() / missing_files() / pack_dir()` |
+| `ui/sfx_dialog.py` | hộp thoại: ô tìm kiếm, combobox nhóm, "Nghe thử" (QMediaPlayer), "Chèn vào timeline"; ảnh chụp 575×650 của chính nó là bằng chứng |
+| `ui/main_window.py` (`_open_sfx`, `_insert_sfx`) | `import ui.sfx_dialog` nằm trong **thân hàm** — một byte của `QAudioOutput` không được ngốn lúc boot; chèn clip đi qua `core.commands` để Ctrl+Z trả về timeline trống |
+| `ClingingQt.spec` (`hiddenimports`) | module chỉ được import trong thân hàm thì tree nguồn luôn xanh mà bundle vẫn có thể thiếu — đúng cái bẫy đã trả giá với `ui.compress_dialog` |
+
+| Dòng / cổng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `kho hieu ung am thanh (sfx)` (dòng selftest) | Manifest đọc được, pack đủ 14 tiếng, byte trên đĩa khớp manifest, pack dưới ngân sách byte và ngân sách thời lượng, manifest **đúng một trần** với thang đo đang ship | `scratch/sfx_counterfactual.py` lớp B: đổi byte `assets/sfx/manifest.json` và hằng số trong `diagnostics.SFX_REPORT_CHECKS` rồi chạy lại `main.py --selftest --only=sfx` |
+| `--sfx-report` (23 cửa) | Từng tiếng bị **đo lại** bằng `ffprobe`/`ffmpeg` (thời lượng, RMS, peak, ZCR, sha256) chứ không tin manifest; 14 tiếng phải ra 14 hash khác nhau và ZCR trải ra; nut trên thanh thời mở được hộp thoại thật; lọc nhóm và tìm kiếm cắt **đúng số dòng** tính từ manifest; "Nghe thử" rồi dừng phải **thả khoá file**; chèn tạo clip audio trên MỘT lane, hai tiếng nối liền không chồng, playhead chạy tới cuối clip, Ctrl+Z trả timeline trống; probe không để lại vết trong cache người dùng; ảnh hộp thoại phải **có nội dung** | Cùng probe, lớp A: 33 vết đặt trên payload thật do chính lệnh chạy ra, mỗi vết phải nộp đúng tên cửa của nó |
+
+Vì sao phải `ffprobe` đo lại thay vì tin manifest: manifest do `tools/make_sfx.py`
+tự viết, nên một pack rỗng hoặc một pack toàn tiếng giống hệt nhau vẫn "đúng
+manifest". Hai con số chống hai kiểu gian lận đó: `distinct_hashes = 14` (không
+hai tiếng nào là một file đổi tên) và `zcr_spread = 0,7392` (14 tiếng trải đều
+trên cả tiếng chuông lẫn tiếng nhiễu).
+
+Số đo thật của lần kiểm (tree nguồn, máy nghỉ, 2026-10-23):
+
+* `python main.py --sfx-report scratch/_rep_sfx.json` **rc=0, 23 cửa, 0 đỏ**
+  (`failed = []`, `frozen = False`). Payload: `entry_count 14`,
+  `pack_bytes 181.167`, `pack_seconds 14,15`, `probed_count 14`,
+  `duration_worst_dev 0,0`, `rms_worst_dev 0,0`, `peak_max 0,8826`,
+  `rms_max 0,1818`, `distinct_hashes 14`, `zcr_spread 0,7392`.
+* Đường người dùng, cũng trong payload: `dialog_rows 14`, nhóm "Chuyển cảnh"
+  lọc còn `3/3`, tìm `"Vút"` còn `2/2`, hai lần "Chèn" ra `clip_count 2` trên
+  `audio_tracks 1` với `overlap 0,0`, `playhead_after 1,15`,
+  `clips_after_undo 0`, `preview_source_cleared True`,
+  `user_cache_changed False` (cache người dùng **2018 → 2018 file**), ảnh
+  `575x650` với `distinct_colors 137`.
+* `python scratch/sfx_counterfactual.py` — **33 vết** trên payload xanh (lớp A)
+  và **6 phép đổi byte nguồn thật** (lớp B), ~2,5 phút, máy phải nghỉ.
+* Giá boot: cửa `boot_khong_keo_sfx` trong `--startup-report` (11 cửa, rc=0).
+  `scratch/boot_laziness_counterfactual.py` đo cả năm module (trang dung phim,
+  psutil, nén, SFX, bố cục): kéo tay hết năm lên đường boot làm boot
+  **chậm thêm 0,540 s** và RAM lúc có cửa sổ **thêm 13.116 KiB**, và đúng năm
+  cửa đó đỏ trong khi `boot_khong_cv2` vẫn xanh — tức cổng đỏ vì module của
+  chính nó, không vì môi trường.
+* Ảnh chứng minh: `assets/uiux/editor-sfx-dialog.png` — ảnh **chụp thật toàn
+  màn hình 1920×1080** của cửa sổ editor đang mở `SfxDialog` qua đúng cú nhấp
+  nut trên thanh thời (xem mục "Ảnh chứng minh đã commit").
+
+Cổng này **chưa có trong bundle nào đã phát hành**: `dist\Clinging` và bản cài
+Inno 1.0.5 vẫn là bảng 39 dòng, không có `--sfx-report` lẫn kho `assets/sfx`.
+Lần dựng 1.0.6 là lần đầu `dist\Clinging\Clinging.exe --sfx-report` và
+`frozen_bundle_probe.py` phải tự trả lời — chạy từ nguồn không chứng minh được
+`hiddenimports`.
+
+## Cổng "Biến đổi: xoay tự do + lật + canh lề + khóa tỷ lệ" (nhóm N, 2026-10-23)
+
+Nguồn ý tưởng: video mẫu người dùng quay ngày 22/10 (bảng thuộc tính của một
+app dựng phim khác) và câu yêu cầu "thêm tính năng xoay và các tính năng như
+video". Không cài hay chạy công cụ bên thứ ba để so — chỉ đọc video, rồi dựng
+cùng một bề mặt: **một o "Tỷ lệ %" co nut "Đồng nhất"**, hai nut xoay `−90°` /
+`+90°`, hai nut lat `Ngang` / `Dọc`, **sáu** nut canh mep (`Trái / Giữa / Phải`
+và `Trên / Giữa / Dưới`), mot nut `Đặt lại`, và một **tay nam xoay tu do** trên
+canvas. Tổng 12 nut (nhãn "Giữa" dùng chung hai hàng nên 11 nhãn ≠ 12 nut —
+`diagnostics.TRANSFORM_BUTTON_COUNT`).
+
+Bốn chỗ chia nhau một sự thật, và cổng phải do cả bốn:
+
+| Chỗ | Vai trò |
+| --- | --- |
+| `core/timeline_model.py` + `core/project_storage.py` | ba khoá mới `flip_h`, `flip_v`, `uniform_scale` trên `ClipTransform`; file `.clinq` cũ không có khoá nào vẫn mở được và mặc định "không lật, khóa bật" |
+| `core/canvas_utils.py` | `rotated_box_size`, `align_center`, `base_display_size` — hình học thuần, **xoay trước rồi mới canh lề** |
+| `ui/graphics_canvas_item.py` | preview: `QTransform` xoay/lat, `boundingRect` **hằng số** (`ROTATE_ROOM = 52.0`) và `_hit_test_rotate` cho cú kéo chuột thật |
+| `core/frame_composer.py` | đường xuất: cùng phép xoay/lat, đo lại bằng pixel của file ra |
+
+| Dòng / cổng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `bien doi: xoay tu do + lat + canh le + khoa ty le` (dòng 42) | Nam xich ma một bundle đóng gói có thể âm thầm cắt: ba CO hình học có trong model và tròn ven qua `.clinq` (kể cả file cũ không có khoá); ba CO **không** nằm trong `PROPERTY_ORDER` của đồ thị keyframe và `SetClipTransformCommand` đảo ngược được chúng; góc xoay luôn trong `(-180, 180]` (QTransform và `atan2` của `sync_to_model` chỉ cùng một tiếng trong dải đó); thẻ "Biến đổi" có ĐỦ 12 nut; và xoay/lat/canh phải **đo được trên widget thật** (nhấp từng nut, đọc lại model) chứ không phải chuỗi trong nguồn | `scratch/transform_counterfactual.py`: 18 phép đổi byte trên SAU file nguồn thật, mỗi phép chạy lại đúng oracle của nó |
+| `--transform-report` (17 cửa) | Toàn bộ số đo lấy từ **pixel FrameComposer vẽ ra** (960×540 cho đường xuất, `QGraphicsScene.render` 1920×1080 cho preview), không lấy từ model: fixture bốn góc bốn màu; lat ngang dọc phải đảo thật và không đổi tâm nội dung; xoay 90 đổi chiều, xoay 45 mở rộng mà vẫn trong khung, xoay 180 ≡ hai lần lat; năm phép canh lề chạm đúng mép canvas **ở góc đã xoay**; o 150% mở rộng đúng 1,5 lần **cả hai trục**; preview và xuất phải cùng một mặt sau khi lat; thẻ "Biến đổi" vẽ ra tranh (không phải khối rỗng) và vẽ **đủ chiều cao** trên sheet; không ghi vào cache người dùng | Cùng probe, 5 vet cua report (`export_bo_lat`, `preview_bo_lat`, `export_bo_xoay`, `fixture_trang_don`, `align_end_tra_0`) |
+
+Vì sao fixture phải là **bốn góc bốn màu**: một tấm nền trắng (hoặc hai nửa giống
+nhau) khiến mọi phép lật đều "đúng" — và cửa kiểm đầu tiên của chính báo cáo này
+đã tự đánh lừa người viết: so kênh R của nửa trái với nửa phải cho RED+BLUE
+135 ≈ GREEN+WHITE 137, tức hai nửa gần bằng nhau mà trông vẫn "khác màu".
+Cửa `fixture lech mau bon goc` hiện đòi **độ sáng tối thiểu của cả bốn nửa** và
+**khoảng cách nhỏ nhất giữa mọi cặp nửa > 60** (đo 23/10/2026).
+
+Số đo thật của lần kiểm (tree nguồn, máy nghỉ, 2026-10-23):
+
+* `python main.py --selftest` **42 dòng, `failed = []`, rc=0, 47,9 s**; lần đo
+  thứ hai sau khi dọn rác (23/10, payload giữ ở `scratch/_selftest_42.json`):
+  **rc=0, 40,7 s, `len(checks)=42`, `failed=[]`, `only=null`**.
+  `--only="bien doi"` một dòng rc=0, **2,6 s**, chi tiết
+  `3 co trong model + .clinq + undo, goc trong (-180,180], 12 nut Bien doi, xoay/lat/canh dat do tren widget that`.
+* `python main.py --transform-report` **rc=0, 17 cửa, 0 đỏ, 4,0–4,4 s**, ảnh
+  `scratch/_tf_report.png`. Các con số trong payload: `flip_center_dx = 0.0`,
+  `rot45_inside = True`, `align_left_x0 = 0.0`, `align_right_edge = 0.0`,
+  `align_center_dy = 0.5`, `pct_width_ratio = 1.501`, `card_colors = 85`,
+  `sheet_colors = 87`, `card_bottom_painted = True`, `user_cache_changed = False`.
+* `python scratch/transform_counterfactual.py`: **18/18 PHAN BIET**, `ALL PASS`,
+  rc=0, **133 s**. SPOT trên trọn bảng: `rc=1 rows=42 failed=['bien doi: ...']`;
+  khôi phục: `selftest rc=0 rows=42 failed=[]` **và** `report rc=0 failed=[]`.
+  Ba vết đỏ bằng chính lời người dùng nhìn thấy, không bằng cấu trúc:
+  `hit_test_rotate_gia` (keo tay nam +45 do ra goc 0.00 — `item.contains()` đi
+  qua `shape()` nên một `_hit_test_rotate` giả vẫn xanh), `pct_chi_ghi_mot_truc`
+  (`nhap 150% ra [1.5, 1.0]`), `thang_do_dem_sau_nut` (`the co 12 nut moi,
+  thang do ghi 11`).
+* `python scratch/needle_canary.py`: `transform_counterfactual 18 vet OK`,
+  `ALL CLEAN: 15/17 probe con nguyen ven mau`.
+* Ảnh bằng chứng đã **mở ra xem**, và hai lỗi chỉ nhìn thấy bằng cách đó:
+  (1) `grab()` của thẻ "Biến đổi" (card bo tròn bằng stylesheet) trả về ảnh
+  **DPR 1.25 với 87% pixel trong suốt** (169.444/195.453 pixel có `alpha < 255`,
+  min 0) — ghép thẳng lên sheet nền tối là thẻ tan vào nền, nên phải composite
+  qua một ảnh RGB32 thật trước khi vẽ và trước khi so; bản vá đầu
+  (`card_img.height() // 2`) cắt mất 4 dòng đáy thẻ mà probe vẫn PASS vì nó
+  không đo tọa độ — từ đó có cửa `the Bien doi ve du chieu cao tren sheet` so
+  8 dòng cuối của thẻ trên sheet với 8 dòng cuối của chính thẻ.
+  (2) `apply_auto_fit` trong phần đối chiếu preview **ghi đè `scale` của clip**
+  (0,5 → 1,0 với nguồn 16:9 trên canvas 16:9), nên ô "góc" trên sheet to hơn
+  hẳn các ô còn lại; phải pin lại `SCALE`/`x`/`y` ngay trước khi dựng sheet.
+* Chi phí máy cấu hình thấp: không thêm module mới (mọi điều khiển nằm trong
+  `ui/properties_panel.py` đã nằm trên đường mở clip), nên đo lại boot bằng
+  `--startup-report`: `MainController() 0,221 s`, `show() 0,126 s`, cửa sổ hiện
+  `0,0004 s` sau đó; RAM 62.760 KiB lúc `MainController()` → **69.648 KiB lúc
+  cửa sổ ra** (rc=0). Không có cửa laziness mới vì không có tên module mới.
+
+Hai cổng **cũ** đỏ vì lý do không liên quan tới tính năng, đã sửa trong cùng
+ngày — cả hai đều là lỗi của *chính cái cổng*, không phải của app:
+
+1. `--audio-report` trả **0xC0000409 (rc=3221226505)** trên cả tree nguồn lẫn
+   worktree HEAD (`git worktree add` + hardlink `tools/ffmpeg` để so), dù payload
+   đã ghi xong và `ok = True`: `MainWindow._audio_player` (QMediaPlayer) vẫn giữ
+   file wav fixture tới lúc interpreter teardown. Sửa: `stop()` +
+   `setSource(QUrl())` + pump trước `win.close()`. **Phản chứng**: đổi
+   `player = getattr(win, "_audio_player", None)` thành `player = None` →
+   rc=3221226505 **ba lần liên tiếp**; khôi phục → rc=0 **ba lần** (6/6 xen kẽ,
+   mỗi lần vẫn `card_visible=True, distinct_colors=157`).
+2. `--style-report` và `--project-report` mỗi lần chạy **thêm 7 / 6 ảnh thumbnail
+   fixture vào cache thật** `%APPDATA%\Roaming\Clinging\cache\image` — snapshot
+   `DOI: 0` nên không cổng nào kêu. Sửa bằng
+   `_cache_guard_start/_cache_guard_finish` (redirect `media_cache.cache_root`
+   vào `%TEMP%\clinging_{style,project}_report_cache`, vẫn đi qua đúng đường ghi
+   temp + `os.replace` + budget, rồi xóa temp) và thêm cửa đo **danh sách đường
+   dẫn** `khong_ghi_cache_nguoi_dung` / khóa `user_cache_extra` trong payload.
+   **Phản chứng**: biến `media_cache.cache_root = lambda: folder` thành `pass` →
+   `--style-report rc=1 (7 muc)`, `--project-report rc=1 (16 muc)`; khôi phục →
+   cả hai rc=0 với `user_cache_extra = []` và **0 mục mới** trong cache người
+   dùng (23 muc vet tao ra đã được xóa lại đúng bằng listing trước vet).
+
+Những gì KHÔNG đổi: clip chưa từng chạm thẻ "Biến đổi" vẫn vẽ đúng như 1.0.5
+(`rotation=0`, `flip_h=flip_v=False`, `uniform_scale=True`); không thêm dependency;
+`PROPERTY_ORDER` của đồ thị keyframe không nhận thêm kênh nào. Bundle và hai
+installer trên máy **vẫn là 1.0.5**: `dist\Clinging\Clinging.exe --selftest` đo
+lại 23/10 trả **39 dòng, `failed = []`, rc=0, 70,4 s** và payload **không có**
+dòng `bien doi` — muốn người dùng thấy thẻ này phải dựng lại bundle, tức thao
+tác shared-state phải xin duyệt trước.
+
+## Cổng "Bố cục & Phong cách" (nhóm O, 2026-10-23)
+
+Nguồn ý tưởng: tệp dự án người dùng đưa
+(`trình-chỉnh-sửa-video-9_16-canva-&-aura.zip`) — hai bảng **Bố cục** và
+**Phong cách** của một app dựng phim 9:16. Phạm vi chốt bằng câu hỏi trực tiếp:
+"tất cả như tệp zip" (nền + chất liệu, 12 kiểu bố cục, hai vùng chữ đầu/cuối,
+chạy tuần tự, manga xoay/tự vừa) và áp dụng cho **Cả dự án** — không phải từng
+clip. Nên nó là một dict cấp model, sống cạnh `recap_overlay`, tròn ven qua
+`.clinq` và là MỘT bước undo.
+
+Năm chỗ chia nhau một sự thật, và cổng phải do cả năm:
+
+| Chỗ | Vai trò |
+| --- | --- |
+| `core/canvas_layout.py` | bảng sự thật: 13 khoá layout (12 kiểu + `none`), 10 chất liệu, 3 chế độ nền (`black`/`color`/`texture`), 4 họ font, 22 khoá `LAYOUT_DEFAULTS`; `normalize()`, `slots()`, `header_rect()`, `backdrop()`, `paint_background()`, `paint_foreground()` |
+| `core/timeline_model.py` | `project_layout` + `set_project_layout()` + `projectLayoutChanged` — mọi đọc đều đi qua `normalize()` |
+| `core/project_storage.py` | khoá `project_layout` trong `timeline`; file cũ không có khoá → mặc định (không đoán) |
+| `core/commands.py` | `SetProjectLayoutCommand` (cả hộp thoại = một bước undo) và `ArrangeSlotsCommand` (dàn N clip vào N ô = một bước undo) |
+| `core/frame_composer.py` | `render_frame()` = `paint_background` → clip → `paint_foreground` → recap → scale: **cùng một seam cho preview và xuất** |
+
+Vì máy cấu hình thấp là ràng buộc thường trực: `backdrop()` cache theo
+`(texture, w, h, texture_scale, background_color)` với trần 6 bản (`_BACKDROP_LIMIT`),
+và `paint_background()` **return sớm** khi tắt hoặc chọn nền đen — dự án không
+dùng tính năng không phải trả một pixel nào.
+
+| Dòng / cổng | Hợp đồng | Phản chứng |
+| --- | --- | --- |
+| `bo cuc + phong cach cap du an (12 kieu, 10 chat lieu, luu vao file)` (dòng 19) | Đo **bằng pixel trên khung 1920×1080** của FrameComposer: nền màu phủ đúng `2.073.600` px, vạch ngăn `split-4` hiện `17.968` px, chữ đầu `16.698` px; chạy tuần tự nhả đúng vòng ô (`[0, 0, 1, 2, 0, 0]`); file `.clinq` tròn vẹn 22 khoá và file cũ không có khoá vẫn về đúng 22 mặc định. Kèm `import ui.canvas_layout_dialog` thẳng trong row — mắt xích thứ hai của quy tắc "module UI import trong thân hàm thì bundle vẫn thiếu" | `scratch/canvas_layout_counterfactual.py` |
+| `--canvas-layout-report` (36 cửa) | Toàn bộ do trên **widget thật và pixel thật**, không do chuỗi trong nguồn: hai combo đủ 13/10 mục; **22/22 khoá có điều khiển ghi được model** (cửa này bắt đúng lỗi thật ngày 23/10); 108 điều khiển ở BON trang thái không cái nào dưới fold (`max_dialog_h 523 < screen_h 824`); master tắt thì `disabled_leak = []`; mở hộp thoại `0,495 s` và **RAM tăng 4.940 KiB** (trần 8 MiB) do chính process tự đo; kéo slider model đổi ngay và canvas preview đổi `272.832` px; đóng hộp thoại đúng MỘT mục undo và Ctrl+Z trả bố cục cũ; dàn clip ra `transform` đúng tâm ô, clip thừa không bị lat, `hint` báo đủ/lặp ô cuối, không có clip thì nut dàn **từ chối**; 10 chất liệu là 10 bước vẽ khác nhau; chữ đầu nằm TRONG `header_rect`; nền đen không làm đổi khung; `slot_gap` thu ô đúng; `play_sequentially` + `manga_rotate_interval` nhả đúng; tròn ven qua `.clinq`; không ghi vào cache người dùng; ảnh hộp thoại vẽ co thật (`shot_colors 313`, `shot_bytes 42.517`) | Cùng probe: 40 vet offline trên payload xanh + 4 phép đổi byte SONG trong `ui/canvas_layout_dialog.py` |
+
+`scratch/canvas_layout_counterfactual.py` (23/10/2026): **ALL PASS 50/50, rc=0**.
+Bốn phép đổi byte sống lần lượt đỏ đúng một tên —
+`moi khoa co dieu khien ghi duoc model`, `khong dieu khien nao bi fold`,
+`nut dan bao ro du o hay lap o cuoi`, `master tat an het dieu khien` — mỗi lần
+`rc=1` với `failed=[duy nhat ten do]`, và lần phục byte trả `failed=[]`. Vet P1
+chính là lỗi thật đã bắt được: `touch()` thiếu nhánh `header_bold`/`footer_bold`,
+probe chết ở dòng đó và **toàn bảng đo im lặng**.
+
+Chi phí boot (ràng buộc 3): tính năng có module UI riêng nên phải có CẢ HAI
+`ui.canvas_layout_dialog` trong `hiddenimports` của `ClingingQt.spec` và một cửa
+laziness mang đúng tên module — `boot_khong_keo_bocuc` trong `--startup-report`
+(11 cửa, rc=0, boot `1,192 s`, RAM lúc cửa sổ `69.184 KiB`). Phản chứng
+`scratch/boot_laziness_counterfactual.py`: SACH `rc=0` 5/5 cửa True
+(boot `1,135 s`, `69.092 KiB`) vs cắm `import ui.canvas_layout_dialog` lên đầu
+đường boot thì `rc=1`, **cả năm cửa đỏ**, `boot_khong_cv2` vẫn True, tức đỏ vì
+đúng lý do: **boot +0,540 s và RAM +13.116 KiB**.
+
+Ảnh đã mở ra xem (`scratch/canvas_layout_evidence.py`, rc=0):
+* Sheet `scratch/canvas_layout_evidence.png` 548.130 B — bảng A 13 ô bố cục mỗi
+  ô một ảnh (12 kiểu đều được dàn qua nut "Dàn clip…" thật, số ô khớp bảng
+  kiểu: split 2, split-4 4, split-5 5, split-6 6, manga-grid 4, còn lại 1), lệch
+  với ô "không bố cục" từ **1,39 %** (split) đến **99,46 %** (polaroid-retro);
+  bảng B 10 chất liệu trên khung không clip, 10 digest khác nhau; bảng C 7 ô
+  chữ (không chữ / 4 họ font / chữ cuối trên nền đen và nền màu), số pixel
+  `#FFD400` trong `header_rect` là 1.246 / 1.260 / 1.052 / 2.911.
+* Ảnh **chụp THẬT cửa sổ** `scratch/canvas_layout_window.png` 140.865 B
+  (1904×1072, `frame_bounds` của MainWindow) — đã copy sang
+  `assets/uiux/editor-canvas-layout-dialog.png`: preview đang vẽ `manga-grid`
+  trên nền `blueprint` (đo `#123A6B` > 2.000 px trong vùng preview), hộp thoại
+  "Bố cục & Phong cách" nằm đè và vùng đối lệch 54,53 % so với khung hình trước
+  khi mở; hai lần chụp liên tiếp ổn định.
+
+Ba cửa do chính mình viết ra đã phải bỏ hoặc phải sửa, và đó là bài học đáng ghi:
+* Muốn có **khung hình trống** để đo chất liệu nền không thể "chơi" bằng cách dời
+  playhead: `TimelineModel.playhead.setter` kẹp về `model._duration` và
+  `active_visual_clips_at(4,0)` vẫn TÍNH clip đang phủ `[0, 4)` (do trực tiếp
+  23/10) — phải xoá clip. Không có cửa "khung trống" thì bảng B ra 13 ô giống
+  hệt nhau mà probe vẫn xanh.
+* Cửa "đếm số màu khác nhau ≥ 6" cho mỗi chất liệu là **cửa giả**: carbon
+  `#1F2229` nằm trong dung sai 40 của nền `#121317` và nét kẻ mảnh bị trộn khi
+  hạ 1920×1080 về 640×360, nên lined-paper 4 màu, dark 3, blueprint 5. Chất
+  liệu tương phản thấp không phân biệt được bằng số màu; đã thay bằng nền chiếm
+  đa số pixel + digest khác nhau (và `--canvas-layout-report` đo 10 bước vẽ ở
+  đúng độ phân giải khung xuất).
+* `--split-report` chạy từ **tree nguồn** trả `rc=1` với `failed=[]`: bảng
+  `SPLIT_REPORT_CHECKS` có cửa `("frozen", lambda p: p["frozen"])` — cổng này
+  sinh ra để do **exe đóng gói**, nên đỏ khi chạy bằng `python main.py` là đúng
+  thiết kế, không phải hồi quy. Đường sản xuất thật đã do lại:
+  `dist/Clinging/Clinging.exe --split-report` → **rc=0**, `frozen=True`,
+  `failed=[]`, `menu_actions` ba hành động.
+
 ## Thất bại đã ghi (để không lặp)
 
 | Hiện tượng | Nguyên nhân thật | Hệ quả thành quy tắc |
@@ -1162,6 +1563,7 @@ dùng không chọn vùng. `export_audio` vẫn chỉ gates tệp mp3 sidecar.
 | Mutation `khoi_xoa_file_do` không đỏ trên chân "nguồn rác" | Với đầu vào là một đoạn văn bản mang đuôi `.mp4`, ffmpeg fail TRƯỚC khi kịp tạo file ra, nên bỏ `_drop()` cũng chẳng còn file mà kiểm — do 21/10/2026 | Mỗi mutation phải có một đầu vào mà file dở THỰC SỰ tồn tại; ở đây là chân bấm Huy giữa chừng, và lý do gate đỏ được viết lại thành `dung giua chung van con file do` |
 | Ảnh bằng chứng in ra `atom \x1a\x43\x42...` cho dòng `.webm` | `top_level_atoms` đi theo header 8 byte kiểu MP4; áp nó lên EBML thì đọc thẻ ra toàn tên rác — mà ảnh vẫn "có chữ" nên nhìn qua không thấy sai | Hàm giải mã theo container phải tự khai nó chỉ đúng với container nào (`FASTSTART_CONTAINERS`), và ảnh phải MỞ RA XEM chứ không đếm pixel không |
 | Probe dựng fixture chết ở dòng `fixture video loi rc=0` dù ffmpeg đã báo lỗi từ trước | Guard viết `fmt_bytes(size).endswith("B")` — luôn đúng, vì "1.9 MB" cũng kết thúc bằng "B" | Kiểm đầu vào bằng ngưỡng số (`getsize >= 100_000`), không kiểm bằng hình thức chuỗi; một guard luôn đúng còn tệ hơn không có guard |
+| Một phép phản chứng của `--library-report` chạy **900 s rồi bị timeout**, và khi chạy được thì đỏ ở cửa **không** phải cửa của nó (`keystroke_median_ms` 8,64 rồi 9,01 ms) | `Clinging.exe` của người dùng vẫn mở trên HDD 5400 rpm trong lúc probe đổi byte + nộp 65 thẻ: mọi cửa đo thời gian đều thành cửa đo contention. Cùng vet đó trên máy nghỉ: 13 s, và cửa đếm vẫn đỏ đúng | Probe có cửa ms phải chạy trên máy nghỉ (`taskkill //PID` không `/F` để app tự flush), **chỉ đòi tập cửa đếm**, và dừng bằng `SystemExit` có thông điệp sau 300 s thay vì để timeout cắt ngang (`scratch/library_counterfactual.py`, 45/45, rc=0, 131,3 s) |
 | Hai cửa `boot_khong_keo_trang_dung` và `boot_khong_psutil` **xanh** trong khi hộp thoại nén bị kéo lên đường boot, boot chậm thêm 0,428 s | Hai cửa đó chỉ nhìn `ui.main_window` và `psutil`; `ui.compress_dialog` đi vào bằng một module đường boot khác thì không ai thấy | Cửa laziness chỉ chứng điều đúng tên nó nhìn: module mới phải có cửa đo `sys.modules` trên chính tên nó (`boot_khong_keo_nen`) |
 | Bảng chi phí đo `cpu-used 8` rồi chân vp9 của ảnh bằng chứng cũng dùng `8` | Probe lấy con số đang thử thay vì mặc định bản ra; trên máy này `8` ra ĐÚNG số byte của `5` nhưng lâu hơn 3,2 s | Ảnh/dòng kiểm phải chạy đúng cấu hình ship ra (`preset=None` để `build_command` tự lấy `DEFAULT_PRESET`), không phải cấu hình đang dò |
 | `color_grading_counterfactual.py` chết ngay dòng đầu: `AssertionError: mau byte xuat hien 0 lan o ui\properties_panel.py`, 13 phép phản chứng KHÔNG chạy một phép nào | Tính năng sau (thẻ Cắt, 9ed6125) chèn `self._sync_trim_card()` vào GIỮA hai dòng mà mẫu 2 dòng đã chép; cùng kiểu hỏng ở `commands.py` khi `SetChromaCommand` sao lại đoạn `keys = set(self._requested)` nên mẫu 4 dong khớp 2 lan trong khi probe đòi 1 | Mẫu byte phải neo vào một đoạn ĐỘC QUYỀN (thêm dòng `isinstance(other, SetGradingCommand)`), guard là `count != so_lan` (không phải `<`), và trước khi phán một cổng "xanh" thì chạy `scratch/needle_canary.py` (~0,6 s, không đổi byte) để tìm probe đã chết im lặng |
@@ -1173,6 +1575,8 @@ dùng không chọn vùng. `export_audio` vẫn chỉ gates tệp mp3 sidecar.
 | `media_split_probe.py` xanh nhưng ảnh "hộp thoại Mốc tự đặt" thiếu dòng duy nhất nói người dùng nhập sai ở đâu | Body cần 492 px trong khi viewport của cửa cao 520 px chỉ 410 px → dòng đó nằm dưới fold, và `widget.grab()` KHÔNG cuộn; đo trên `QT_QPA_PLATFORM=offscreen` còn báo 423 < 480 (an toàn giả) vì offscreen không có font nào, sizeHint thấp hơn thật | Cửa đo chiều cao phải chạy trên platform thật và đòi `verticalScrollBar().maximum() == 0` ở MỌI trạng thái hộp thoại (`_fit_height()` + `eventFilter` trên `QEvent.Resize` của hai nhãn), rồi MỞ ảnh ra xem — log PASS và ảnh thiếu nội dung cùng tồn tại |
 | Diff dữ liệu người dùng quanh lần chạy probe báo `THEM: 1` — `Roaming\Clinging\cache\image\7c67e845…` | Probe mở `MainWindow` và `library_panel.add_resource()` cho fixture, nên ảnh nhỡ đi vào cache THẬT của người dùng; khoá cache gồm mtime+size của fixture nên mỗi lần chạy thêm MỘT mục mới, phình mãi | Probe dựng của sổ thật phải redirect `core.media_cache.cache_root` về gốc tạm (vẫn đi qua đúng đường ghi temp + `os.replace`), và gate phải có cả cửa phản chứng "redirect có file thật" — nếu không, "không thêm file vào tho người dùng" xanh vì không ghi lần nào |
 | Người dung yeu cau "dong goi 1.0.4.1" (22/10/2026): WiX 3.11 `candle` + `light` **chap nhan** `Version="1.0.4.1"` va ghi nguyen van vao bang Property (`release_meta.msi_props` doc lai ra `1.0.4.1`), nhung sau khi cai lan luot 1.0.4 roi 1.0.4.1 (cung UpgradeCode) thi `MsiEnumRelatedProducts` con tra ve **CA HAI** ProductCode — `MajorUpgrade` khong coi so bon thanh phan la moi hon (lan do nhieu loan: `msiexec` tra loi truoc khi giao dich xong, nen hai lan cai gan nhu de len nhau; chinh sach tu choi dua tren dinh dang cong khai `a.b.c`, khong dua vao rieng phep do) | Windows Installer chi dinh nghia `ProductVersion` dang `a.b.c`; thanh phan thu tu khong co cho trong phep so sanh. Package probe con bi trong bang `Error` (log: `SELECT Message FROM Error WHERE Error = 1302` fail), nen khi thieu nguon no treo cho nguoi dung — va `timeout` giet `msiexec` giua giao dich lam `msiserver` deadlock: moi `/i`, `/x` sau do treo toi het 120 s, `sc start` duoc nhung `sc stop` bao Access denied, chi reboot moi sach | So phat hanh la **ba thanh phan o moi be mat** (`.iss` / `version_info.txt` / `APP_VERSION`), va `release_meta.source_versions()` tu choi thang `filevers`/`prodvers` co thanh phan thu 4 khac 0 — phan chung mot byte (`filevers=(1, 0, 5, 1)`) ra rc=1 dung dong "co thanh phan thu 4 khac 0", restore ra rc=0. Probe goi `msiexec` khong duoc cat bang `timeout`: hoac cho no tu ket thuc, hoac dung chay |
+| `--audio-report` trả **rc=3221226505** (`0xC0000409`) trên CA tree nguồn lan worktree HEAD, sau khi payload JSON đã ghi xong — do 23/10/2026, trong lúc dựng cổng cho thẻ "Biến đổi" | `MainWindow._audio_player` (`QMediaPlayer`, `ui/main_window.py:594`) còn giữ source wav của fixture khi window bị đóng; teardown của Qt đi qua backend WMF đang sống → fastfail. `git checkout`/revert source không đổi được gì vì lỗi không thuộc thay đổi nào đang chờ | Trước khi `win.close()`: `player.stop()` + `player.setSource(QUrl())` rồi `processEvents()` vài vòng (xem `diagnostics.run_audio_report`). **Phản chứng** phải xen kẽ 3×3 (bỏ đoạn release → abort 3/3; có release → rc=0 3/3) — một lần chạy đơn lẻ từng báo rc=0 nhầm; cùng bài học với dòng "WinError 32": `QMediaPlayer` chỉ buông file khi được `setSource(QUrl())` |
+| Snapshot dữ liệu người dùng quanh vòng chạy `--style-report` + `--project-report` báo `THEM 47 / MAT 7 / DOI 0` — 13 mục lọt vào `%APPDATA%\Roaming\Clinging\cache\image`, `DOI: 0` nên không cổng nào kêu | Hai report dựng thumbnail fixture qua đúng đường sản xuất (`media_cache` → cache THẬT); thêm mục mới KHÔNG phải "đổi mục cũ" nên cửa so `DOI` mù hoàn toàn (do 23/10/2026: một lần `--style-report` +7, một lần `--project-report` +6) | `diagnostics._cache_guard_start/_cache_guard_finish` redirect `media_cache.cache_root` về `%TEMP%\clinging_<tag>_cache` (vẫn đi qua đường ghi temp + `os.replace` + budget thật) rồi xóa, và cửa đo là **danh sách đường dẫn** (`khong_ghi_cache_nguoi_dung`, payload `user_cache_extra`) chứ không phải boolean. **Phản chứng**: `cache_root = lambda: folder` đổi thành `pass` → `--style-report rc=1 (7 muc)`, `--project-report rc=1 (16 muc)`; restore → cả hai rc=0 với `user_cache_extra = []` |
 
 ## Cổng đóng gói 1.0.5 (2026-10-22)
 
@@ -1209,11 +1613,13 @@ bại), nên mọi `/i` `/x` đều treo cho tới khi reboot; hai product probe
 
 ## Ảnh chứng minh đã commit của 1.0.5
 
-Bốn bức dưới đây nằm trong `assets/uiux/` (được commit) vì `scratch/*` bị
+Sáu bức dưới đây nằm trong `assets/uiux/` (được commit) vì `scratch/*` bị
 `.gitignore`: ảnh chỉ trong `scratch/` thì người đọc repo hoặc Release không mở
-được. Ba bức sau bức đầu là **ảnh chụp THẬT toàn màn hình 1920×1080** của cửa sổ
-editor đang chạy, do `scratch/editor_screen_shots.py` sinh ra ngày 22/10/2026 —
-không phải ảnh ghép panel, không phải `widget.grab()`.
+được. Bốn bức liền sau bức đầu là **ảnh chụp THẬT toàn màn hình 1920×1080** của
+cửa sổ editor đang chạy, do `scratch/editor_screen_shots.py` sinh ra (bản 22/10
+chụp ba bức; bản 23/10 thêm bức `SfxDialog` và chụp lại cả bốn) — không phải ảnh
+ghép panel, không phải `widget.grab()`. Bức cuối (23/10) cũng là ảnh chụp thật,
+nhưng của `scratch/canvas_layout_evidence.py`.
 
 Cửa sổ của bản Inno đã cài 1.0.5, mở `Pop Art Demo.clinq` qua đúng đường
 `Clinging.exe <đường dẫn>` (PrintWindow, không phải `grabWidget()`):
@@ -1239,19 +1645,31 @@ số này do chính `core/export_range` sinh ra, không gõ tay:
 
 ![ExportDialog trong cửa sổ editor, vùng xuất in/out](../assets/uiux/editor-export-dialog.png)
 
-Vì sao ba bức đó là ảnh thật của cửa sổ đang chạy (cổng trong
-`scratch/editor_screen_shots.py`, **rc=0, 34,5 s**): ảnh đúng kích thước màn
-hình (`[1920,1080] == screen_size`), handle của hộp thoại thuộc `os.getpid()`
-(không match theo tiêu đề), hai lần chụp liên tiếp lệch **0,00 %** (khung hình
-đã vẽ xong, không bắt được lúc đang cập nhật), và ảnh B/C **lệch 17,03 % /
-37,62 %** trên đúng vùng hình chữ nhật của hộp thoại so với ảnh A — ảnh ghép lại
-hay copy rồi đổi tên sẽ cho 0 %.
+`SfxDialog` mở bằng **cú nhấp thật** trên nút hiệu ứng âm thanh của thanh thời
+(`panel.header.btn_sfx.click()` → `MainWindow._open_sfx`, tức đúng cả đường
+`import` trong thân hàm): 14 tiếng liệt kê đủ pack kèm thời lượng và số KB, ô
+tìm kiếm đang trống, một dòng đang chọn, và "14 tiếng trong pack." — những con số
+đó do `core.sfx.entries()` sinh ra chứ không gõ tay (bức này chụp 23/10/2026):
 
-Phản chứng của bộ ảnh (`--pixels`, **rc=0, 5,2 s**): khung đen tổng hợp phải bị
+![SfxDialog trong cửa sổ editor, liệt kê đủ 14 tiếng của pack](../assets/uiux/editor-sfx-dialog.png)
+
+Vì sao bốn bức đó là ảnh thật của cửa sổ đang chạy (cổng trong
+`scratch/editor_screen_shots.py`, **rc=0, 40,4 s** cho bốn bức): ảnh đúng kích
+thước màn hình (`[1920,1080] == screen_size`), handle của hộp thoại thuộc
+`os.getpid()` (không match theo tiêu đề), hai lần chụp liên tiếp lệch **0,00 %**
+(khung hình đã vẽ xong, không bắt được lúc đang cập nhật), và trên **đúng vùng
+hình chữ nhật** của hộp thoại thì B/C/D lệch **92,36 % / 91,56 % / 93,86 %** so
+với ảnh A — ảnh ghép lại hay copy rồi đổi tên sẽ cho 0 %. Cổng "không phải một
+ảnh đổi tên" đo trên **toàn ảnh** cho 16,96 % / 37,55 % / 11,24 % (khác nhau vì
+preview đổi khung hình và hộp thoại che chỗ khác nhau), nên hai phép đo này là
+hai cửa khác nhau, đừng dẫn lẫn nhau.
+
+Phản chứng của bộ ảnh (`--pixels`, **rc=0, 6,3 s**): khung đen tổng hợp phải bị
 bắt (luma 5,00); xoá trắng vùng preview → cổng "nội dung giữa ảnh" đỏ; xoá trắng
 dải timeline → cổng dải timeline đỏ; xoá trắng cả ảnh → cổng "số màu toàn ảnh"
 đỏ. Ngưỡng 120 màu đặt theo số đo thật: vùng bị xoá cho **đúng 1 màu**, vùng thật
-cho 149–2.313 màu.
+của bốn bức cho **149–5.539 màu** (hẹp nhất là giữa ảnh `export` — hộp thoại
+Xuất che gần hết canvas).
 
 Một lần chụp đã tự đỏ vì ĐÚNG lý do: bản đầu của ảnh C chỉ gọi
 `SetWindowPos(SWP_SHOWWINDOW)` mà thiếu `dlg.show()`, nên Qt vẫn coi widget đang
@@ -1259,7 +1677,19 @@ Một lần chụp đã tự đỏ vì ĐÚNG lý do: bản đầu của ảnh C
 chính là bằng chứng cổng lệch phân biệt được hộp thoại được vẽ với hộp thoại chỉ
 có handle.
 
-Không có ảnh nào trong bốn bức để lộ dữ liệu của người dùng: fixture nằm ở
+Bức thứ sáu (23/10/2026) cũng là **ảnh chụp THẬT cửa sổ**, nhưng do
+`scratch/canvas_layout_evidence.py` sinh ra — cùng họ cổng với bốn bức ở trên
+(`frame_bounds` của MainWindow, `1904x1072`, hai lần chụp liên tiếp lệch 0 %):
+
+![Cửa sổ editor đang vẽ bố cục manga-grid trên nền blueprint, hộp thoại "Bố cục & Phong cách" mở đè](../assets/uiux/editor-canvas-layout-dialog.png)
+
+Ba điều nhìn thấy bằng mắt trong bức đó là ba điều cổng đo: preview đang thực sự
+vẽ bố cục + chất liệu (đếm `#123A6B` của nền blueprint trong vùng preview,
+> 2.000 px), hộp thoại nằm đè và **có được vẽ** (vùng của nó lệch 54,53 % so với
+khung hình chụp TRƯỚC khi mở — không phải ảnh ghép), và 4 clip thật trên 4 track
+that đã dàn vào 4 ô qua đúng nut "Dàn clip đang mở vào các ô".
+
+Không có ảnh nào trong sáu bức để lộ dữ liệu của người dùng: fixture nằm ở
 `%PUBLIC%\ClingingEditorShot` (chọn `%PUBLIC%` thay `%TEMP%` vì `%TEMP%` chứa tên
 user `doxuanhop`, sẽ hiện trong ô đường dẫn xuất), và một cổng kiểm tra DUY NHẤT
 mọi đường tuyệt đối trong `.clinq` đang mở (`assets[].path` + `clips[].source_path`)
@@ -1270,7 +1700,11 @@ Vòng chạy không để lại rác (đo 22/10/2026, ba cổng TỰ DO trong pr
 người dùng **1964 → 1964 file**, `recent_projects.json` **giống từng byte**, cây
 recovery người dùng **không thêm** bản nào mang tên đoạn chụp, và gốc fixture
 `%PUBLIC%\ClingingEditorShot` **bị xoá sạch** (cửa này đỏ đúng một lần — xem dòng
-cuối bảng "Thất bại đã ghi"). Snapshot `user_data_snapshot.py` quanh vòng chạy cho
+cuối bảng "Thất bại đã ghi"). Đo lại 23/10/2026 với **bốn** bức: cache
+**2018 → 2018 file**, `recent_projects.json` vẫn **giống từng byte**, recovery
+không thêm mục nào mang tên `Editor Shot`, gốc fixture vẫn bị xoá sạch — và
+`--sfx-report` cũng tự mang cửa "khong ghi vao cache nguoi dung" của riêng nó
+(2018 → 2018). Snapshot `user_data_snapshot.py` quanh vòng chạy cho
 `THEM: 1 / MAT: 1 / DOI: 1`, cả ba nằm trên `Pop Art Demo` — **không phải** do probe:
 một bản Clinging đã cài ĐANG mở (pid 7000) quay timer recovery đúng 300 s một lần
 (16:32:47 → 16:37:47 → 16:42:47 → 16:47:47, tức vẫn chạy khi không có probe nào),

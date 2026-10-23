@@ -50,28 +50,46 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
+- **Tree nguồn hiện đi trước bundle hai tính năng chưa đóng gói** (đo 23/10/2026):
+  kho SFX (`core/sfx.py`, `ui/sfx_dialog.py`, `assets/sfx/`, `--sfx-report` 23 cửa)
+  và "Bố cục & Phong cách" cấp dự án (`core/canvas_layout.py`,
+  `ui/canvas_layout_dialog.py`, `--canvas-layout-report` 36 cửa). Selftest tree
+  nguồn là **43 dòng `failed=[]` rc=0**, trong khi `dist\Clinging` và bản cài Inno
+  vẫn là bảng 39 dòng của 1.0.5 — đừng lấy số dòng của bundle làm số của nguồn,
+  và cũng đừng vì thấy hai cổng report mới mà đoán là đã ship.
 
 ## Lệnh hay dùng
 
 ```bash
 python main.py                                  # chay app binh thuong
-python main.py --selftest                       # 39 dong cong, bao JSON co "failed"
-python main.py --selftest out.json --only="chinh mau"   # mot dong thoi (~5-12 s vs ~49 s); khong bao gio duoc bao cao la "39 dong xanh", doc payload["only"] truoc khi tin
+python main.py --selftest                       # 43 dong cong (bundle 1.0.5 van 39), bao JSON co "failed"
+python main.py --selftest out.json --only="chinh mau"   # mot dong thoi (~5-12 s vs ~36-49 s); khong bao gio duoc bao cao la "43 dong xanh", doc payload["only"] truoc khi tin
 python main.py --startup-report                 # boot theo tung pha + control cung land
 python main.py --layout-report | --alignment-report | --graph-report
 python main.py --style-report | --project-report | --thumbnail-report
+python main.py --transform-report [out.json]    # the "Bien doi": 17 cua do TU PIXEL cua FrameComposer (~4,0-4,4 s, rc=0); thang do diagnostics.TRANSFORM_REPORT_CHECKS
 python main.py --split-report [out.json]        # cua cat file, thang do la diagnostics.split_report_fails
+python main.py --library-report [out.json]      # thu vien tai nguyen (may cau hinh thap): 13 cua, thang do la diagnostics.library_report_fails (~13 s). CHI co o tree nguon: bundle/installed 1.0.5 khong co co nay va bang van 39 dong
+python scratch/library_counterfactual.py        # phan chung: 19 vet theo so do ban chua toi uu + 5 vet byte tren duong nap the (131 s, 45/45, CHI doi cua dem)
+python scratch/library_perf_probe.py            # do baseline tung pha (P0..P10) -> scratch/library_perf.json
+python main.py --sfx-report [out.json]          # kho SFX: 23 cua, do bang ffprobe + RMS tren mp3 THAT (~10 s, rc=0); thang do diagnostics.SFX_REPORT_CHECKS
+python scratch/sfx_counterfactual.py            # phan chung: 33 vet tren payload xanh + 6 phep doi byte SONG tren duong goi SFX (canary ghi "6 vet")
+python main.py --canvas-layout-report [out.json] # "Bo cuc & Phong cach" cap du an: 36 cua do tren widget that + pixel FrameComposer, thang do diagnostics.CANVAS_LAYOUT_REPORT_CHECKS
+python scratch/canvas_layout_counterfactual.py  # phan chung: 40 vet offline tren payload xanh + 4 phep doi byte SONG trong ui/canvas_layout_dialog.py (~3 phut, 50/50, rc=0)
+python scratch/canvas_layout_evidence.py        # anh: sheet 3 bang (13 bo cuc / 10 chat lieu / 7 o chu) + anh CHUP THAT cua so 1904x1072, rc=0
+python scratch/canvas_layout_ui_probe.py        # do fold/RAM/undo cua hop thoai tren MainWindow that (khong phai anh)
 python scratch/split_gate_counterfactual.py     # phan chung: 26 vet tren 14 dieu kien cua --split-report (~0,5 s, do 22/10: ALL PASS 26/26)
 python scratch/split_plan_counterfactual.py     # phan chung: 14 vet tren toan cat 3 kieu (deu/doi dai/moc), ~2,2 phut, co 1 lan SPOT tron du bang
 python scratch/media_split_probe.py             # 79 s: cat THAT tren dia + anh chung minh 3 kieu (panel G), 167 cua
 python scratch/export_range_counterfactual.py   # phan chung: 18 vet tren vung xuat in/out + preset (178 s, 1 lan SPOT du 39 dong)
 python scratch/export_range_evidence.py         # anh: 2 che do ExportDialog + 24/12 khung hue + ffprobe -count_frames + RMS, 16 cua
 python scratch/export_quality_cost_probe.py     # do 8 cau hinh preset/CRF, xen ke 2 vong -> scratch/export_quality_cost.json
+python scratch/transform_counterfactual.py      # phan chung: 18 vet tren the "Bien doi" (xoay tu do / lat / canh le / khoa ty le), 2 oracle selftest+report, 133 s, 1 lan SPOT du bang 42 dong
 python scratch/icon_name_audit.py               # ten glyph + tham so tren toan bo nguon
 python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi dung ly do
-python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 14 probe, probe khong chay duoc = probe im lang
+python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 18 probe (rc=0 = "ALL CLEAN: 16/18", hai probe khong co bang vet bi loai khong tinh)
 python scratch/selftest_filter_counterfactual.py # phan chung: bo loc --only, 10 cua (~3,7 phut)
-python scratch/boot_laziness_counterfactual.py  # phan chung: boot khong duoc keo trang dung phim/psutil/hop thoai nen
+python scratch/boot_laziness_counterfactual.py  # phan chung: 5 cua (trang dung phim/psutil/nen/SFX/bo cuc) — boot khong duoc keo hop thoai nen
 python scratch/save_atomic_counterfactual.py    # phan chung: 4 phep doi byte o duong luu du an
 python scratch/media_locator_counterfactual.py  # phan chung: 6 phep doi byte o chieu dinh vi media
 python scratch/save_atomic_evidence.py          # anh + JSON: ban cu duoc quay, lan ghi hong khong pha file
@@ -89,8 +107,8 @@ python scratch/popart_project_build.py          # du an .clinq Pop Art + xuat mp
 python scratch/popart_project_counterfactual.py # phan chung: 6 phep doi byte, moi phep chay CA HAI gate
 python scratch/popart_window_shot.py            # anh cua so THAT cua ban da cai mo du an Pop Art (PrintWindow)
 python scratch/popart_window_shot.py --pixels   # phan chung tren anh: khung den do, anh that xanh, boi preview do
-python scratch/editor_screen_shots.py           # 34,5 s: 3 anh CHUP THAT toan man hinh 1920x1080 (editor/SplitDialog/ExportDialog) -> assets/uiux
-python scratch/editor_screen_shots.py --pixels  # phan chung: khung den bi bat, xoa vung -> cua do, lech B/C vs A, cong duong dan nguoi dung
+python scratch/editor_screen_shots.py           # 40,4 s: 4 anh CHUP THAT toan man hinh 1920x1080 (editor/SplitDialog/ExportDialog/SfxDialog) -> assets/uiux
+python scratch/editor_screen_shots.py --pixels  # phan chung: khung den bi bat, xoa vung -> cua do, lech B/C/D vs A, cong duong dan nguoi dung
 python scratch/chroma_key_counterfactual.py     # phan chung: 19 phep doi byte -> cua duc nen do dung ly do
 python scratch/chroma_key_evidence.py           # anh FrameComposer: cat nen xanh, giu chu the, vien mong + chong am
 python scratch/chroma_cost_probe.py             # low-spec: duong tat 0 ms; thue chroma < the Pop Art da ban
@@ -284,11 +302,26 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   bang `git status`, phuc bang `git checkout -- <file>` (file do khong nam trong
   dam thay doi co y). KHONG bai dung hai vong probe song song.
 - **`--only` cat nua bang do luu do.** Lan chay loc co `failed=[]` khong nghia la
-  39 dong xanh; doc `payload["only"]` (phai la `null`) truoc khi bao cao. Probe
+  43 dong xanh; doc `payload["only"]` (phai la `null`) truoc khi bao cao. Probe
   phan chung da theo khuon: baseline du bang -> vet chay `--only` -> MOT lan SPOT
   du bang -> khoi phuc du bang. Gia do: tron bang 48,8 s (39 dong; 38 dong la
   31,1 s), mot dong 5,0-12,4 s; nen tep 17 vet 377,2 s -> 183,7 s, chroma 19 vet
-  = 147,9 s, chinh mau 13 vet = 133,6 s, vung xuat 18 vet = 178,0 s.
+  = 147,9 s, chinh mau 13 vet = 133,6 s, vung xuat 18 vet = 178,0 s, thu vien
+  5 vet = 131,3 s, bien doi 18 vet = 133,0 s (bang 42 dong tron do 23/10: 47,9 s;
+  bang 40 dong tron: 36,2 s tren may nghi; mot row `--only="bien doi"`: 2,6 s).
+- **Cua do thoi gian noi khi may khong nghi; cua dem thi khong.** Lan chay
+  22/10/2026: CUNG mot vet cua `--library-report` mat **900 s roi bi timeout** khi
+  `Clinging.exe` cua nguoi dung van mo tren HDD 5400 rpm, va **13 s** khi may
+  nghi. Vet thu 5 ("ban lai moi o luoi") o lan chay may nghi thi xong trong 13 s
+  nhung van do thanh `go tim kiem median duoi 8 ms` (8,64 ms, lan sau 9,01 ms)
+  trong khi KHONG cua dem nao do — tuc la no do CONTENTION chu khong do loi
+  cau truc. Vi vay
+  `scratch/library_counterfactual.py` chi doi tap cua DEM (`filter_passes_restore`,
+  `hidden_image_decodes`, `image_thumb_width`, `decodes_for_cleared`, cache) va
+  loai hai cua ms ra ky vong; phan A lam phan chung payload offline. Truoc khi
+  chay bat ky probe nao co cua ms: dong app nguoi dung truoc
+  (`taskkill //PID <pid>` khong dung `/F` de app tu flush), va probe phai
+  `SystemExit("PROBE DUNG: ...")` sau 300 s chu khong cho qua 900 s.
 - **`co_names` khong nhin duoc hai dieu.** (a) HAI loi cung mot ham trong cung
   mot than: `audio_input_args` duoi go o duong video LAN LUOT duong mp3 sidecar,
   nen xoa `-ss` o duong video thi cua van xanh (do 22/10/2026 — vet
@@ -310,6 +343,71 @@ python scratch/github_release.py doxuanhop/clinging v<ver> --name "Clinging <ver
   chu thich can 401 px: chu A de duong len tieu de B, va probe van PASS vi no
   khong do toa do cua sheet. Nong panel len 420 px va di B/C/D xuong 48 px —
   mo anh ra xem la buoc duy nhat bat duoc loi nay.
+- **Mot `--*-report` co the abort o teardown va rc cua no vu kho tin hon ca loi
+  san pham.** `--audio-report` tra `0xC0000409` (3221226505) tren CA tree nguon
+  lan worktree HEAD, du payload da ghi xong va `ok = True` (do 23/10/2026):
+  `MainWindow._audio_player` (QMediaPlayer) van nam file wav fixture toi luc
+  interpreter teardown. Chua: `stop()` + `setSource(QUrl())` + pump truoc
+  `win.close()`. **Phan chung phai xen ke**: doi `player = getattr(...)` thanh
+  `player = None` -> abort 3 lan, khoi phuc -> rc=0 3 lan; mot lan chay don le
+  tung bao rc=0 nham. Neu muon phan loai "loi nay do tinh nang hay do san":
+  `git worktree add --detach <tam> HEAD` + `mklink /H` hai file `tools\ffmpeg`
+  (200 MB, khong commit) de do ma khong cham working tree.
+- **Cổng đo `DOI: 0` mù với "thêm mục mới".** `--style-report` them 7 muc,
+  `--project-report` them 6 muc anh nho FIXTURE vao cache THAT
+  `%APPDATA%\Roaming\Clinging\cache\image` (do 23/10/2026; diff bao
+  `THEM 47 / MAT 7 / DOI 0`). Khong doi muc cu thi khong cua nao kieu. Chua:
+  `diagnostics._cache_guard_start/_cache_guard_finish` redirect
+  `media_cache.cache_root` ve `%TEMP%\clinging_<tag>_cache` (van di qua duong ghi
+  that temp + `os.replace` + budget) roi xoa, va cua do la **danh sach duong dan**
+  (`user_cache_extra` trong payload, `khong_ghi_cache_nguoi_dung` trong bang),
+  khong phai boolean. Phan chung: bien `cache_root` thanh `pass` ->
+  style rc=1 (7 muc), project rc=1 (16 muc); restore -> rc=0 + `[]`.
+- **`co_names` con mu voi doc qua `getattr`.** The "Bien doi" doc lat bang
+  `getattr(transform, "flip_h")`, nen ten nam trong `co_consts` (hang so chuoi),
+  khong trong `co_names` — cua "hai ben dung chung duong" xanh du mot ben da
+  bi cat ten. Chua: `set(code.co_names) | {c for c in code.co_consts if
+  isinstance(c, str)}` (`diagnostics.py:2639`), va giu tính that bang vet
+  `fake = compile("def f(): return align_center(1, 2)")` — detector khong bat
+  duoc ten goi thi cua do chet ngay.
+- **`grab()` cua widget bo tròn bang stylesheet tra anh TRONG SUOT ở DPR>1.**
+  Anh thẻ "Biến đổi" 169.444/195.453 pixel co `alpha < 255` (min 0) — ghep thang
+  nen toi la the tan vao nen, ma probe van PASS vi no dem mau chu khong do alpha.
+  Chua: composite qua mot QImage RGB32 that truoc khi ve va truoc khi so; ban vá
+  dau `card_img.height() // 2` cat mat 4 dong day the, do do co cua
+  `the Bien doi ve du chieu cao tren sheet` (so 8 dong cuoi cua the tren sheet
+  voi 8 dong cuoi cua chinh the).
+- **Ham "tu vua khung" co the ghi de trang thai cua clip giua probe.**
+  `apply_auto_fit` trong phan doi chieu preview ep `scale` 0,5 -> 1,0 (nguon 16:9
+  tren canvas 16:9), nen o "goc" tren sheet to hon het cac o con lai. Probe dung
+  ảnh bang `FrameComposer` phai pin lại `SCALE`/`x`/`y` ngay truoc khi dựng sheet.
+- **Khong the co "khung hinh trong" bang cach doi playhead.**
+  `TimelineModel.playhead.setter` kep ve `model._duration`, con
+  `active_visual_clips_at(4,0)` VAN TINH clip phu `[0, 4)` — do truc tiep hom
+  23/10 khi `canvas_layout_evidence.py` ra 13 o chat lieu giong het nhau (nền
+  bị clip che, khong phai chat lieu giong nhau). Cach duy nhat: `remove_clip`
+  + `remove_track` roi do `len(clips) == 0` nhu MOT CUA. Cung kieu loi nay o
+  chieu nguoc lai: probe do hieu ung nen phai co cua "khung khong noi dung".
+- **Cua dem mau vo nghia voi chat lieu tuong phap thap.** Do "so mau khac nhau
+  >= 6" tren anh 640x360: lined-paper 4 mau, dark 3, blueprint 5 — carbon
+  `#1F2229` nam trong dung sai 40 cua nen `#121317` va net mong bi tron khi ha
+  tu 1920x1080. Do do khong dung no lam cua phan biet; dung (a) mau nen chiem
+  > 50% pixel va (b) digest cua moi o phai khac nhau, con "10 chat lieu la 10
+  buoc ve khac nhau" do o `--canvas-layout-report` tren KHUNG XUAT that.
+- **`--split-report` tu tree nguon tra `rc=1` voi `failed=[]` — va do la dung.**
+  `diagnostics.SPLIT_REPORT_CHECKS` co cua `("frozen", lambda p: p["frozen"])`:
+  cong nay sinh ra de do **exe dong goi**, nen chay `python main.py --split-report`
+  thi do. Dung ket luan la hoi quy; chay lai bang
+  `dist/Clinging/Clinging.exe --split-report` (do 23/10: `rc=0`, `frozen=True`,
+  `failed=[]`, `menu_actions` ba chuoi). Doc `payload["failed"]` truoc khi tim
+  nguyen nhan ngoai canh cua do.
+- **Mot khoa model khong co dieu khien gi giua thi probe chet im lang.**
+  `touch()` cua `canvas_layout_ui_probe`/`--canvas-layout-report` thieu nhanh
+  `header_bold`/`footer_bold`: probe chet ngay dong do va **toan bang do khong
+  in ra**, khong co "FAIL" nao ca. Cua "moi khoa co dieu khien ghi duoc model"
+  (so sanh `set_field` duoc 22 khoa voi `LAYOUT_DEFAULTS`) phai chay TRUOC cac
+  cua do luong, va phan chung P1 (`scratch/canvas_layout_counterfactual.py`)
+  cat dung bot signal cua hai checkbox do de no do lai dung ten.
 
 ## Cấm
 

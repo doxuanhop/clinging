@@ -1,12 +1,12 @@
 """scratch/editor_screen_shots.py
 
-Ba anh CHUP TREN MAN HINH that cua cua so Clingying dang chay, dung cho tai lieu
-(khong phai bang chung minh to hop nen den). Ly do anh phai la pixel tren man
-hinh: mot hop thoai la top-level KHAC, nen `widget.grab()` va PrintWindow cua
-cua so chinh khong bao gio chua no — anh "tu render" khong the noi nguoi dung
-thay gi khi mo hop thoai.
+Bon anh CHUP TREN MAN HINH that cua cua so Clingying dang chay, dung cho tai
+lieu (khong phai bang chung minh to hop nen den). Ly do anh phai la pixel tren
+man hinh: mot hop thoai la top-level KHAC, nen `widget.grab()` va PrintWindow
+cua cua so chinh khong bao gio chua no — anh "tu render" khong the noi nguoi
+dung thay gi khi mo hop thoai.
 
-Ba buc:
+Bon buc:
   editor-project-window.png  editor dang mo du an (preview + timeline + thu vien)
   editor-split-dialog.png    SplitDialog kieu "Diem cat tu dat", moc 9.0 roi ra
                              ngoai khoang nen dong "1 moc bi bo..." PHAI nhin
@@ -14,6 +14,10 @@ Ba buc:
                              22/10/2026: no nam duoc fold, grab() khong nhin
                              thay no nen khong bao gio do)
   editor-export-dialog.png   ExportDialog che do "Vung chi dinh (tu -> den)"
+  editor-sfx-dialog.png      SfxDialog mo bang THAT nut tren thanh thoi: ca
+                             pack liet ke du pack, va dong tim kiem cat dung
+                             so dong — so dong do `core.sfx.entries()` sinh ra,
+                             khong phai so do anh tu dem
 
 An toan du lieu nguoi dung — bon chan song song:
   - fixture tu sinh bang lavfi trong %PUBLIC% (KHONG phai %TEMP% va cung KHONG
@@ -80,6 +84,7 @@ SHOTS = {
     "editor": os.path.join(UIX, "editor-project-window.png"),
     "split": os.path.join(UIX, "editor-split-dialog.png"),
     "export": os.path.join(UIX, "editor-export-dialog.png"),
+    "sfx": os.path.join(UIX, "editor-sfx-dialog.png"),
 }
 # Vung do mau, tinh theo ty le anh toan man hinh 1920x1080 cua lan chay nay.
 FULL_BOX = (0.0, 0.0, 1.0, 1.0)
@@ -282,9 +287,9 @@ def pixels_selfcheck():
               "center=%d mau"
               % (tag, img.width, img.height, shot.mean_luma(img), c_full,
                  c_time, c_center))
-        # Cua "preview co noi dung" CHI ap dung cho anh A: hai anh kia hop
-        # thoai che mat canvas, nen do mau o giua tren chung la do hop thoai
-        # (do 22/10/2026: anh C chi con 149 mau o giua).
+        # Cua "preview co noi dung" CHI ap dung cho anh A: ba anh hop thoai che
+        # mat canvas, nen do mau o giua tren chung la do hop thoai (do 22/10/2026:
+        # anh C chi con 149 mau o giua).
         ok = (shot.mean_luma(img) > 8.0 and c_full > CONTENT_FLOOR
               and c_time > CONTENT_FLOOR
               and (tag != "editor" or c_center > CONTENT_FLOOR))
@@ -309,7 +314,7 @@ def pixels_selfcheck():
         if n_colors(wiped, FULL_BOX) > CONTENT_FLOOR:
             fails.append("[G] %s: xoa ca anh ma van xanh - cua mau toan anh gia"
                          % tag)
-    for other in ("split", "export"):
+    for other in ("split", "export", "sfx"):
         if "editor" in real and other in real:
             d = shot.pct_moved(real["editor"], real[other])
             print("[E] editor vs %-6s lech %.2f%% (khong phai mot anh doi ten)"
@@ -521,9 +526,64 @@ def main():
         above("C: anh co noi dung (> 120 mau toan anh)",
               n_colors(img_c, FULL_BOX), CONTENT_FLOOR)
 
-        print("\n== 6. luu anh ==")
+        print("\n== 6. anh D: SfxDialog (kho hieu ung am thanh) ==")
+        dlg_c.close()
+        pump(6)
+        # Nut THAT tren thanh thoi -> `MainWindow._open_sfx` (import trong than
+        # ham) -> `self._sfx_dialog`: dung chuoi duong dien ra tren may nguoi
+        # dung, khong construct SfxDialog theo cach rieng cua probe.
+        from core import sfx as sfx_core
+        pack = sfx_core.entries()
+        editor.timeline_panel.header.btn_sfx.click()
+        pump(8)
+        dlg_d = getattr(editor, "_sfx_dialog", None)
+        dialogs.append(dlg_d)
+        check("D: bam nut mo duoc hop thoai cua duong dien", dlg_d is not None, True)
+        if dlg_d is None:
+            raise RuntimeError("nut SFX khong mo duoc hop thoai")
+        check("D: hop thoai liet ke du pack", dlg_d.list.count(), len(pack))
+        needle = (pack[0].get("label") or "")[:3]
+        want_rows = [r for r in pack if needle.casefold() in (
+            "%s %s %s" % (r.get("label"), r.get("key"),
+                          r.get("group"))).casefold()]
+        dlg_d.search.setText(needle)
+        pump(6)
+        check("D: tim kiem cat dung so dong (%r -> %d)" % (needle, len(want_rows)),
+              dlg_d.list.count(), len(want_rows))
+        dlg_d.search.clear()
+        dlg_d.list.setCurrentRow(0)
+        pump(6)
+        check("D: co dong dang chon de nguoi dung thay highlight",
+              dlg_d.list.currentRow(), 0)
+        # Khong bam "Nghe thu": `setSource()` cua QMediaPlayer gi file mp3 toi
+        # luc teardown va `shutil.rmtree(ignore_errors=True)` xoa im lang khong
+        # bao loi — dung lai cai bẫy da ke o doan finally duoi day.
+        check("D: khong mo nguon tieng nao trong probe nay",
+              dlg_d._player.source().isEmpty(), True)
+        dlg_hwnd_d, dlg_pid_d = own_hwnd(dlg_d)
+        check("D: handle hop thoai thuoc ve pid nay", dlg_pid_d, os.getpid())
+        place(dlg_hwnd_d, int(sw * 0.33), int(sh * 0.06),
+              dlg_d.width(), dlg_d.height())
+        pump(10)
+        rect_d = rect_of(shot.frame_bounds(dlg_hwnd_d))
+        check("D: hop thoai dang hien theo chinh Qt", dlg_d.isVisible(), True)
+        check("D: hop thoai nam TRON trong anh toan man hinh",
+              [rect_a[0] <= rect_d[0], rect_d[2] <= rect_a[2],
+               rect_a[1] <= rect_d[1], rect_d[3] <= rect_a[3]], [True] * 4)
+        check("D: hop thoai khong che vung timeline do mau",
+              rect_d[3] <= int(sh * 0.72), True)
+        img_d = shoot("D", bbox_a, app, pump)
+        if img_d is None:
+            raise RuntimeError("khong chup duoc anh D")
+        above("D: hop thoai that su duoc ve (lech vs anh A trong vung cua no > 5 %)",
+              shot.pct_moved(img_a.crop(rect_d), img_d.crop(rect_d)) - 5.0, 0.0)
+        above("D: anh co noi dung (> 120 mau toan anh)",
+              n_colors(img_d, FULL_BOX), CONTENT_FLOOR)
+
+        print("\n== 7. luu anh ==")
         os.makedirs(UIX, exist_ok=True)
-        for tag, img in (("editor", img_a), ("split", img_b), ("export", img_c)):
+        for tag, img in (("editor", img_a), ("split", img_b), ("export", img_c),
+                         ("sfx", img_d)):
             path = SHOTS[tag]
             img.save(path, optimize=True)
             with Image.open(path) as back:
@@ -534,8 +594,10 @@ def main():
                      hashlib.sha256(open(path, "rb").read()).hexdigest()[:16]))
         print("\nchu thich anh B: %s" % summary.replace("\n", " | "))
         print("chu thich anh C: %s" % want)
+        print("chu thich anh D: pack %d muc, loc %r con %d dong"
+              % (len(pack), needle, len(want_rows)))
 
-        print("\n== 7. khong de lai rac ==")
+        print("\n== 8. khong de lai rac ==")
         check("cache nguoi dung khong them file",
               count_files(real_cache_root()), user_cache_before)
         check("recent_projects.json khong doi byte", mru_bytes(), mru_before)

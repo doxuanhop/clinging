@@ -47,6 +47,9 @@ def serialize_transform(transform) -> dict:
         "rotation": round(transform.rotation, 2),
         "opacity": round(transform.opacity, 3),
         "fit_mode": getattr(transform, "fit_mode", "fit"),
+        "flip_h": bool(getattr(transform, "flip_h", False)),
+        "flip_v": bool(getattr(transform, "flip_v", False)),
+        "uniform_scale": bool(getattr(transform, "uniform_scale", True)),
         "original_w": round(getattr(transform, "original_w", 0), 1),
         "original_h": round(getattr(transform, "original_h", 0), 1),
     }
@@ -61,6 +64,11 @@ def deserialize_transform(data: dict, transform):
     transform.rotation = data.get("rotation", 0.0)
     transform.opacity = data.get("opacity", 1.0)
     transform.fit_mode = data.get("fit_mode", "fit")
+    # File 1.0.5 trở về trước không có ba khoá này: mặc định phải là "không lật,
+    # có khóa tỷ lệ" để dự án cũ mở lên trông y như cũ.
+    transform.flip_h = bool(data.get("flip_h", False))
+    transform.flip_v = bool(data.get("flip_v", False))
+    transform.uniform_scale = bool(data.get("uniform_scale", True))
     transform.original_w = data.get("original_w", 0.0)
     transform.original_h = data.get("original_h", 0.0)
 
@@ -364,6 +372,9 @@ def save_project_to_file(model, project_path: str, project_meta: dict = None):
             # Lớp phủ recap là cấu hình dự án, không gắn clip nào, nên nằm ở
             # đây chứ không trong clip_data.
             "recap_overlay": dict(getattr(model, "recap_overlay", {})),
+            # Bố cục + phong cách cũng cấp dự án: một dict cho cả khung hình,
+            # khong phai cho tung clip.
+            "project_layout": dict(getattr(model, "project_layout", {})),
         },
     }
 
@@ -441,6 +452,9 @@ def restore_model_from_clinq(model, project: dict, media_roots=()):
 
     # File cũ không có khoá này -> set_recap_overlay tự điền mặc định.
     model.set_recap_overlay(timeline.get("recap_overlay"), emit=False)
+    # Bo cuc cung vay: file cua 1.0.5 tro ve truoc khong co khoa `project_layout`,
+    # normalize() dien du 24 mac dinh nen khong co key nao tra None luc ve.
+    model.set_project_layout(timeline.get("project_layout"), emit=False)
 
     for track_data in timeline.get("tracks", []):
         track_type_name = track_data.get("track_type", "VIDEO")

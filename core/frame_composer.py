@@ -19,13 +19,11 @@ import os
 from PySide6.QtGui import QImage, QPainter, QColor, QFont
 from PySide6.QtCore import Qt, QRectF
 
-from core.canvas_utils import (
-    ASPECT_RATIOS, calculate_fit_and_center, get_media_dimensions,
-)
+from core.canvas_utils import ASPECT_RATIOS
 from core import anim_engine
 from core import transitions
 from core.aura_paint import paint_aura_for_effects
-from core import recap_overlay
+from core import canvas_layout, recap_overlay
 from core.clip_effects import apply_color_effects, compute_animation_offsets
 from core.media_frame import SequentialVideoReader, extract_frame_image, qimage_from_bgr
 from core.transition_paint import apply_wipe
@@ -52,6 +50,7 @@ class FrameComposer:
 
     def render_frame(self, t: float) -> QImage:
         """Trả về QImage RGBA8888 kích thước xuất, đã vẽ mọi clip tại thời điểm t."""
+        layout = self.model.project_layout
         canvas = QImage(self.canvas_w, self.canvas_h,
                         QImage.Format.Format_ARGB32_Premultiplied)
         canvas.fill(QColor("#000000"))
@@ -60,6 +59,8 @@ class FrameComposer:
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         try:
+            canvas_layout.paint_background(painter, self.canvas_w,
+                                           self.canvas_h, layout)
             # active_visual_clips_at trả về đúng thứ tự nền -> tiền cảnh của preview.
             for clip in self.model.active_visual_clips_at(t):
                 # Cùng một hàm toán với preview: transitions.clip_state cho hình
@@ -67,6 +68,10 @@ class FrameComposer:
                 state = self.model.transition_state(
                     clip, t, self.canvas_w, self.canvas_h)
                 self._draw_clip(painter, clip, clip.local_time_at(t), state)
+            # Khung/o/chữ của bố cục nằm TRÊN clip, dưới lớp recap: recap là
+            # chrome của bản ghi hình, còn bố cục là một phần của nội dung.
+            canvas_layout.paint_foreground(painter, self.canvas_w,
+                                           self.canvas_h, layout, t)
         finally:
             painter.end()
 
@@ -169,13 +174,19 @@ class FrameComposer:
         cx = self.canvas_w / 2.0 + x + anim.dx + state.dx
         cy = self.canvas_h / 2.0 + y + anim.dy + state.dy
         total_scale = anim.scale * state.scale
+        # Lật = nhân -1 vào chính phép co giãn, quanh TÂM rect đã dịch: cùng một
+        # phép biến đổi mà CanvasClipItem.paint áp dụng, nên "xem lật" và "xuất
+        # lật" ra cùng một khung hình. Đi đường này thay vì scale âm trong model
+        # vì keyframe graph và calculate_fit_and_center coi scale là độ lớn.
+        fx = -1.0 if getattr(clip.transform, "flip_h", False) else 1.0
+        fy = -1.0 if getattr(clip.transform, "flip_v", False) else 1.0
 
         painter.save()
         painter.setOpacity(max(0.0, min(1.0, opacity)) * anim.opacity
                            * state.opacity)
         painter.translate(cx, cy)
         painter.rotate(rot + anim.rotation)
-        painter.scale(total_scale, total_scale)
+        painter.scale(total_scale * fx, total_scale * fy)
         painter.drawImage(int(-scaled.width() / 2), int(-scaled.height() / 2), scaled)
         # Aura vẽ trong chính transform của clip nên nó xoay và co theo khung
         # hình, và dùng chung hàm với Canvas preview — không có nhánh riêng.
@@ -263,21 +274,10 @@ class FrameComposer:
         return cached
 
     def _base_size(self, clip):
-        """Kích thước nền (đã fit-to-canvas) trước khi nhân scale — khớp preview."""
-        tw = getattr(clip.transform, "_media_w", 0.0)
-        th = getattr(clip.transform, "_media_h", 0.0)
-        if tw > 0 and th > 0:
-            return tw, th
+        """Kích thước nền (đã fit-to-canvas) trước khi nhân scale — khớp preview.
 
-        if clip.media_type == "sticker":
-            return 220.0, 220.0
-
-        media_w = getattr(clip.transform, "original_w", 0) or 0
-        media_h = getattr(clip.transform, "original_h", 0) or 0
-        if media_w <= 0 or media_h <= 0:
-            media_w, media_h = get_media_dimensions(clip.source_path, clip.media_type)
-        if media_w <= 0 or media_h <= 0:
-            media_w, media_h = 400, 300
-
-        layout = calculate_fit_and_center(media_w, media_h, self.canvas_w, self.canvas_h)
-        return layout["new_w"], layout["new_h"]
+        Ủy quyền cho core.canvas_utils.base_display_size để bảng thuộc tính (nút
+        canh mép) nhân đúng cái hộp mà máy vẽ này đang display.
+        """
+        from core.canvas_utils import base_display_size
+        return base_display_size(clip, self.canvas_w, self.canvas_h)

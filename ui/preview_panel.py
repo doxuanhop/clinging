@@ -25,7 +25,7 @@ ASPECT_SIZES = {
 
 from ui.graphics_canvas_item import CanvasClipItem
 from core.timeline_model import ClipModel
-from core import recap_overlay
+from core import canvas_layout, recap_overlay
 
 
 class PreviewCanvas(QGraphicsView):
@@ -304,18 +304,57 @@ class PreviewCanvas(QGraphicsView):
         self._model = model
         self.viewport().update()
 
-    def drawForeground(self, painter, rect):
-        """Vẽ lớp phủ recap lên Canvas bằng đúng core/recap_overlay mà bản xuất dùng."""
+    def drawBackground(self, painter, rect):
+        """Nen cua bo cuc cap du an — cung ham ma FrameComposer goi luc xuat.
+
+        Scene khong co item nen: lop nen cua du an phai nam DUOI moi clip, nen
+        no song o day chu khong the ve trong drawForeground nhu lop recap.
+        """
+        super().drawBackground(painter, rect)
         model = self._model
         if model is None:
             return
+        settings = model.project_layout
+        if not canvas_layout.layout_active(settings):
+            return
+        w, h = self._frame_size()
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.translate(-w / 2.0, -h / 2.0)
+        canvas_layout.paint_background(painter, w, h, settings)
+        painter.restore()
+
+    def _frame_size(self) -> tuple:
+        from core.canvas_utils import ASPECT_RATIOS
+        return ASPECT_RATIOS.get(self._current_ratio_key, (1920, 1080))
+
+    def drawForeground(self, painter, rect):
+        """Vẽ khung/o/chữ của bố cục rồi tới lớp phủ recap, bằng đúng các hàm
+        mà bản xuất gọi — thứ tự lop phai giong FrameComposer: clip -> bo cuc
+        -> recap."""
+        model = self._model
+        if model is None:
+            return
+        w, h = self._frame_size()
+        layout = model.project_layout
+        if canvas_layout.layout_active(layout):
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            # Painter vào đây đã ở tọa độ scene (gốc giữa khung); canvas_layout
+            # vẽ theo hệ góc trên trái w×h, nên tịnh tiến một lần là đủ đúng vị
+            # trí khi zoom/fit đổi tỉ lệ.
+            painter.translate(-w / 2.0, -h / 2.0)
+            canvas_layout.paint_foreground(painter, w, h, layout,
+                                           float(model.playhead))
+            painter.restore()
         settings = model.recap_overlay
         if not recap_overlay.overlay_active(settings):
             return
-        from core.canvas_utils import ASPECT_RATIOS
-        w, h = ASPECT_RATIOS.get(self._current_ratio_key, (1920, 1080))
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
+        # Recap ve sau bo cuc vi no la chrome cua ban ghi hinh, khong phai
+        # mot phan cua khung thiet ke.
+        painter.translate(-w / 2.0, -h / 2.0)
         # Painter vào đây đã ở tọa độ scene (gốc giữa khung); recap_overlay vẽ
         # theo hệ góc trên trái w×h, nên tịnh tiến một lần là đủ đúng vị trí
         # khi zoom/fit đổi tỉ lệ.

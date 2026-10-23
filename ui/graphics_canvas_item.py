@@ -15,6 +15,8 @@ Kỹ thuật (TextClipItem):
   - QTransform chỉ dùng cho rotation
 """
 
+import math
+
 from PySide6.QtCore import Qt, QRectF, QPointF
 from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QBrush, QFont, QLinearGradient, QTransform, QPixmap
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsRectItem, QGraphicsTextItem
@@ -25,9 +27,27 @@ from core.transition_paint import apply_wipe
 
 HANDLE_SIZE = 8.0
 HANDLE_HITZone = 12.0
+# Tay nắm xoay nằm CAO HƠN mép trên của khung một khoảng cố định. Phải là hằng
+# số, không phải số đo theo trạng thái: boundingRect/shape mà đổi theo thì Qt
+# dọn vùng dirty sai và cú nhấp đầu tiên hụt (xem bẫy "boundingRect tĩnh").
+ROTATE_OFFSET = 24.0
+ROTATE_HIT = 10.0
+# Nhãn độ vẽ phía trên tay nắm nên vùng dành cho hàng xoay rộng hơn tay nắm một
+# chút. Vẫn là hằng số: 52 px cho mọi trạng thái.
+ROTATE_ROOM = ROTATE_OFFSET + ROTATE_HIT + 18.0
 SMART_GUIDE_THRESHOLD = 10.0
 SMART_GUIDE_RELEASE_THRESHOLD = 18.0
 SMART_GUIDE_COLOR = QColor("#35D6C5")
+
+
+def _normalize_angle(deg):
+    """Gói góc về (-180, 180] — dải mà QTransform và atan2 của sync_to_model nói cùng một tiếng.
+
+    Để góc 270 độ sống nguyên thì lần sync đầu tiên model nhận -90, và ô spin
+    trên panel nhảy số ngay dưới tay người dùng.
+    """
+    a = float(deg) % 360.0
+    return a - 360.0 if a > 180.0 else a
 
 
 def _smart_snap_position(item, proposed_pos):
@@ -132,6 +152,10 @@ class CanvasClipItem(QGraphicsRectItem):
 
         self._hover = False
         self._resizing_handle = None
+        self._rotating = False
+        self._rotate_base = 0.0
+        self._rotate_start_rot = 0.0
+        self._rotate_shown = 0.0
         self._drag_start_pos = QPointF()
         self._resize_orig_w = 0.0
         self._resize_orig_h = 0.0
@@ -264,9 +288,13 @@ class CanvasClipItem(QGraphicsRectItem):
         #
         # Vùng dành cho aura là HẰNG SỐ (lớn nhất trong registry), không lấy theo
         # hiệu ứng đang gắn trên clip: xem core.aura_paint.aura_reserve.
+        #
+        # Canh trên nở thêm ROTATE_ROOM cho tay nắm xoay + nhãn độ. Cũng phải là
+        # hằng số: boundingRect đổi theo trạng thái thì Qt dọn vùng dirty sai và
+        # lưu ảnh mờ dưới tay nắm (đã trả giá vụ "boundingRect tĩnh").
         bounding = self.rect()
         margin = HANDLE_SIZE + 4.0 + aura_reserve(bounding)
-        return bounding.adjusted(-margin, -margin, margin, margin)
+        return bounding.adjusted(-margin, -margin - ROTATE_ROOM, margin, margin)
 
     def shape(self):
         """Vùng chạm chuột: khung media + tay nắm, KHÔNG tính chỗ aura loang.
@@ -278,6 +306,9 @@ class CanvasClipItem(QGraphicsRectItem):
         margin = HANDLE_SIZE + 4.0
         path = QPainterPath()
         path.addRect(self.rect().adjusted(-margin, -margin, margin, margin))
+        pt = self._rotate_handle_pos()
+        path.addRect(QRectF(pt.x() - ROTATE_HIT, pt.y() - ROTATE_HIT,
+                            ROTATE_HIT * 2, ROTATE_HIT * 2))
         return path
 
     def itemChange(self, change, value):
@@ -355,6 +386,14 @@ class CanvasClipItem(QGraphicsRectItem):
                     apply_wipe(scaled.toImage(), state.wipe[0], state.wipe[1]))
             x = rect.x() + (rect.width() - scaled.width()) / 2
             y = rect.y() + (rect.height() - scaled.height()) / 2
+            # Lật quanh TÂM rect — cùng phép biến đổi mà FrameComposer._draw_media
+            # dùng lúc xuất, nên hai đường không thể mỗi bên một kiểu.
+            fx = -1.0 if getattr(self.clip_model.transform, "flip_h", False) else 1.0
+            fy = -1.0 if getattr(self.clip_model.transform, "flip_v", False) else 1.0
+            if fx < 0.0 or fy < 0.0:
+                painter.translate(rect.center().x(), rect.center().y())
+                painter.scale(fx, fy)
+                painter.translate(-rect.center().x(), -rect.center().y())
             painter.drawPixmap(int(x), int(y), scaled)
             # Aura đi qua đúng hàm mà FrameComposer gọi, trong cùng transform
             # và cùng local_time, nên ô xem thử và file xuất ra không lệch nhau.
@@ -379,6 +418,22 @@ class CanvasClipItem(QGraphicsRectItem):
                     pt.x() - HANDLE_SIZE / 2, pt.y() - HANDLE_SIZE / 2,
                     HANDLE_SIZE, HANDLE_SIZE
                 )
+
+            stem = self._rotate_handle_pos()
+            painter.drawLine(QPointF(rect.center().x(), rect.top()), stem)
+            painter.drawEllipse(stem, HANDLE_SIZE / 2.0, HANDLE_SIZE / 2.0)
+            if self._rotating:
+                # Nhan do goc lien tuc suot cu keo (270 van la 270), khong doc tu
+                # model: model da bi atan2 goi ve (-180,180] nen nho nhay -90
+                # trong luc tay nguoi dung keo vong qua dau.
+                label = "%.0f°" % self._rotate_shown
+                box = QRectF(stem.x() - 34.0, stem.y() - ROTATE_HIT - 20.0, 68.0, 18.0)
+                painter.setFont(QFont("Outfit", 10, QFont.Bold))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor("#40E0D0"))
+                painter.drawRoundedRect(box, 4.0, 4.0)
+                painter.setPen(QPen(QColor("#06222A")))
+                painter.drawText(box, Qt.AlignCenter, label)
 
     def _apply_effects(self, pixmap):
         """Áp dụng toàn bộ hiệu ứng trong clip.effects lên pixmap.
@@ -605,11 +660,49 @@ class CanvasClipItem(QGraphicsRectItem):
                 return i
         return -1
 
+    def _rotate_handle_pos(self):
+        """Tâm tay nắm xoay, ở hệ tọa độ local của item — nên xoay cùng khung."""
+        r = self.rect()
+        return QPointF(r.center().x(), r.top() - ROTATE_OFFSET)
+
+    def _hit_test_rotate(self, pos):
+        pt = self._rotate_handle_pos()
+        return QRectF(pt.x() - ROTATE_HIT, pt.y() - ROTATE_HIT,
+                      ROTATE_HIT * 2, ROTATE_HIT * 2).contains(pos)
+
+    def _scene_angle(self, scene_pos):
+        """Góc của con trỏ quanh tâm clip, đo ở HỆ SCENE.
+
+        Không dùng mapFromScene: tọa độ local đã bị trừ sẵn rotation của item
+        nên hiệu hai lần đọc luôn trả 0 và cú quay không nhúc nhích.
+        """
+        center = self.mapToScene(self.rect().center())
+        return math.degrees(math.atan2(scene_pos.y() - center.y(),
+                                       scene_pos.x() - center.x()))
+
+    def _apply_rotation(self, scene_pos):
+        delta = self._scene_angle(scene_pos) - self._rotate_base
+        # _rotate_shown đếm nối tiếp suốt cú kéo (qua 180 vẫn tới 200) để nhãn
+        # không nhảy -179 -> 179 giữa tay; QTransform nhận góc đã gói vì
+        # sync_to_model đọc lại bằng atan2, dải (-180, 180].
+        self._rotate_shown = self._rotate_start_rot + delta
+        self.setTransform(QTransform().rotate(_normalize_angle(self._rotate_shown)))
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             from core.commands import transform_snapshot
             self._gesture_before = transform_snapshot(self.clip_model)
             pos = event.pos()
+            if self._hit_test_rotate(pos):
+                # Không rơi xuống super: ItemIsMovable còn bật thì clip bị kéo
+                # lê thay vì quay, và _clamp_to_scene trả nó về giữa canvas.
+                self._rotating = True
+                self._rotate_base = self._scene_angle(event.scenePos())
+                self._rotate_start_rot = self.clip_model.transform.rotation
+                self._rotate_shown = self._rotate_start_rot
+                self.setCursor(Qt.CrossCursor)
+                event.accept()
+                return
             handle = self._hit_test_handle(pos)
             if handle >= 0:
                 self._resizing_handle = handle
@@ -625,6 +718,12 @@ class CanvasClipItem(QGraphicsRectItem):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._rotating:
+            self._apply_rotation(event.scenePos())
+            self.update()
+            event.accept()
+            return
+
         if self._resizing_handle is not None:
             delta = event.scenePos() - self._drag_start_pos
             h = self._resizing_handle
@@ -648,11 +747,16 @@ class CanvasClipItem(QGraphicsRectItem):
             new_w = max(20, new_w)
             new_h = max(20, new_h)
 
-            if self._aspect_ratio > 0:
-                if abs(delta.x()) >= abs(delta.y()):
-                    new_h = new_w / self._aspect_ratio
-                else:
-                    new_w = new_h * self._aspect_ratio
+            # "Khóa tỷ lệ" là cờ trên model, không phải sở thích của item: dùng
+            # tỉ lệ của rect LÚC BẤM chứ không phải tỉ lệ media, vì clip đã
+            # kéo tự do (scale_x != scale_y) sẽ nhảy về hình gốc giữa cú kéo.
+            if getattr(self.clip_model.transform, "uniform_scale", True):
+                ratio = orig_w / orig_h if orig_h > 0 else 1.0
+                if ratio > 0:
+                    if abs(delta.x()) >= abs(delta.y()):
+                        new_h = new_w / ratio
+                    else:
+                        new_w = new_h * ratio
 
             self._set_rect_size(new_w, new_h)
 
@@ -665,6 +769,12 @@ class CanvasClipItem(QGraphicsRectItem):
 
     def mouseReleaseEvent(self, event):
         _clear_smart_guides(self)
+        if self._rotating:
+            self._rotating = False
+            self.setCursor(Qt.OpenHandCursor)
+            self._commit_gesture()
+            event.accept()
+            return
         self._commit_gesture()
         if self._resizing_handle is not None:
             self._resizing_handle = None
@@ -701,7 +811,9 @@ class CanvasClipItem(QGraphicsRectItem):
     def hoverMoveEvent(self, event):
         pos = event.pos()
         handle = self._hit_test_handle(pos)
-        if handle >= 0:
+        if self._hit_test_rotate(pos):
+            self.setCursor(Qt.CrossCursor)
+        elif handle >= 0:
             self.setCursor(self._get_handle_cursor(handle))
         else:
             self.setCursor(Qt.OpenHandCursor)

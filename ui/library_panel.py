@@ -10,7 +10,7 @@ import os
 from PySide6.QtCore import (
     Qt, QMimeData, Signal, QEvent, QSize, QObject, QRunnable, QThreadPool
 )
-from PySide6.QtGui import QDrag, QImage, QPixmap
+from PySide6.QtGui import QDrag, QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QToolButton, QPushButton, QScrollArea, QFrame, QFileDialog,
@@ -66,14 +66,27 @@ def decode_thumb_image(path, kind, max_width=320):
     Video được thu nhỏ về <= ``max_width`` ngay ở bước giải mã: card hiển thị
     116x76 nên giữ nguyên khung 1280x720 chỉ để rồi scale là lãng phí, và ảnh
     đã thu nhỏ mới là thứ đáng lưu vào cache đĩa (~414 ms một lượt giải mã trên
-    HDD máy yếu — scratch/perf_baseline.json). Ảnh tĩnh KHÔNG cache: đọc PNG/JPG
-    nhanh hơn cả vòng ghi/đọc cache.
+    HDD máy yếu — scratch/perf_baseline.json).
+
+    Ảnh tĩnh CŨNG thu nhỏ và CŨNG cache. Lời cũ ở đây ("đọc PNG/JPG nhanh hơn
+    cả vòng ghi/đọc cache") đã bị số đo phản bác: `QImage(path)` trả về nguyên
+    2000x2800 (~16 MiB RGB tạm) rồi `_apply_thumb` scale nó trên thread GUI,
+    sáu lần như thế là 86,2 ms GUI trong khi mười hai khung video đã thu nhỏ
+    chỉ tốn 8,0 ms; và vì không cache nên mỗi lần mở lại project, sáu tấm ảnh
+    lại được giải mã từ đầu (scratch/library_perf.json P4/P5).
     """
     from core import media_cache
 
     if kind == "image":
-        img = QImage(path)
-        return img
+        key = media_cache.image_key(path, "img", 0.0, max_width, max_width)
+        if key:
+            cached = media_cache.read_image(key)
+            if not cached.isNull():
+                return cached
+        image = _decode_scaled_image(path, max_width)
+        if not image.isNull() and key:
+            media_cache.write_image(key, image)
+        return image
     if kind == "video":
         key = media_cache.image_key(path, "lib", 0.0, max_width, 0)
         if key:
@@ -88,6 +101,28 @@ def decode_thumb_image(path, kind, max_width=320):
                 media_cache.write_image(key, image)
         return image
     return QImage()
+
+
+def _decode_scaled_image(path, max_width):
+    """Đọc ảnh tĩnh ĐÃ thu nhỏ, không bao giờ đọc nguyên kích thước.
+
+    `QImage(path)` là đường cũ: nó giải mã toàn bộ 2000x2800 rồi để
+    `_apply_thumb` co về 116x76 trên thread GUI. `setScaledSize` bảo bộ giải mã
+    làm phép co từ trong lúc đọc — với JPEG nó xuống thang ngay ở tầng DCT nên
+    chẳng bao giờ cấp đủ bộ nhớ cho khung gốc.
+
+    Có ý KHÔNG đặt `setAutoTransform()`: `QImage(path)` cũ cũng không xoay theo
+    EXIF, nên bật lên sẽ làm thumbnail quay trong khi preview/timeline (đọc
+    bằng đường khác) vẫn đứng — lệch đó là lỗi mới tạo, không phải lỗi được sửa.
+    """
+    reader = QImageReader(path)
+    size = reader.size()
+    if not size.isValid() or size.width() <= 0 or size.height() <= 0:
+        return QImage()
+    if size.width() > max_width:
+        ratio = float(max_width) / float(size.width())
+        reader.setScaledSize(QSize(max_width, max(1, int(round(size.height() * ratio)))))
+    return reader.read()
 
 
 def _decode_first_frame(path):
@@ -115,16 +150,31 @@ class _ThumbReady(QObject):
 
 class _ThumbTask(QRunnable):
     """Card giữ tham chiếu tới task nên _ThumbReady luôn sống đủ lâu để emit;
-    nếu card bị huỷ trước thì Qt tự ngắt kết nối slot thuộc card."""
+    nếu card bị huỷ trước thì Qt tự ngắt kết nối slot thuộc card.
+
+    `cancelled` là cầu dao cho ĐÚNG cái đó, nhưng phải kiểm tra một cách chủ
+    động: khi card đã bị deleteLater, `_ThumbReady` (không có parent, Python
+    đang giữ) có thể chết trước `run()` và `emit` khi ấy ném
+    "RuntimeError: Signal source has been deleted" ngay qua biên callback C++
+    của QRunnable — đo 22/10/2026, 3 lần trong một vòng probe.
+    """
 
     def __init__(self, path, kind):
         super().__init__()
         self.path = path
         self.kind = kind
+        self.cancelled = False
         self.ready = _ThumbReady()
 
     def run(self):
-        self.ready.image.emit(decode_thumb_image(self.path, self.kind))
+        if self.cancelled:
+            return
+        image = decode_thumb_image(self.path, self.kind)
+        if self.cancelled:
+            # Card bi xoa luc dang giai ma: khong con ai de nhan anh, va emit
+            # vao mot source da mat la loi o tren.
+            return
+        self.ready.image.emit(image)
 
 
 _POOL = None
@@ -191,6 +241,7 @@ class ResourceCard(QFrame):
         self.setFixedSize(145, 145)
         self.setCursor(Qt.OpenHandCursor)
         self._drag_start = None
+        self._thumb_task = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -227,17 +278,38 @@ class ResourceCard(QFrame):
 
         Giải mã video đồng bộ từng làm cứng toàn bộ UI khi thư viện có vài chục
         tệp — mỗi cv2.VideoCapture mất hàng trăm mili giây trên thread GUI.
+
+        Chỉ ĐẶT CỜ, không khởi động task: thẻ bị bộ lọc ẩn thì không có ai nhìn
+        khung hình của nó. Đo 22/10/2026, đang ở tab Video mà thả sáu tấm ảnh
+        vào thì cả 6/6 lượt giải mã vẫn chạy cho 0 thẻ hiện hình
+        (scratch/library_perf.json P7). `LibraryPanel._apply_filter()` gọi
+        `request_thumbnail()` cho đúng những thẻ nó thực sự hiện ra.
         """
+        self._thumb_wanted = (self.kind in ("image", "video")
+                              and bool(self.full_path)
+                              and os.path.isfile(self.full_path))
         set_label_icon(self.thumb_container,
                        FILE_ICONS.get(self.kind, "fa6s.file"), 32, icon_color())
-        if self.kind not in ("image", "video"):
-            return
-        if not self.full_path or not os.path.isfile(self.full_path):
+
+    def request_thumbnail(self):
+        """Xếp một lượt giải mã vào pool — tối đa một lần cho mỗi thẻ."""
+        if not self._thumb_wanted or self._thumb_task is not None:
             return
         task = _ThumbTask(self.full_path, self.kind)
         self._thumb_task = task
         task.ready.image.connect(self._apply_thumb)
         thumb_pool().start(task)
+
+    def cancel_thumbnail(self):
+        """Gỡ bỏ lượt giải mã của thẻ sắp bị xoá khỏi thư viện.
+
+        `clear_resources()` gọi đây trước `deleteLater()`. Đo cùng lần: nạp 20
+        thẻ rồi xoá ngay khi task còn đang xếp hàng — 20/20 lượt giải mã vẫn
+        chạy hết cho những thẻ không còn tồn tại (P10).
+        """
+        self._thumb_wanted = False
+        if self._thumb_task is not None:
+            self._thumb_task.cancelled = True
 
     def _apply_thumb(self, image):
         if image.isNull():
@@ -480,6 +552,12 @@ class LibraryPanel(QWidget):
 
         self._kind_filter = None
         self._hide_missing = False
+        # >0 nghia la "dang nap the, dung doi luoi moi lan nap". restore_resources()
+        # goi add_resource() cho tung asset, va add_resource() tu goi
+        # _apply_filter() — nen luc chua gop luoi, mot dot nap 65 the dong hung
+        # thread GUI 1132,8 ms, trong do 944,3 ms (83 %) chi la do luoi bi xay
+        # lai 65 lan cho 65 lan them (scratch/_lib_report_head.json).
+        self._batch_depth = 0
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.search_box.input.textChanged.connect(self._apply_filter)
         self.search_box.setPlaceholderText(TAB_TO_PLACEHOLDER[0])
@@ -523,28 +601,55 @@ class LibraryPanel(QWidget):
         return True
 
     def _apply_filter(self):
-        """Ẩn/hiện thẻ rồi xếp lại lưới — tab, ô tìm kiếm và nút lọc cùng một đường."""
+        """Ẩn/hiện thẻ rồi xếp lại lưới — tab, ô tìm kiếm và nút lọc cùng một đường.
+
+        Chỉ động vào visibility của thẻ THỰC SỰ đổi trạng thái. Bản cũ `hide()`
+        mọi thẻ rồi `show()` lại những thẻ khớp lọc, tức mỗi ký tự gõ vào ô tìm
+        kiếm là một lượt ẩn-hiện toàn bộ lưới; `isVisibleTo(grid_host)` (không
+        phải `isVisible()`) nên không bị đánh lừa bởi sidebar hay trang Home đang
+        che panel.
+        """
         upload_card = self._items[0] if self._items else None
-        for widget in self._items:
-            self.grid.removeWidget(widget)
-            widget.hide()
         shown = []
         if upload_card is not None:
             shown.append(upload_card)
         shown += [c for c in self._items[1:]
                   if isinstance(c, ResourceCard) and self._matches(c)]
+        keep = set(id(widget) for widget in shown)
+        for widget in self._items:
+            if id(widget) not in keep:
+                self.grid.removeWidget(widget)
+                widget._grid_cell = None
+                if widget.isVisibleTo(self.grid_host):
+                    widget.hide()
         for i, widget in enumerate(shown):
             r, c = divmod(i, self._cols)
-            self.grid.addWidget(widget, r, c)
-            widget.show()
+            if getattr(widget, "_grid_cell", None) != (r, c):
+                # Chi doi cho khi o THUC SU doi. `removeWidget` + `addWidget`
+                # nam tren cung mot o van lam QLayout ban mot lan, va do tren
+                # 65 the moi lan go = 130 lan ban: do 22/10/2026 tren chinh luoi
+                # 65 the nay, median mot phim van la 9,94 ms sau khi da cat
+                # _apply_filter xuong con 1 luot (scratch/_lib_report.json).
+                self.grid.removeWidget(widget)
+                self.grid.addWidget(widget, r, c)
+                widget._grid_cell = (r, c)
+            if not widget.isVisibleTo(self.grid_host):
+                widget.show()
+            if isinstance(widget, ResourceCard):
+                # The nap vao day moi xong moi duoc xep giai ma: the bi bo loc
+                # an thi khong co luot giai ma nao (P7).
+                widget.request_thumbnail()
         # Nhãn "không khớp" phải nằm dưới hàng thẻ cuối, không đè lên UploadCard
         # vì QGridLayout cho phép hai widget dùng chung một ô.
-        self.grid.removeWidget(self.no_match_label)
+        if getattr(self.no_match_label, "_grid_cell", None) is not None:
+            self.grid.removeWidget(self.no_match_label)
+            self.no_match_label._grid_cell = None
         has_resources = any(isinstance(c, ResourceCard) for c in self._items)
         empty_result = has_resources and len(shown) <= 1
         if empty_result:
             rows = -(-len(shown) // self._cols)
             self.grid.addWidget(self.no_match_label, rows, 0, 1, self._cols)
+            self.no_match_label._grid_cell = (rows, 0)
         self.no_match_label.setVisible(empty_result)
         self.stack.setCurrentIndex(1 if has_resources else 0)
 
@@ -558,15 +663,22 @@ class LibraryPanel(QWidget):
     def add_files(self, paths):
         """Thêm tệp từ hộp thoại hoặc kéo-thả; loại suy từ phần mở rộng."""
         added = 0
-        for path in paths:
-            if not path or not os.path.isfile(path):
-                continue
-            before = len(self._items)
-            # Không ép loại theo tab đang chọn: một tấm ảnh bị gắn nhãn "video"
-            # sẽ hiện sai thumbnail và hỏng ở timeline.
-            self.add_resource(os.path.basename(path), kind_for_path(path), path)
-            if len(self._items) > before:
-                added += 1
+        self._batch_depth += 1
+        try:
+            for path in paths:
+                if not path or not os.path.isfile(path):
+                    continue
+                before = len(self._items)
+                # Không ép loại theo tab đang chọn: một tấm ảnh bị gắn nhãn "video"
+                # sẽ hiện sai thumbnail và hỏng ở timeline.
+                self.add_resource(os.path.basename(path), kind_for_path(path), path)
+                if len(self._items) > before:
+                    added += 1
+        finally:
+            self._batch_depth -= 1
+        # Mot lan doi luoi cho ca dot: `resourcesChanged` van phat theo tung te
+        # nhu cu (khong doi logic), chi do luoi ghep lai gop thanh mot lan.
+        self._apply_filter()
         # isHidden() chỉ đúng cho thẻ bị chính bộ lọc ẩn, khác với isVisible()
         # (False cả khi cả panel đang bị sidebar ẩn).
         card = self._items[-1] if self._items else None
@@ -596,7 +708,10 @@ class LibraryPanel(QWidget):
         card.splitRequested.connect(self.mediaSplitRequested.emit)
         card.compressRequested.connect(self.mediaCompressRequested.emit)
         self._items.append(card)
-        self._apply_filter()
+        # Trong dot nap nhieu thi bo qua: restore_resources()/add_files() tu goi
+        # _apply_filter() MOT lan sau khi dot xong.
+        if not self._batch_depth:
+            self._apply_filter()
         if emit_change:
             self.resourcesChanged.emit(self.resource_records())
         return card
@@ -607,6 +722,8 @@ class LibraryPanel(QWidget):
 
     def clear_resources(self, emit_change=True):
         for item in self._items:
+            if isinstance(item, ResourceCard):
+                item.cancel_thumbnail()
             self.grid.removeWidget(item)
             item.deleteLater()
         self._items = []
@@ -618,13 +735,18 @@ class LibraryPanel(QWidget):
     def restore_resources(self, assets):
         """Re-create media cards after the project UI has been initialized."""
         self.clear_resources(emit_change=False)
-        records = assets.values() if isinstance(assets, dict) else (assets or [])
-        for asset in records:
-            path = asset.get("path") or asset.get("source_path") or ""
-            kind = asset.get("type") or asset.get("media_type") or "video"
-            if path and kind in ("video", "audio", "image"):
-                self.add_resource(asset.get("name") or os.path.basename(path), kind,
-                                  path, emit_change=False)
+        self._batch_depth += 1
+        try:
+            records = assets.values() if isinstance(assets, dict) else (assets or [])
+            for asset in records:
+                path = asset.get("path") or asset.get("source_path") or ""
+                kind = asset.get("type") or asset.get("media_type") or "video"
+                if path and kind in ("video", "audio", "image"):
+                    self.add_resource(asset.get("name") or os.path.basename(path),
+                                      kind, path, emit_change=False)
+        finally:
+            self._batch_depth -= 1
+        self._apply_filter()
         self.resourcesChanged.emit(self.resource_records())
 
     def _make_upload_card(self):

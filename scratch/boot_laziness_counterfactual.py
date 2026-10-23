@@ -1,16 +1,21 @@
-"""Phan chung cho ba cua moi cua `--startup-report`.
+"""Phan chung cho nam cua moi cua `--startup-report`.
 
     python scratch/boot_laziness_counterfactual.py
 
-Ba check `boot_khong_keo_trang_dung`, `boot_khong_psutil` va `boot_khong_keo_nen`
-xanh hom nay chua co nghia gi neu chung la loai luan luon xanh. Probe nay chay
-CUNG duong boot that (`main._boot` + `diagnostics.run_startup_report`) hai lan:
+Năm check `boot_khong_keo_trang_dung`, `boot_khong_psutil`, `boot_khong_keo_nen`,
+`boot_khong_keo_sfx` va `boot_khong_keo_bocuc` xanh hom nay chua co nghia gi neu
+chung la loai luan luon xanh. Probe nay chay CUNG duong boot that (`main._boot` +
+`diagnostics.run_startup_report`) hai lan:
 
-  * SACH     — khong lam gi them: ca ba phai True, rc 0.
-  * DOC NHIEM — nap lai ba thu ma ban cu nap: `import ui.main_window` (dong
+  * SACH     — khong lam gi them: ca nam phai True, rc 0.
+  * DOC NHIEM — nap lai nam thu ma ban cu nap: `import ui.main_window` (dong
     `from ui.main_window import MainWindow` o dau ui/main_controller.py),
-    `system_stats.psutil_or_none()` (psutil bi keo vong khoi dong), va
-    `import ui.compress_dialog` (hop thoai Nen). Ca ba phai False, rc 1, VA
+    `system_stats.psutil_or_none()` (psutil bi keo vong khoi dong),
+    `import ui.compress_dialog` (hop thoai Nen), `import ui.sfx_dialog`
+    (hop thoai Hieu ung am thanh, keo theo QAudioOutput) va
+    `import ui.canvas_layout_dialog` (hop thoai Bo cuc & Phong cach — module nay
+    `MainWindow._open_canvas_layout` chi import trong THAN ham, nen tree nguon
+    luon xanh ma bundle van co the thieu no). Ca nam phai False, rc 1, VA
     `boot_khong_cv2` van phai True — neu do red ca cv2 thi phep thu da pha mot
     thu khac chu khong phai phan chung dieu can chung.
 
@@ -35,9 +40,14 @@ if __POISON__:
     # Cach viet cua ban cu: trang dung phim nam trong lan boot cua trang Home,
     # va psutil duoc nap de do CPU/RAM truk khi cua so kip ve. Vet thu ba la
     # hop thoai Nen bi keo len dau file cua mot module duong boot — ke ca khi
-    # `ui.main_window` van vang no van nam trong cay import.
+    # `ui.main_window` van vang no van nam trong cay import. Vet thu nam (Bo
+    # cuc) la ly do `ClingingQt.spec` phai giu `ui.canvas_layout_dialog` trong
+    # hiddenimports: no chi duoc import trong THAN ham `_open_canvas_layout`,
+    # nen tree nguon luon xanh con bundle thi co the thieu.
     import ui.main_window  # noqa: F401
     import ui.compress_dialog  # noqa: F401
+    import ui.sfx_dialog  # noqa: F401
+    import ui.canvas_layout_dialog  # noqa: F401
     from core import system_stats
     system_stats.psutil_or_none()
 
@@ -79,7 +89,8 @@ def main():
             if os.path.isfile(path):
                 os.remove(path)
     keys = ("boot_khong_keo_trang_dung", "boot_khong_psutil",
-            "boot_khong_keo_nen")
+            "boot_khong_keo_nen", "boot_khong_keo_sfx",
+            "boot_khong_keo_bocuc")
     print("SACH  rc=%d %s boot=%.3f ram=%d"
           % (rc_clean, {k: d_clean["checks"][k] for k in keys},
              d_clean["boot_to_window_s"], d_clean["ram_at_window_kib"]))
@@ -96,7 +107,7 @@ def main():
     ram = d_dirty["ram_at_window_kib"] - d_clean["ram_at_window_kib"]
     print("chen lai ban cu: boot %+.3f s, RAM luc cua so %+d KiB" % (do, ram))
     print(("PASS " if ok else "FAIL ")
-          + "ba cua do RED vi dung ly do, khong phai RED vien")
+          + "%d cua do RED vi dung ly do, khong phai RED vien" % len(keys))
     return 0 if ok else 1
 
 

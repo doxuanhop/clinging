@@ -1060,11 +1060,18 @@ class SetClipAudioCommand(Command):
         return ("Đổi " + " + ".join(parts)) if parts else "Đổi audio clip"
 
 
+GEOMETRY_KEYS = ("x", "y", "scale_x", "scale_y", "rotation", "opacity")
+# Ba cờ hình học KHÔNG nội suy được theo thời gian (không có "lật 40%"), nên
+# chúng đứng ngoài keyframe graph và chỉ đi qua đúng một ngòi bút với số khác 0.
+GEOMETRY_FLAGS = ("flip_h", "flip_v", "uniform_scale")
+
+
 def transform_snapshot(clip) -> dict:
-    """Ảnh 6 số hình học của clip — định dạng mà SetClipTransformCommand hiểu."""
+    """Ảnh 6 số + 3 cờ hình học của clip — định dạng mà SetClipTransformCommand hiểu."""
     t = clip.transform
-    return {key: float(getattr(t, key))
-            for key in ("x", "y", "scale_x", "scale_y", "rotation", "opacity")}
+    out = {key: float(getattr(t, key)) for key in GEOMETRY_KEYS}
+    out.update({key: bool(getattr(t, key, False)) for key in GEOMETRY_FLAGS})
+    return out
 
 
 class SetClipTextCommand(Command):
@@ -1174,7 +1181,7 @@ class SetClipTextCommand(Command):
 
 
 class SetClipTransformCommand(Command):
-    """Đổi hình học clip (vị trí, tỷ lệ, xoay, opacity) và tên hiển thị.
+    """Đổi hình học clip (vị trí, tỷ lệ, xoay, opacity, lật, khóa tỷ lệ) và tên.
 
     Viết qua ``model.update_clip_properties`` chứ không tự ghi ``clip.transform``:
     đó là đường duy nhất phát ``clipUpdated`` cho scene vẽ lại nhãn.
@@ -1185,7 +1192,7 @@ class SetClipTransformCommand(Command):
     nút undo hỏng.
     """
 
-    FIELDS = ("x", "y", "scale_x", "scale_y", "rotation", "opacity")
+    FIELDS = GEOMETRY_KEYS + GEOMETRY_FLAGS
     MERGES_WITH = FIELDS
     MERGE_WINDOW_S = 0.75
 
@@ -1194,8 +1201,9 @@ class SetClipTransformCommand(Command):
         self._clip_id = clip_id
         requested = {}
         for key in self.FIELDS:
-            if values.get(key) is not None:
-                requested[key] = float(values[key])
+            v = values.get(key)
+            if v is not None:
+                requested[key] = bool(v) if key in GEOMETRY_FLAGS else float(v)
         if name is not None:
             requested["name"] = str(name)
         self._requested = requested
@@ -1211,6 +1219,8 @@ class SetClipTransformCommand(Command):
             scale_x=values.get("scale_x"), scale_y=values.get("scale_y"),
             rotation=values.get("rotation"), opacity=values.get("opacity"),
             x=values.get("x"), y=values.get("y"),
+            flip_h=values.get("flip_h"), flip_v=values.get("flip_v"),
+            uniform_scale=values.get("uniform_scale"),
         )
 
     def execute(self):
@@ -1248,7 +1258,8 @@ class SetClipTransformCommand(Command):
     def description(self) -> str:
         labels = {"x": "vị trí X", "y": "vị trí Y", "scale_x": "rộng",
                   "scale_y": "cao", "rotation": "xoay", "opacity": "mờ",
-                  "name": "tên"}
+                  "flip_h": "lật ngang", "flip_v": "lật dọc",
+                  "uniform_scale": "khóa tỷ lệ", "name": "tên"}
         parts = [labels[key] for key in self.FIELDS + ("name",)
                  if key in self._requested]
         return ("Đổi " + " + ".join(parts)) if parts else "Đổi hình học clip"
@@ -1611,6 +1622,88 @@ class SetRecapOverlayCommand(Command):
     def description(self) -> str:
         on = bool(self._after.get("enabled"))
         return "Lớp phủ recap: %s" % ("bật" if on else "tắt")
+
+
+class SetProjectLayoutCommand(Command):
+    """Đổi bố cục + phong cách của CẢ dự án — một bước undo cho cả hộp thoại.
+
+    Cùng khuân với SetRecapOverlayCommand, kể cả chỗ bắt buộc truyền ``before``:
+    hộp thoại áp thời gian thực để người dùng thấy ngay, nên nếu lệnh tự chụp
+    ảnh lúc tạo thì nó ghi đúng trạng thái "sau" và Ctrl+Z thành phép thế chỗ
+    cho chính nó.
+    """
+
+    def __init__(self, model, settings, before=None):
+        self._model = model
+        self._after = dict(settings)
+        self._before = dict(before if before is not None else model.project_layout)
+
+    def execute(self):
+        self._model.set_project_layout(self._after)
+
+    def undo(self):
+        self._model.set_project_layout(self._before)
+
+    def description(self) -> str:
+        from core import canvas_layout
+        return "Bố cục: %s" % canvas_layout.describe(self._after)
+
+
+class ArrangeSlotsCommand(Command):
+    """Dàn N clip vào N ô của bố cục hiện hành — MỘT bước undo cho cả phép dàn.
+
+    Lệnh chỉ viết `transform` (x, y, scale_x/y) bằng đúng `transform_for_slot`
+    mà FrameComposer dùng để đo, không mở nhánh composite mới lúc vẽ: preview,
+    keyframe graph, bảng thuộc tính và máy xuất vì thế vẫn đọc một đường. Đó
+    chính là chỗ bản "Bien doi" từng lệch giữa xem và xuất.
+
+    `placements` là (clip_id, slot_index) theo thứ tự ô — do hộp thoại chọn từ
+    các clip ĐANG hiện tại playhead, vì clip nằm ngoài khoảng đó dàn vào cũng
+    không ai nhìn thấy.
+    """
+
+    def __init__(self, model, placements, canvas_w: float, canvas_h: float,
+                 fill: bool = False):
+        self._model = model
+        self._placements = list(placements)
+        self._canvas = (float(canvas_w), float(canvas_h))
+        self._fill = bool(fill)
+        self._before: dict[str, dict] = {}
+
+    def execute(self):
+        from core import canvas_layout
+        from core.canvas_utils import base_display_size
+        settings = self._model.project_layout
+        for clip_id, slot_index in self._placements:
+            clip = self._model.get_clip(clip_id)
+            if clip is None:
+                continue
+            box = canvas_layout.slot_rect(self._canvas[0], self._canvas[1],
+                                          settings, slot_index)
+            base_w, base_h = base_display_size(clip, self._canvas[0],
+                                               self._canvas[1])
+            want = canvas_layout.transform_for_slot(base_w, base_h,
+                                                    self._canvas[0],
+                                                    self._canvas[1], box,
+                                                    fill=self._fill)
+            self._before[clip_id] = transform_snapshot(clip)
+            # scale_moi là HE SO nhan len `base_display_size` cua clip, trong khi
+            # transform_snapshot luu he so dang dung; quy ve he 1.0 bang cach ghi
+            # thang truc tiep (khong cong don voi gia tri cu).
+            self._model.update_clip_properties(
+                clip_id, x=want["x"], y=want["y"],
+                scale_x=want["scale"], scale_y=want["scale"])
+
+    def undo(self):
+        for clip_id, old in self._before.items():
+            if self._model.get_clip(clip_id) is None:
+                continue
+            self._model.update_clip_properties(
+                clip_id, x=old["x"], y=old["y"],
+                scale_x=old["scale_x"], scale_y=old["scale_y"])
+
+    def description(self) -> str:
+        return "Dàn %d clip vào bố cục" % len(self._placements)
 
 
 class InsertCaptionsCommand(Command):

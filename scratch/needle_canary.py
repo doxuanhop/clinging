@@ -23,7 +23,9 @@ PROBES = ["chroma_key_counterfactual", "color_grading_counterfactual",
           "media_locator_counterfactual", "save_atomic_counterfactual",
           "clipboard_counterfactual", "undo_text_transform_counterfactual",
           "popart_project_counterfactual", "boot_laziness_counterfactual",
-          "split_plan_counterfactual", "export_range_counterfactual"]
+          "split_plan_counterfactual", "export_range_counterfactual",
+          "library_counterfactual", "sfx_counterfactual",
+          "transform_counterfactual", "canvas_layout_counterfactual"]
 
 
 def entries(mod):
@@ -34,13 +36,24 @@ def entries(mod):
       (desc, [(path, old, new, count)], expect)              — chroma/colour/media_locator
       (desc, [(path, old, new)], expect)                     — clipboard/popart/save_atomic
       (name, needle, repl, expect) + TARGET cap nhat         — save_atomic
+      (name, old, new, cua, tu) + TARGET byte                — library
     """
     out = []
     target = getattr(mod, "TARGET", None)
+    want = getattr(mod, "REQUIRED_COUNT", 1)
     for item in getattr(mod, "MUTATIONS", []):
         label = str(item[0])
-        if len(item) == 5 and isinstance(item[1], str):
+        if len(item) == 6 and isinstance(item[2], str):
+            # (name, oracle, path, needle, repl, expect) — transform (hai oracle:
+            # dong selftest va --transform-report, nen vet nao cung phai tu khai
+            # bao no do cua nao).
+            out.append((label, item[2], item[3], item[4], 1))
+        elif len(item) == 5 and isinstance(item[1], str):
             out.append((label, item[1], item[2], item[3], 1))
+        elif len(item) == 5 and isinstance(item[1], bytes) and target:
+            # vet byte tren DUNG mot file nguon (TARGET), moi mau xuat hien
+            # REQUIRED_COUNT lan — la khuon cua library_counterfactual.
+            out.append((label, target, item[1], item[2], want))
         elif len(item) == 4 and target and isinstance(item[1], (bytes, str)):
             out.append((label, target, item[1], item[2], 1))
         else:

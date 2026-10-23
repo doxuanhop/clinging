@@ -112,12 +112,17 @@ class ClipPropertiesWidget(QWidget):
         # --- Card 2: Căn chỉnh & Tọa độ + Nút Keyframe ⬦ ---
         card_transform = QFrame()
         card_transform.setObjectName("PropertyCard")
+        self.card_transform = card_transform
         layout_transform = QFormLayout(card_transform)
         layout_transform.setSpacing(8)
         layout_transform.setContentsMargins(12, 12, 12, 12)
 
         lbl_transform_title = QLabel("Vị trí & Biến đổi (Transform)")
         lbl_transform_title.setObjectName("CardTitle")
+        # Tinh som hon dau the: nut "Đặt lại" chi co nghĩa với media co khung
+        # hinh (Fit/Fill, lật, canh mép) — chu va sticker khong dung bien doi
+        # theo cùng bộ điều khiển này.
+        is_video_image = clip_model.media_type in ("video", "image")
         # Nut do thi nam cung hang tieu de vi no la hanh dong cua CA the
         # chuyen dong, khong thuoc ve rieng thong so nao ben duoi.
         transform_header = QWidget()
@@ -135,10 +140,21 @@ class ClipPropertiesWidget(QWidget):
         self.btn_graph.setToolTip("Xem và sửa đường cong chuyển động theo thời gian")
         self.btn_graph.clicked.connect(self._open_keyframe_graph)
         header_layout.addWidget(self.btn_graph)
+        if is_video_image:
+            # Nut dat lai o dau the vi no ap cho CA the, khong phai mot thong so.
+            self.btn_transform_reset = QPushButton("Đặt lại")
+            self.btn_transform_reset.setObjectName("GraphEntryBtn")
+            self.btn_transform_reset.setIcon(font_icon("fa6s.rotate-left", "#A0A0A0"))
+            self.btn_transform_reset.setIconSize(QSize(12, 12))
+            self.btn_transform_reset.setFixedHeight(22)
+            self.btn_transform_reset.setCursor(Qt.PointingHandCursor)
+            self.btn_transform_reset.setToolTip(
+                "Về giữa canvas, tỷ lệ 100%, không xoay, không lật (một bước Ctrl+Z)")
+            self.btn_transform_reset.clicked.connect(self._on_transform_reset)
+            header_layout.addWidget(self.btn_transform_reset)
         layout_transform.addRow(transform_header)
 
         # ── Fit / Fill Mode Toggle ──
-        is_video_image = clip_model.media_type in ("video", "image")
         if is_video_image:
             mode_widget = QWidget()
             mode_layout = QHBoxLayout(mode_widget)
@@ -175,12 +191,21 @@ class ClipPropertiesWidget(QWidget):
         self.spin_x = self.create_property_row(layout_transform, "Vị trí X (px):", clip_model.transform.x, -2000.0, 2000.0, "x")
         # Vị trí Y
         self.spin_y = self.create_property_row(layout_transform, "Vị trí Y (px):", clip_model.transform.y, -2000.0, 2000.0, "y")
+        if is_video_image:
+            self._build_scale_pct_row(layout_transform, clip_model)
         # Co giãn X
         self.spin_scale_x = self.create_property_row(layout_transform, "Co giãn X:", clip_model.transform.scale_x, 0.1, 10.0, "scale_x", step=0.1)
         # Co giãn Y
         self.spin_scale_y = self.create_property_row(layout_transform, "Co giãn Y:", clip_model.transform.scale_y, 0.1, 10.0, "scale_y", step=0.1)
-        # Góc xoay
-        self.spin_rotation = self.create_property_row(layout_transform, "Góc xoay (°):", clip_model.transform.rotation, 0.0, 360.0, "rotation")
+        # Góc xoay — dải [-180, 180] khớp đúng thứ model lưu sau mỗi cú xoay.
+        # Để 0..360 thì một cú kéo tay nắm qua 180 độ bị atan2 gói thành số âm
+        # và ô nhảy -90 ngay dưới tay người dùng dù họ vừa quay tới 270.
+        self.spin_rotation = self.create_property_row(layout_transform, "Góc xoay (°):", clip_model.transform.rotation, -180.0, 180.0, "rotation")
+        if is_video_image:
+            self._build_transform_button_rows(layout_transform, clip_model)
+            # Goi sau cung vi no khoa/chinh ba spin scale_x/scale_y/scale_pct:
+            # dat som thi chen vao giua __init__ luc cac doi tuon chua ton tai.
+            self._sync_uniform_editability()
 
         # Độ mờ (Opacity) Slider
         opacity_widget = QWidget()
@@ -675,6 +700,249 @@ class ClipPropertiesWidget(QWidget):
         
         # Đồng bộ màu kim cương ban đầu
         self.update_keyframe_buttons_ui()
+
+    # ── Biến đổi: tỷ lệ %, lật, xoay nhanh, canh mép, đặt lại ─────────
+    #
+    # Ba nút số (%) / xoay nhanh / canh mép KHÔNG tự ghi model: chúng viết vào
+    # đúng các ô spin đã có (scale_x, scale_y, rotation, x, y) nên thừa hưởng
+    # nguyên đường keyframe + undo mà `--selftest` đang do. Chi ba CO hinh hoc
+    # (lat ngang, lat doc, khoa ty le) can ngoi bút riêng, xem
+    # _push_transform_flags.
+
+    def _build_scale_pct_row(self, layout, clip_model):
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        # Don vi nam trong suffix cua spin, khong trung o nhan: hai cho "%...%"
+        # cùng một hàng là hai chỗ sửa khi đổi nhãn.
+        row_layout.addWidget(QLabel("Tỷ lệ:"))
+        row_layout.addStretch(1)
+
+        # Nút checkable chứ không phải QCheckBox: QSS của panel chỉ định nghĩa
+        # trạng thái checked cho QPushButton, nên checkbox tự chế sẽ không có
+        # hình và người dùng không phân biệt được khóa hay mở.
+        self.chk_uniform = QPushButton("Đồng nhất")
+        self.chk_uniform.setObjectName("FitFillBtn")
+        self.chk_uniform.setCheckable(True)
+        self.chk_uniform.setFixedHeight(22)
+        self.chk_uniform.setCursor(Qt.PointingHandCursor)
+        self.chk_uniform.setToolTip("Giữ tỷ lệ ngang = dọc khi kéo neo trên Canvas")
+        self.chk_uniform.setChecked(bool(getattr(clip_model.transform,
+                                                 "uniform_scale", True)))
+
+        self.spin_scale_pct = QDoubleSpinBox()
+        self.spin_scale_pct.setRange(10.0, 1000.0)
+        self.spin_scale_pct.setDecimals(1)
+        self.spin_scale_pct.setSingleStep(1.0)
+        self.spin_scale_pct.setSuffix(" %")
+        self.spin_scale_pct.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
+        # Gia tri dau phai lap TRUOC khi noi signal: lan dat nay con duoc dung
+        # de tinh % cua clip, neu noi som thi no phat valueChanged ngay trong
+        # __init__ va tay tro toi spin_scale_x chua ton tai.
+        self.spin_scale_pct.setValue(float(clip_model.transform.scale_x) * 100.0)
+        self.spin_scale_pct.valueChanged.connect(self._on_scale_pct_changed)
+        self.chk_uniform.clicked.connect(self._on_uniform_clicked)
+
+        row_layout.addWidget(self.chk_uniform)
+        row_layout.addWidget(self.spin_scale_pct)
+        layout.addRow(row)
+
+    def _build_transform_button_rows(self, layout, clip_model):
+        self._flip_buttons = {}
+
+        rot_row = QWidget()
+        rot_layout = QHBoxLayout(rot_row)
+        rot_layout.setContentsMargins(0, 0, 0, 0)
+        rot_layout.setSpacing(6)
+        rot_layout.addWidget(QLabel("Xoay nhanh:"))
+        rot_layout.addStretch(1)
+        for text, delta in (("−90°", -90.0), ("+90°", 90.0)):
+            btn = QPushButton(text)
+            btn.setObjectName("GraphEntryBtn")
+            btn.setFixedHeight(22)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip("Xoay thêm %s độ quanh tâm" % text)
+            btn.clicked.connect(lambda _checked, value=delta: self._on_rotate_step(value))
+            rot_layout.addWidget(btn)
+        layout.addRow(rot_row)
+
+        flip_row = QWidget()
+        flip_layout = QHBoxLayout(flip_row)
+        flip_layout.setContentsMargins(0, 0, 0, 0)
+        flip_layout.setSpacing(6)
+        flip_layout.addWidget(QLabel("Lật:"))
+        flip_layout.addStretch(1)
+        for key, text in (("flip_h", "Ngang"), ("flip_v", "Dọc")):
+            btn = QPushButton(text)
+            btn.setObjectName("FitFillBtn")
+            btn.setCheckable(True)
+            btn.setFixedHeight(22)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip("Lật %s quanh tâm khung hình" % text.lower())
+            btn.setChecked(bool(getattr(clip_model.transform, key, False)))
+            btn.clicked.connect(lambda _checked, k=key, b=btn: self._on_flip_clicked(k, b))
+            flip_layout.addWidget(btn)
+            self._flip_buttons[key] = btn
+        layout.addRow(flip_row)
+
+        for axis, (label, names) in (("x", ("Canh ngang:", ("Trái", "Giữa", "Phải"))),
+                                     ("y", ("Canh dọc:", ("Trên", "Giữa", "Dưới")))):
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+            row_layout.addWidget(QLabel(label))
+            row_layout.addStretch(1)
+            for text, edge in zip(names, ("start", "center", "end")):
+                btn = QPushButton(text)
+                btn.setObjectName("GraphEntryBtn")
+                btn.setFixedHeight(22)
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.setToolTip("Canh mép %s của khung vào %s canvas" % (text.lower(), edge))
+                btn.clicked.connect(lambda _checked, a=axis, e=edge: self._on_align_clicked(a, e))
+                row_layout.addWidget(btn)
+            layout.addRow(row)
+
+    def _on_uniform_clicked(self):
+        if self._block_signals:
+            return
+        self._push_transform_flags(uniform_scale=self.chk_uniform.isChecked())
+        self._sync_uniform_editability()
+
+    def _sync_uniform_editability(self):
+        """Khóa rồi thì hai ô Co giãn thành số đọc — nhập vào đó chỉ để bị ghi đè."""
+        locked = bool(self.chk_uniform.isChecked())
+        self.spin_scale_x.setEnabled(not locked)
+        self.spin_scale_y.setEnabled(not locked)
+        self.spin_scale_pct.setEnabled(locked)
+
+    def _on_scale_pct_changed(self, value):
+        if self._block_signals:
+            return
+        factor = max(0.1, min(10.0, float(value) / 100.0))
+        # Chỉ phát tín hiệu ở MỘT ô: hai ô cùng đổi là hai lệnh undo cho một cú
+        # gõ, và ô thứ hai thừa hưởng giá trị qua funnel 8 số (nó luôn gửi cả
+        # scale_x lẫn scale_y xuống model trong một lần).
+        self._block_signals = True
+        self.spin_scale_y.setValue(factor)
+        self._block_signals = False
+        self.spin_scale_x.setValue(factor)
+        self._on_values_changed()
+
+    def _on_rotate_step(self, delta):
+        if self._block_signals:
+            return
+        value = self.spin_rotation.value() + float(delta)
+        # Gói tay: spin tự kẹp vào [-180, 180] nên cộng 90 từ 120 độ sẽ đứng ở
+        # 180 chứ không sang -150 — tức là nút "+90°" không còn quay tới đâu.
+        if value > 180.0:
+            value -= 360.0
+        elif value < -180.0:
+            value += 360.0
+        self.spin_rotation.setValue(value)
+
+    def _on_flip_clicked(self, key, button):
+        if self._block_signals:
+            return
+        self._push_transform_flags(**{key: button.isChecked()})
+        # Doc lai model chu khong tin nut bam: model vang (chưa có TimelineModel)
+        # thi nut vừa nhảy sang trạng thái mà không lệnh nào biết cách trả về.
+        self._sync_transform_flags()
+
+    def _sync_transform_flags(self):
+        transform = self.clip_model.transform
+        previous, self._block_signals = self._block_signals, True
+        buttons = getattr(self, "_flip_buttons", {})
+        for key, button in buttons.items():
+            button.setChecked(bool(getattr(transform, key, False)))
+        if hasattr(self, "chk_uniform"):
+            self.chk_uniform.setChecked(bool(getattr(transform, "uniform_scale", True)))
+        self._block_signals = previous
+        if hasattr(self, "chk_uniform"):
+            self._sync_uniform_editability()
+
+    def _push_transform_flags(self, **changes):
+        """Một cú bấm cờ hình học = một lệnh undo; bấm về đúng giá trị cũ = không thêm bước.
+
+        Cờ không đi qua funnel `propertyChanged` (tám tham số float) và cũng
+        không keyfram được, nên ngòi bút riêng của nó là SetClipTransformCommand
+        — cùng kiểu đặt lệnh mà `_push_grading` đã dùng cho bảng chỉnh màu.
+        """
+        if self._block_signals:
+            return
+        transform = self.clip_model.transform
+        requested = {key: bool(value) for key, value in changes.items()
+                     if bool(getattr(transform, key, False)) != bool(value)}
+        if not requested:
+            return
+        main_window = self._find_main_window()
+        model = self._model()
+        if main_window is None or model is None:
+            return
+        from core.commands import SetClipTransformCommand
+        main_window.timeline_panel.undo_stack.push(
+            SetClipTransformCommand(model, self.clip_id, **requested))
+        self._refresh_canvas()
+
+    def _project_ratio_key(self, main_window):
+        text = main_window.timeline_panel.header.combo_aspect_ratio.currentText()
+        return text.split(" - ")[0] if " - " in text else "16:9"
+
+    def _on_align_clicked(self, axis, edge):
+        """Canh theo HỘP BAO ĐÃ XOAY, dùng đúng kích thước mà FrameComposer display.
+
+        Số chưa xoay sai một khoảng bằng hiệu hai trục: clip 1920×1080 xoay 90°
+        mà canh trái theo 1920 thì pushing nó ra khỏi canvas 840 px.
+        """
+        if self._block_signals:
+            return
+        main_window = self._find_main_window()
+        if main_window is None:
+            return
+        from core.canvas_utils import (ASPECT_RATIOS, align_center,
+                                       base_display_size, rotated_box_size)
+        canvas_w, canvas_h = ASPECT_RATIOS.get(
+            self._project_ratio_key(main_window), (1920, 1080))
+        transform = self.clip_model.transform
+        base_w, base_h = base_display_size(self.clip_model, canvas_w, canvas_h)
+        box_w, box_h = rotated_box_size(base_w * transform.scale_x,
+                                        base_h * transform.scale_y,
+                                        transform.rotation)
+        if axis == "x":
+            self.spin_x.setValue(align_center(canvas_w, box_w, edge))
+        else:
+            self.spin_y.setValue(align_center(canvas_h, box_h, edge))
+
+    def _on_transform_reset(self):
+        if self._block_signals:
+            return
+        main_window = self._find_main_window()
+        model = self._model()
+        if main_window is None or model is None:
+            return
+        from core.commands import SetClipTransformCommand, transform_snapshot
+        clip = model.get_clip(self.clip_id)
+        if clip is None:
+            return
+        # Do la cua so cua MEDIA, khong phai cua chu: opacity cua clip chu do
+        # nguoi dung dat khi them nen, "Đặt lại" xoa no la pha du an.
+        wanted = {"x": 0.0, "y": 0.0, "scale_x": 1.0, "scale_y": 1.0,
+                  "rotation": 0.0, "flip_h": False, "flip_v": False,
+                  "uniform_scale": True}
+        current = transform_snapshot(clip)
+        dirty = False
+        for key, value in wanted.items():
+            if isinstance(value, bool):
+                dirty = dirty or bool(current[key]) != value
+            else:
+                dirty = dirty or abs(current[key] - value) >= 0.005
+        if not dirty:
+            return
+        main_window.timeline_panel.undo_stack.push(
+            SetClipTransformCommand(model, self.clip_id, **wanted))
+        self.update_values(clip)
+        self._refresh_canvas()
 
     def create_property_row(self, layout, label_text, default_val, min_val, max_val, property_key, step=1.0):
         """Tạo hàng thuộc tính có nút kim cương và ô nhập SpinBox."""
@@ -1592,7 +1860,18 @@ class ClipPropertiesWidget(QWidget):
         self.spin_y.setValue(clip_model.transform.y)
         self.spin_scale_x.setValue(clip_model.transform.scale_x)
         self.spin_scale_y.setValue(clip_model.transform.scale_y)
-        self.spin_rotation.setValue(clip_model.transform.rotation)
+        # File 1.0.5 trở về trước lưu góc theo dải 0..360; spin giờ kẹp
+        # [-180, 180] nên phải gói tay, nếu không setValue(270) âm thầm thành
+        # 180 và ô hiển thị một góc mà không khung hình nào xoay theo.
+        rotation = float(clip_model.transform.rotation)
+        if rotation > 180.0:
+            rotation -= 360.0
+        self.spin_rotation.setValue(rotation)
+        if hasattr(self, "spin_scale_pct"):
+            # Gia tri cua Co gian X, khong phai cua %: khi mo khoa thi hai truc
+            # lech nhau va "%" khong con la mot con so duy nhat.
+            self.spin_scale_pct.setValue(float(clip_model.transform.scale_x) * 100.0)
+            self._sync_transform_flags()
         opacity_percent = int(clip_model.transform.opacity * 100)
         self.slider_opacity.setValue(opacity_percent)
         self.lbl_opacity_val.setText(f"{opacity_percent}%")

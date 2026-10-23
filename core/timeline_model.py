@@ -18,7 +18,7 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from core import recap_overlay, transitions
+from core import canvas_layout, recap_overlay, transitions
 
 
 # Shared vertical geometry for every Timeline surface. Header, body, drop
@@ -107,6 +107,16 @@ class TransformData:
     rotation: float = 0.0     # degrees
     opacity: float = 1.0
     fit_mode: str = "fit"     # "fit" hoặc "fill"
+    # Lật là CỜ, không phải scale âm: keyframe graph (core/keyframe_graph) và
+    # `calculate_fit_and_center` đều coi scale là độ lớn dương — nhét số âm vào
+    # đó thì dải giá trị và đường cong nội suy sai hết, còn cờ thì chỉ đi qua
+    # `painter.scale(-1, 1)` ở đúng hai chỗ dựng frame.
+    flip_h: bool = False
+    flip_v: bool = False
+    # "Thu phóng đồng nhất": khi bật, một giá trị Tỷ lệ % viết cả scale_x lẫn
+    # scale_y. Để sai khác 1e-9 giữa hai trục vẫn là hai số khác nhau trong mắt
+    # người dùng, nên đây là ý định của họ, không phải suy ra từ dữ liệu.
+    uniform_scale: bool = True
     # Kích thước GỐC của media (không thay đổi khi đổi ratio)
     original_w: float = 0.0
     original_h: float = 0.0
@@ -569,6 +579,7 @@ class TimelineModel(QObject):
     durationChanged = Signal(float)
     selectionChanged = Signal(list)
     recapOverlayChanged = Signal(dict)   # lớp phủ recap cấp dự án
+    projectLayoutChanged = Signal(dict)  # bố cục + phong cách cấp dự án
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -579,6 +590,7 @@ class TimelineModel(QObject):
         self._track_counter = {t: 0 for t in TrackType}
         self._project_ratio: str = "16:9"  # Tỉ lệ khung hình hiện tại
         self._recap_overlay: dict = dict(recap_overlay.OVERLAY_DEFAULTS)
+        self._project_layout: dict = dict(canvas_layout.LAYOUT_DEFAULTS)
 
     # ── Properties ──────────────────────────────────────────────
 
@@ -633,6 +645,21 @@ class TimelineModel(QObject):
         self._recap_overlay = recap_overlay.normalize(settings)
         if emit:
             self.recapOverlayChanged.emit(dict(self._recap_overlay))
+
+    @property
+    def project_layout(self) -> dict:
+        """Bố cục + phong cách của CẢ dự án (nen, o, chu dau/cuoi).
+
+        Giong `recap_overlay`: day la cau hinh du an, khong gan clip nao, va la
+        thu duy nhat FrameComposer lẫn PreviewCanvas đọc — hai ben lech nhau la
+        loi cua the "Bien doi" da tra gia hom 22/10.
+        """
+        return canvas_layout.normalize(self._project_layout)
+
+    def set_project_layout(self, settings, emit: bool = True):
+        self._project_layout = canvas_layout.normalize(settings)
+        if emit:
+            self.projectLayoutChanged.emit(dict(self._project_layout))
 
     # ── Track Management ────────────────────────────────────────
 
@@ -1468,7 +1495,9 @@ class TimelineModel(QObject):
     def update_clip_properties(self, clip_id: str, name: Optional[str] = None,
                                scale_x: Optional[float] = None, scale_y: Optional[float] = None,
                                rotation: Optional[float] = None, opacity: Optional[float] = None,
-                               x: Optional[float] = None, y: Optional[float] = None):
+                               x: Optional[float] = None, y: Optional[float] = None,
+                               flip_h: Optional[bool] = None, flip_v: Optional[bool] = None,
+                               uniform_scale: Optional[bool] = None):
         """Cập nhật các thuộc tính kỹ thuật của clip từ Properties Panel và phát signal."""
         clip, _ = self._find_clip(clip_id)
         if not clip:
@@ -1487,6 +1516,12 @@ class TimelineModel(QObject):
             clip.transform.x = x
         if y is not None:
             clip.transform.y = y
+        if flip_h is not None:
+            clip.transform.flip_h = bool(flip_h)
+        if flip_v is not None:
+            clip.transform.flip_v = bool(flip_v)
+        if uniform_scale is not None:
+            clip.transform.uniform_scale = bool(uniform_scale)
         self.clipUpdated.emit(clip_id)
 
     # ── Internal Helpers ────────────────────────────────────────

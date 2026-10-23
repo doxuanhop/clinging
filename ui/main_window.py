@@ -233,10 +233,16 @@ class MainWindow(QWidget):
         self.timeline_panel.themeToggleRequested.connect(self._on_theme_toggled)
         self.timeline_panel.coverRequested.connect(self._open_cover_dialog)
         self.timeline_panel.recapOverlayRequested.connect(self._open_recap_overlay)
+        self.timeline_panel.canvasLayoutRequested.connect(self._open_canvas_layout)
+        self.timeline_panel.sfxRequested.connect(self._open_sfx)
         # Lớp phủ là cấu hình dự án nên model đổi là canvas phải vẽ lại ngay —
         # không có clip nào được chọn ở đây để mà dựa vào clipUpdated.
         self.timeline_panel.model.recapOverlayChanged.connect(
             self._on_recap_overlay_changed)
+        # Bo cuc cung la cau hinh du an: nen ve o drawBackground, tien canh o
+        # drawForeground, nen phai update() ca viewport chu khong rieng item nao.
+        self.timeline_panel.model.projectLayoutChanged.connect(
+            self._on_project_layout_changed)
         self.preview_panel.canvas.bind_model(self.timeline_panel.model)
         self.timeline_panel.focusModeToggled.connect(self._on_timeline_focus)
 
@@ -1501,6 +1507,37 @@ class MainWindow(QWidget):
         dialog.activateWindow()
         return dialog
 
+    def _open_sfx(self):
+        """Hộp thoại Hiệu ứng âm thanh — pack dựng sẵn, một instance duy nhất.
+
+        Import đặt trong THÂN hàm: `ui.sfx_dialog` kéo theo QAudioOutput còn
+        `core.sfx` đọc manifest — không một byte nào trong số đó được phép ngốn
+        lúc mở app (cửa `boot_khong_keo_sfx` trong --startup-report đo đúng điều
+        đó). Non-modal vì nghe thử kể cả cửa sổ: modal thì editor bị khóa lại,
+        không chèn được trong lúc đang xem.
+        """
+        from ui.sfx_dialog import SfxDialog
+        dialog = getattr(self, "_sfx_dialog", None)
+        if dialog is None:
+            dialog = SfxDialog(self)
+            dialog.insertRequested.connect(self._insert_sfx)
+            self._sfx_dialog = dialog
+        dialog.refresh()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _insert_sfx(self, entry):
+        """Chèn một tiếng SFX tại playhead — cùng ngăn nạp với kéo-thả thư viện.
+
+        Không lưu ở đây: ngăn nạp của thư viện cũng không lưu mà trông đồng hồ
+        autosave 30 s, nên chèn SFX không được thêm một phép ghi nào vào thư mục
+        người dùng.
+        """
+        from ui.sfx_dialog import insert_to_timeline
+        return insert_to_timeline(self, entry)
+
     def _open_recap_overlay(self):
         """Hộp thoại Lớp phủ recap — một instance, cấu hình sống theo dự án."""
         from ui.recap_overlay_dialog import RecapOverlayDialog
@@ -1515,6 +1552,34 @@ class MainWindow(QWidget):
         return dialog
 
     def _on_recap_overlay_changed(self, _settings):
+        self.preview_panel.canvas.viewport().update()
+
+    def _open_canvas_layout(self):
+        """Hộp thoại Bố cục & Phong cách — một instance, cấu hình sống theo dự án.
+
+        Import đặt trong THÂN hàm: `ui.canvas_layout_dialog` chỉ cần lúc người
+        dùng bấm nút (nó kéo theo QColorDialog + QScrollArea), còn
+        `core.canvas_layout` thì model đã import từ lúc dựng editor. Cửa
+        `boot_khong_keo_bocuc` trong --startup-report đo `sys.modules` đúng tên
+        module UI đó.
+        """
+        from ui.canvas_layout_dialog import CanvasLayoutDialog
+        dialog = getattr(self, "_canvas_layout_dialog", None)
+        if dialog is None:
+            dialog = CanvasLayoutDialog(self)
+            self._canvas_layout_dialog = dialog
+        dialog.refresh()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _on_project_layout_changed(self, _settings):
+        """Bo cuc doi (hop thoai keo slider, len undo, mo file) — ve lai ca khung.
+
+        Hai lop nam o hai cho khac nhau cua Canvas (nen duoi clip, tien canh tren
+        clip) nen khong the chi update mot item; viewport ve lai toan bo.
+        """
         self.preview_panel.canvas.viewport().update()
 
     def _open_keyframe_graph(self, clip_id):

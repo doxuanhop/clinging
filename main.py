@@ -223,6 +223,37 @@ def main():
         from diagnostics import run_startup_report
         sys.exit(run_startup_report())
 
+    if "--library-report" in sys.argv:
+        # "Thu vien lag" la mot loi phan nan, khong phai loi crash: no chi hien
+        # khi luoi co hang chuc the va media nam tren HDD. Phai do tren dung
+        # duong mo project cua ban nay, voi fixture that tren dia.
+        from diagnostics import run_library_report
+        sys.exit(run_library_report())
+
+    if "--sfx-report" in sys.argv:
+        # Pack SFX sống trong bundle (assets/sfx) va trong _internal cua ban cai,
+        # khong phai trong tree nguon: chen ra clip ma khong co tieng nao tren dia
+        # thi chi nguoi dung moi biet. Do tren duong cua nguoi dung — bam nut tren
+        # thanh thoi, hop thoai that, chen that, roi do lai tung tieng.
+        from diagnostics import run_sfx_report
+        sys.exit(run_sfx_report())
+
+    if "--transform-report" in sys.argv:
+        # The "Bien doi" card (xoay tu do, lat, canh le, khoa ty le) co the xanh
+        # tren so ma sai tren mat: mot ben dung co flip, ben kia im lang bo qua
+        # (preview lat, export khong lat), hoac canh mep theo so CHUA xoay. Cac
+        # con so duoi day do tu pixel ma FrameComposer ve ra, khong do tu model.
+        from diagnostics import run_transform_report
+        sys.exit(run_transform_report())
+
+    if "--canvas-layout-report" in sys.argv:
+        # Bo cuc + phong cách nam o NAM be mat ma --selftest khong nhin thay:
+        # nut tren header, 22 khoa widget->model, doan gập cua body, pixel ma
+        # FrameComposer ve tu chinh model do, va lenh "Dan clip vao o". Do tren
+        # MainWindow that, khong tren fixture tu dung.
+        from diagnostics import run_canvas_layout_report
+        sys.exit(run_canvas_layout_report())
+
     # PySide6 tự động xử lý High DPI - không cần thiết lập thủ công
     app, controller = _boot()  # noqa: F841 (controller phải sống tới khi exit)
     sys.exit(app.exec())
