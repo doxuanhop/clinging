@@ -1864,9 +1864,36 @@ Installer và metadata:
 | `release_meta.py` (đọc từ chính hai file) | rc=0 — sáu nguồn trong tree đều `1.0.7` → `KHOP: tat ca = 1.0.7`; MSI `ProductVersion 1.0.7`, `ProductCode {6CED171F-5CD4-4547-A585-0D53BDF3801B}` (mới), `UpgradeCode {322A4294-D740-42B3-9414-555BA07FDB88}` giữ nguyên; setup.exe `FixedFileInfo 1.0.7.0` |
 | `msi_payload_check.py` | **ALL PASS (0 fail)** — bảng `File` của MSI đúng bằng **385 file / 517.405.660 B** của `dist`; 1.0.6 là 383 file / 516.682.602 B, hai lá mới là `assets/uiux/editor-rotate-knob.png` + `-detail.png` (690.657 + 27.365 B, khớp mức +715.553 B của setup.exe sau nén) |
 
-**Chưa cài và chưa đăng.** Hai cây cài trên máy vẫn là Inno **1.0.6** và MSI
-**1.0.4**; Release public mới nhất vẫn là `v1.0.6`. Cài đè và đăng Release là
-thao tác shared-state nên không nằm trong lượt dựng này.
+### Bản cài Inno 1.0.7 + một cổng đỏ không tất định
+
+`ClingingSetup-1.0.7.exe /VERYSILENT` rc=0 trong **28,5 s**; cây cài được chứng
+minh bằng set-diff đường dẫn tương đối so với `dist`: **387 lá = 385 payload +
+`unins000.*`**, 0 lá thiếu, 0 lá lạ, và `Clinging.exe` của cây cài **trùng từng
+byte** với `dist\Clinging\Clinging.exe` (sha256[:16] `dde9fcbe5eb9b39b`,
+7.164.518 B, PE `1.0.7.0`).
+
+`scratch/installed_app_probe.py` trên bản cài: **171 PASS / 1 FAIL**. Cổng đỏ là
+`project THAT exit 0` — `<exe cài> --project-report <json> <du an .clinq THAT>`
+(hai clip 4K ~110 s) trả **`returncode=3221226505`** (`0xC0000409`) trong khi
+payload vẫn `mo_duoc=True / o_editor=True / clip dung byte / user_cache_extra=[]`.
+Cổng này xanh trên bản cài 1.0.6, đỏ lại trên 1.0.7. Hai phép đo phân loại:
+
+| Phép đo | Kết quả |
+| --- | --- |
+| `scratch/installed_abort_repeat.py` (exe đã cài, dự án THẬT, 3 lượt) | **1 abort / 2 rc=0**, 130,7–166,9 s; payload cả 3 lượt đủ; `.clinq` + `recent_projects.json` **0 mục bị chạm** sau khi trả byte |
+| `scratch/teardown_detach_heavy_probe.py` — exe đã cài, project 4K **hai clip tự sinh** (48 s, 4 keyframe/1440 khung) | `rc=0` sau 28,2 s |
+|Cùng probe, **tree nguồn**, trần 8000 / 240000 ms | `rc=0` sau 21,2 s / 21,6 s — không ai bị chờ tới trần |
+|Cùng probe, project nhẹ 6 s, trần 8000 / **1 ms** | **`rc=0` cả hai** (12,4 s / 13,1 s) — tức MỘT THREAD BỊ DETACH KHÔNG đủ gây abort; `ALL PASS 5/5` |
+
+Kết luận đo được: giả thuyết "trần 8000 ms sinh ra thread sống lúc finalize nên
+app nổ" **bị bác** bằng chính chiều thử nghiệm (trần 1 ms ép mọi worker detach mà
+vẫn `rc=0`). Cái còn lại là abort **không tất định** (1/4 lượt) chỉ lộ trên dữ
+liệu nặng thật, và nó thuộc cùng họ với lỗi 1.0.5 đã ghi ở mục dưới: sản phẩm
+đúng, cái xác sai. 1.0.7 vẫn là bản tiến bộ so với 1.0.6 vì 1.0.6 chờ vô hạn nên
+**treo** (không đóng được cửa sổ) khi worker kẹt, còn 1.0.7 luôn đóng được và
+chỉ thỉnh thoảng chết ở bước dọn.
+
+**Cây MSI vẫn 1.0.4** (`msiserver` kẹt từ 22/10, chưa reboot).
 
 ## Dòng "đóng cửa số": dừng luồng giải mã trước khi thoát (2026-10-23)
 

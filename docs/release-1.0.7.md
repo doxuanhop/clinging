@@ -162,6 +162,34 @@ Phản chứng của cổng đóng cửa sổ đỏ vì **đúng** lý do, từn
 | Xóa luôn lệnh `wait` | đỏ `co tran: shutdown quay ve sau 0 ms, tran la 8000 ms` — tức "về ngay" không được tính là an toàn |
 | Xóa `closeEvent` / để vòng lặp không dừng ai | `rc=3221226505` ở **cả hai lượt** trên `--project-report` |
 
+### Bản cài trên máy, và một cổng vẫn đỏ không xác định
+
+Cây Inno `%LOCALAPPDATA%\Programs\Clinging` giờ là **1.0.7**: `Clinging.exe`
+7.164.518 B, sha256[:16] `dde9fcbe5eb9b39b` **trùng từng byte** với
+`dist\Clinging\Clinging.exe`; set-diff lá-file so với `dist` là **387 = 385 +
+`unins000.*`**, 0 thiếu và 0 lá lạ.
+
+`scratch/installed_app_probe.py` trên bản cài này: **171 PASS / 1 FAIL**. Cổng đỏ
+là `project THAT exit 0` khi mở dự án THẬT hai clip 4K (~110 s/clip) bằng
+`Clinging.exe --project-report` — `returncode=3221226505` tức `0xC0000409`, **sau
+khi** payload đã ghi xong. Hai cổng đo lại:
+
+- `scratch/installed_abort_repeat.py` (ba lượt, cùng lệnh, cùng dự án):
+  **1 abort / 2 `rc=0`**, 130,7–166,9 s; cả ba lượt `mo_duoc=True`,
+  `o_editor=True`, `clip=2` và file `.clinq` **+ `recent_projects.json` trả về
+  nguyên byte (0 mục bị chạm)**.
+- `scratch/teardown_detach_heavy_probe.py` loại giả thuyết "cứ thread bị detach là
+  nổ": trần `EXTRACTION_SHUTDOWN_MS = 1` (mọi worker đều bị detach ngay tức khắc)
+  trên project nhẹ vẫn **`rc=0`** (13,1 s so với 12,4 s ở trần 8000 ms), và project 4K
+  **hai clip tự sinh** vẫn `rc=0` ở cả tree nguồn lẫn exe đã cài (21,2–28,2 s).
+
+Nói cách khác: bản sửa 1.0.7 **hết treo cửa sổ** (không còn `wait()` vô hạn) và
+**không phải lỗi tất định** nữa (1.0.5 là 3/3), nhưng trên máy này, với dự án 4K
+nặng của người dùng, đóng cửa sổ vẫn còn **1/4 lượt** để lại process chết ở
+`0xC0000409` ở bước finalize. Không có dòng `QThread: Destroyed while thread is
+still running` trong stderr của exe. Sản phẩm (dự án mở ra, clip, thư viện, ảnh
+bằng chứng) đúng trong cả bốn lượt đo; dữ liệu người dùng không bị chạm.
+
 ## Ghi chú nâng cấp
 
 - Cài đè trực tiếp từ 1.0.4/1.0.5/1.0.6. Inno xoá `_internal` cũ trước khi giải nén;
@@ -171,6 +199,12 @@ Phản chứng của cổng đóng cửa sổ đỏ vì **đúng** lý do, từn
 - Máy cấu hình thấp: bản này không thêm binary, không thêm module nào trên đường
   boot; chi phí duy nhất đo được là vài giây lúc **đóng** cửa sổ khi dự án đang có
   clip 4K dở giải mã (số ở mục 1).
+- **Đóng cửa sổ trên dự án 4K rất nặng**: 1.0.7 bỏ hẳn đoạn chờ vô hạn nên cửa sổ
+  luôn đóng được, nhưng trên máy phát hành vẫn còn **1/4 lượt** process kết thúc ở
+  `0xC0000409` ngay bước dọn dẹp cuối (`installed_abort_repeat.py`, số đo ở mục
+  "Bản cài trên máy"). Nó xảy ra **sau khi** dự án đã lưu và đã ghi báo cáo, nên
+  bài dựng, `.clinq` và ảnh xuất không bị ảnh hưởng; nếu thấy thông báo của Windows
+  khi vừa đóng app, cứ mở lại bình thường.
 - Build từ mã nguồn cần tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (~205 MB,
   vượt giới hạn 100 MB/file của GitHub). **Bản cài đặt đã kèm sẵn cặp này.**
 - Tài liệu quy trình kiểm chứng: `docs/verification-gates.md`, `docs/glyph-icons.md`.

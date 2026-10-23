@@ -53,8 +53,8 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   hai product probe. Clone mới muốn
   build phải tự đặt `tools\ffmpeg\ffmpeg.exe` + `ffprobe.exe` (không commit được,
   vượt 100 MB/file).
-  **1.0.7 đã dựng + đã gate trên máy này (23/10/2026), CHƯA cài, CHƯA đăng
-  Release**: `dist\Clinging\Clinging.exe` 7.164.518 B (PE `1.0.7.0`, sha256[:16]
+  **1.0.7 đã dựng + đã gate + ĐÃ cài cây Inno trên máy này (23/10/2026)**:
+  `dist\Clinging\Clinging.exe` 7.164.518 B (PE `1.0.7.0`, sha256[:16]
   `dde9fcbe5eb9b39b`), 10 cổng bundle đều `rc=0` (`--selftest` **44 dòng
   `failed=[]` only=null** trong 69,2 s; `--project-report` 10,3 s
   `mo_duoc/o_editor/khoi_dong_tu_home=True`, `clip = 3/3 khop`; split/transform/
@@ -66,8 +66,18 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   (`msi_payload_check.py` ALL PASS; hai file mới là hai ảnh `assets/uiux/
   editor-rotate-knob*`), `release_meta.py` `KHOP: tat ca = 1.0.7`, MSI
   `ProductCode {6CED171F-5CD4-4547-A585-0D53BDF3801B}` với `UpgradeCode` giữ
-  nguyên. Bản public mới nhất vẫn là **v1.0.6** và bản cài trên máy vẫn là cây
-  Inno **1.0.6**.
+  nguyên. **Cây Inno là 1.0.7**: exe cài sha256[:16] `dde9fcbe5eb9b39b` trùng
+  từng byte với `dist`, set-diff 387 lá = 385 payload + `unins000.*` (0 thiếu,
+  0 lá lạ). **Cây MSI vẫn 1.0.4** (`msiserver` vẫn kẹt, chưa reboot).
+  `installed_app_probe.py` trên bản cài: **171 PASS / 1 FAIL** —
+  `project THAT exit 0` trả `3221226505` khi mở dự án THẬT hai clip 4K 110 s.
+  `scratch/installed_abort_repeat.py` đo lại: **1 abort / 2 rc=0** (130,7-166,9 s),
+  payload cả ba lượt `mo_duoc/o_editor=True`, `.clinq` trả nguyên byte.
+  `scratch/teardown_detach_heavy_probe.py` bác giả thuyết "cứ detach là nổ": trần
+  1 ms (mọi worker bị detach tức khắc) trên project nhẹ vẫn `rc=0`, project 4K hai
+  clip TỰ SINH vẫn `rc=0` ở tree nguồn lẫn exe đã cài. tức là lỗi còn lại là
+  KHÔNG TẤT ĐỊNH và chỉ lộ trên dữ liệu nặng thật của người dùng — sản phẩm đúng,
+  cái xác sai, như dòng "đóng cửa sổ" trong `docs/verification-gates.md`.
 - **Ba tính năng SFX / Bố cục & Phong cách / dừng luồng giải mã đã vào bundle
   1.0.6** — tree nguồn và `dist\Clinging` dùng chung bảng **44 dòng** (do
   23/10/2026: `--selftest` nguồn 44 dòng `failed=[]` rc=0, và dòng 44
@@ -90,9 +100,9 @@ chứng đầy đủ: `docs/verification-gates.md`. Pipeline icon: `docs/glyph-i
   Cả hai chuỗi đều **đã có trong PYZ** của `dist\Clinging` (chi tiết dòng `bien
   doi` = `glyph tay nam xoay 3119 px toi`, dòng `dong cua so` = `thread khong hop
   tac bi cat o 8003 ms (tran 8000 ms)`), nên dấu hiệu "nguồn mới hơn bundle"
-  không còn đúng với `dist`. **Hai cây cài vẫn 1.0.6 (Inno) và 1.0.4 (MSI)** —
-  muốn người dùng thật chạy bản sửa phải cài 1.0.7, và đó là thao tác phải xin
-  duyệt.
+  không còn đúng với `dist`. **Cây Inno đã là 1.0.7 (cài 23/10/2026); cây MSI vẫn
+  1.0.4** — người dùng thật nhận bản sửa qua Inno, còn `ClingingMSI` phải chờ
+  reboot để gỡ `msiserver` rồi mới cài được.
 
 ## Lệnh hay dùng
 
@@ -126,6 +136,8 @@ python scratch/rotate_knob_evidence.py --pixels # phan chung tren anh da luu: 6 
 pythonw scratch/console_window_probe.py         # 22 cua dem: 0 cua ConsoleWindowClass MOI tren 7 lan sinh tien trinh that + exe da cai -> console_window_probe.json (~22 s)
 pythonw scratch/console_window_probe.py --phan-chung # 8 cua -> console_window_probe_cf.json (FILE RIENG; mot spawn thieu co mo cua console that)
 python scratch/teardown_workers_counterfactual.py # phan chung: 5 vet byte tren 3 oracle — selftest row 44 (--only), rc THAT cua `main.py --project-report` (fixture 4K tu sinh, phai co DUNG 1 keyframe/360 frame), va `--selftest` bang tron co vet; 23/23, 7,1 phut
+python scratch/installed_abort_repeat.py          # do TAN SUAT abort 0xC0000409 tren exe da cai + du an THAT cua may (3 lan, .clinq duoc tra nguyen byte); do 23/10: 1 abort / 2 rc=0, 130,7-166,9 s
+python scratch/teardown_detach_heavy_probe.py     # bac gia thuyet "detached thread = abort": 5 lan `--project-report` (exe da cai + tree nguon; project 4K hai clip TU SINH 48s/12s; tran 8000/240000/1 ms); ~2 phut
 python scratch/icon_name_audit.py               # ten glyph + tham so tren toan bo nguon
 python scratch/gate_discrimination_probe.py     # phan chung: moi cua phai do vi dung ly do
 python scratch/needle_canary.py                 # 0,6 s: dem mau byte cua 19 probe (rc=0 = "ALL CLEAN: 17/19", hai probe khong co bang vet bi loai khong tinh)
